@@ -703,6 +703,7 @@ class ToolIsolationTest(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             mock.patch.object(bump, "resolve_tool", side_effect=resolve),
+            mock.patch.object(bump, "bot_prs", return_value=[]),
         ):
             _, rows = bump.prepare_bump("a", ["a"], tools, policy, NOW, Path(tmp), True)
             self.assertEqual(rows[0]["outcome"], "failed")
