@@ -160,7 +160,10 @@ test("every job carries a literal name, the same in both lanes", () => {
   for (const [id, name] of Object.entries(names)) {
     assert.doesNotMatch(String(name ?? id), /\$\{\{/u, id);
   }
-  assert.equal(status.steps.find((s) => s.env?.STATUS_JOB)?.env.STATUS_JOB, "review-status");
+  assert.equal(
+    status.steps.find((s) => s.env?.STATUS_JOB)?.env.STATUS_JOB,
+    "review-status",
+  );
 });
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
