@@ -3442,6 +3442,47 @@ if [[ "$step_name_default" != "    default: ''" ]]; then
   failures=$((failures + 1))
 fi
 
+# --- api-calls count -------------------------------------------------------
+
+summary_file="$temporary_directory/step-summary"
+calls_post_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"
+
+# Without the count in gh_api this reports zero requests.
+echo 'case: full mode reports its one status write as the api-calls notice and summary line'
+: >"$summary_file"
+run_case 0 'success success' pass '' true "GITHUB_STEP_SUMMARY=$summary_file"
+expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=0'
+if ! grep -qxF 'API calls: github-token=1 not-modified=0 graphql=0' "$summary_file"; then
+  echo 'FAIL: expected the api-calls line in the step summary, got:'
+  cat "$summary_file"
+  failures=$((failures + 1))
+fi
+if [[ "$(tail -n1 "$log_file")" != '::notice title=api-calls::github-token=1 not-modified=0 graphql=0' ]]; then
+  echo 'FAIL: expected the api-calls notice as the last log line'
+  cat "$log_file"
+  failures=$((failures + 1))
+fi
+
+# Without the EXIT trap a failing run reports nothing; the exit status stays 1.
+echo 'case: a run whose status write fails three times still reports all three writes'
+printf '%s\n' 99 >"$fixtures/${calls_post_key}.fail-times"
+run_case 1 'success success' pass ''
+expect_log '::notice title=api-calls::github-token=3 not-modified=0 graphql=0'
+rm -f -- "$fixtures/${calls_post_key}.fail-times"
+
+# Without the 304 branch a not-modified answer counts as a charged request.
+echo 'case: a 304 answer counts as not-modified, not as a request'
+printf 'HTTP/2.0 304 Not Modified\r\n' >"$fixtures/${calls_post_key}.headers"
+run_case 0 'success success' pass ''
+expect_log '::notice title=api-calls::github-token=0 not-modified=1 graphql=0'
+rm -f -- "$fixtures/${calls_post_key}.headers"
+
+# Without the guarded summary write an unwritable summary fails the step.
+echo 'case: an unwritable step summary changes neither the exit status nor the notice'
+run_case 0 'success success' pass '' true "GITHUB_STEP_SUMMARY=$temporary_directory"
+expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=0'
+expect_no_log 'Is a directory'
+
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
   exit 1

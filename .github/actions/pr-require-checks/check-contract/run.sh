@@ -28,9 +28,12 @@ export ISSUE_REF_PATTERN DEFAULT_ISSUE_REF_PATTERN
 LINKAGE_MARKER='<!-- pr-contract:linkage -->'
 
 scratch="$(mktemp -d)"
-trap 'rm -rf -- "$scratch"' EXIT
+trap 'declare -F gh_api_calls_report >/dev/null && gh_api_calls_report; rm -rf -- "$scratch"' EXIT
 gh_stdout="$scratch/gh-stdout"
 gh_stderr="$scratch/gh-stderr"
+gh_headers="$scratch/gh-headers"
+# shellcheck source=../gh-api.sh
+source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 
 emit_output() {
   local name="$1" value="$2"
@@ -171,10 +174,6 @@ require_pattern pr-number "$PR_NUMBER" '^[0-9]+$' 'a positive integer'
 
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "${RATE_LIMIT_WAIT_SECONDS:-60}" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
-
-gh_headers="$scratch/gh-headers"
-# shellcheck source=../gh-api.sh
-source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 
 # Best-effort write: a refused or missing write surfaces as a ::notice:: and
 # never changes the exit code. The advisory comment and label are convenience,
