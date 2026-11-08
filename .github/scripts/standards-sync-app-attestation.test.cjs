@@ -303,7 +303,7 @@ test("an extra selected repository is an over-grant finding, not a failed attest
   );
 });
 
-// Issue #922: azure-iac, a trust root, must stay out of the App's reach.
+// azure-iac, a trust root, must stay out of the App's reach.
 test("an over-grant that reaches azure-iac fails the whole attestation", async () => {
   await assert.rejects(
     runAttestation({
