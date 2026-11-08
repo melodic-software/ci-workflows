@@ -17,10 +17,9 @@ inputs:
     default: 'true'
   # The kjanat/actionlint fork (ci-workflows#788): it accepts `$/` refs and
   # `concurrency.queue`, which rhysd/actionlint 1.7.12 rejects. Its version
-  # numbers overlap upstream's, so `sha256` is the trust anchor. That digest's
-  # SLSA provenance names release commit 08bb2c4f0d039744455b87aef1c647fb8b66d37b
-  # (`gh attestation verify --repo kjanat/actionlint --source-digest <commit>`);
-  # re-verify it on every bump.
+  # numbers overlap upstream's, so `sha256` is the trust anchor. Change
+  # `version`, `sha256` and the two `attestation-*` inputs together:
+  # pr-require-checks verifies the asset's SLSA provenance against them.
   version:
     description: Exact kjanat/actionlint release version to install.
     default: 1.17.0
@@ -29,6 +28,16 @@ inputs:
       SHA-256 of the linux_amd64 .tar.gz release asset for `version`. Change
       together with `version`.
     default: 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a
+  attestation-signer-workflow:
+    description: >-
+      Workflow expected to have signed the `sha256` asset's build attestation.
+      Read only by this repository's CI; the action itself ignores it.
+    default: kjanat/actionlint/.github/workflows/release.yml
+  attestation-source-digest:
+    description: >-
+      Source commit the `sha256` asset's build attestation must name. Read only
+      by this repository's CI; the action itself ignores it.
+    default: 08bb2c4f0d039744455b87aef1c647fb8b66d37b
   shellcheck-version:
     description: >-
       Exact ShellCheck version used by actionlint for embedded bash/sh `run:`

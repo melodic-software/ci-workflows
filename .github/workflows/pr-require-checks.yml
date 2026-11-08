@@ -87,8 +87,9 @@ jobs:
         id: detect
         uses: $/.github/actions/detect-changes
         with:
-          # Every group includes `.github/**`, so any workflow, action, or
-          # bundled script change re-runs every scoped lane.
+          # Every lane group includes `.github/**`, so any workflow, action, or
+          # bundled script change re-runs every scoped lane. `actionlint-pin`
+          # gates one step, not a lane.
           filters: |
             powershell:
               .github/**
@@ -136,6 +137,10 @@ jobs:
             actionlint:
               .github/**
               fixtures/composite-action/**
+            actionlint-pin:
+              .github/actions/actionlint/action.yml
+              .github/scripts/verify-actionlint-attestation.sh
+              .github/scripts/verify-actionlint-attestation.test.sh
             workflow-naming:
               .github/**
               fixtures/workflow-naming/**
@@ -334,6 +339,17 @@ jobs:
           persist-credentials: false
       - name: Lint workflows
         uses: $/.github/actions/actionlint
+      - name: Verify the actionlint pin's build attestation
+        # Fails open like the lane gates, so a broken detection still verifies.
+        if: ${{ fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint-pin'] != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/verify-actionlint-attestation.sh
+      - name: Prove a tampered source digest fails attestation
+        if: ${{ fromJSON(needs.detect-changes.outputs.results || '{}')['actionlint-pin'] != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/verify-actionlint-attestation.test.sh
       - name: Prove embedded scripts are checked by ShellCheck
         run: |
           set -euo pipefail
