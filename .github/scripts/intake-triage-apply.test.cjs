@@ -859,6 +859,8 @@ test("compose writes a prompt naming the issue, the fetched files, the allowed l
     ISSUE_FILE: "/w/.intake-triage-x/issue.json",
     OPEN_ISSUES_FILE: "/w/.intake-triage-x/open-issues.json",
     DUPLICATE_LIMIT: "200",
+    MERGED_PULLS_FILE: "/w/.intake-triage-x/merged-pulls.json",
+    MERGED_LIMIT: "100",
   });
   const prompt = fs.readFileSync(outputs["prompt-file"], "utf8");
   assert.match(prompt, /^REPO: o\/r\nISSUE NUMBER: 7\n/u);
@@ -867,6 +869,10 @@ test("compose writes a prompt naming the issue, the fetched files, the allowed l
     prompt,
     /read \/w\/\.intake-triage-x\/open-issues\.json: .*\n\s*200 of/u,
   );
+  assert.match(
+    prompt,
+    /read \/w\/\.intake-triage-x\/merged-pulls\.json:\n.* up to 100 recently merged pull\n\s*requests/u,
+  );
   assert.match(prompt, /^- priority: high$/mu);
   assert.match(prompt, /Prefer the docs label for typos\./u);
   // The model has no gh: the prompt never tells it to run one.
@@ -874,7 +880,7 @@ test("compose writes a prompt naming the issue, the fetched files, the allowed l
   assert.equal(outputs["allowed-tools"], undefined);
 });
 
-test("the fetch step writes the issue, its comments and a bounded duplicate list inside the checkout", async () => {
+test("the fetch step writes the issue, its comments and bounded duplicate and merged pull request lists inside the checkout", async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "intake-fetch-"));
   try {
     const page = (start, count) =>
@@ -882,6 +888,17 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
         number: start - i,
         title: `issue ${start - i}`,
         ...((start - i) % 10 === 0 && { pull_request: {} }),
+      }));
+    // 100 closed items: a quarter issues, a quarter unmerged pull requests,
+    // half merged pull requests, a higher number merged later.
+    const mergedAt = (n) =>
+      `2026-11-01T${String(Math.floor(n / 60) % 24).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}:00Z`;
+    const closedPage = (start) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        number: start - i,
+        title: `closed ${start - i}`,
+        ...(i % 4 === 1 && { pull_request: { merged_at: null } }),
+        ...(i % 4 >= 2 && { pull_request: { merged_at: mergedAt(start - i) } }),
       }));
     const github = {
       paginate: Object.assign(
@@ -894,7 +911,14 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
           { user: { login: "carol", type: "User", id: 102 }, body: null },
         ],
         {
-          iterator: async function* () {
+          iterator: async function* (_route, { state }) {
+            if (state === "closed") {
+              // 50 merged per page, so the 100 cap ends the read after two
+              // pages. The older merges come first, as an update order can.
+              yield { data: closedPage(900) };
+              yield { data: closedPage(1000) };
+              throw new Error("read past the merged bound");
+            }
             yield { data: page(400, 100) };
             yield { data: page(300, 100) };
             yield { data: page(200, 100) };
@@ -963,6 +987,22 @@ test("the fetch step writes the issue, its comments and a bounded duplicate list
     assert.equal(outputs["duplicate-limit"], "200");
     assert.ok(open.every((o) => o.number % 10 !== 0));
     assert.deepEqual(Object.keys(open[0]), ["number", "title"]);
+    const merged = JSON.parse(
+      fs.readFileSync(outputs["merged-pulls-file"], "utf8"),
+    );
+    assert.equal(path.dirname(outputs["merged-pulls-file"]), dir);
+    assert.equal(outputs["merged-limit"], "100");
+    assert.equal(merged.length, 100);
+    // Pages 1000..901 and 900..801 merge 998, 997, 994, ... 802, 801.
+    assert.deepEqual(merged[0], {
+      number: 998,
+      title: "closed 998",
+      merged_at: "2026-11-01T16:38:00Z",
+    });
+    assert.equal(merged[1].number, 997);
+    assert.equal(merged[49].number, 901);
+    assert.equal(merged[50].number, 898);
+    assert.equal(merged[99].number, 801);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }
