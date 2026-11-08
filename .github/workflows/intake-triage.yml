@@ -118,11 +118,16 @@ name: intake-triage
 #     `needs-reporter-info` or `area: security` label. Otherwise it adds
 #     `floor-label` if missing, so the outcome does not depend on whether
 #     the floor labeler ran first.
-#   - `priority:` is exclusive: the issue keeps at most one. A priority whose
-#     last labeled event came from a person in allowed-author-ids stands and
-#     the pick is dropped; any other priority on the issue is removed for
-#     the pick. Two picks apply neither. These and the floor are the only
-#     labels the lane removes.
+#   - A `priority:` pick sets the org Priority issue field
+#     (`priority-field-id`), read back after the write; the issue's field
+#     value is read first and a `priority:` label only on an issue the field
+#     does not yet carry. A field the job token cannot read or write falls
+#     back to the label.
+#   - `priority:` is exclusive: the issue keeps at most one. A field value or
+#     label last set by a person in allowed-author-ids stands and the pick
+#     is dropped; any other priority on the issue is replaced by the pick.
+#     Two picks apply neither. These and the floor are the only labels the
+#     lane removes.
 #   - Any permission denial, a max-turns stop, unusable output, a
 #     credential-like comment or `needs_human: true` escalates: the run's
 #     labels and text are dropped, and only the escalation label and a fixed
@@ -203,6 +208,14 @@ on:
           denial, or stops at max turns. Must exist in the repository.
         type: string
         default: needs-human
+      priority-field-id:
+        description: >-
+          Database id of the organization's single-select Priority issue
+          field. The lane sets its option from the `priority:` pick and reads
+          it before any `priority:` label; its option names are the label
+          values. Empty keeps priority on labels.
+        type: string
+        default: "49622037"
       floor-label:
         description: >-
           Triage floor label the lane removes once a usable triage has set
@@ -783,6 +796,7 @@ jobs:
           ALLOWED_LABELS: ${{ inputs.allowed-labels }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
+          PRIORITY_FIELD_ID: ${{ inputs.priority-field-id }}
           BASE_ARGS: ${{ inputs.claude-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -895,7 +909,8 @@ jobs:
               return;
             }
             const requested = [...new Set(env.ALLOWED_LABELS.split("\n").map((l) => l.trim()).filter(Boolean))];
-            const missing = requested.filter((label) => !live.has(label));
+            const offered = (label) => live.has(label) || (Boolean(env.PRIORITY_FIELD_ID) && label.startsWith("priority: "));
+            const missing = requested.filter((label) => !offered(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
             const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
@@ -903,7 +918,7 @@ jobs:
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
             }
-            const allowed = requested.filter((label) => live.has(label) && !label.includes("'") && !admission(label));
+            const allowed = requested.filter((label) => offered(label) && !label.includes("'") && !admission(label));
             // addLabels would create a missing floor label, so a missing one
             // turns floor handling off.
             let floor = env.FLOOR_LABEL || "";
@@ -1608,6 +1623,7 @@ jobs:
           ALLOWED_LABELS: ${{ inputs.allowed-labels }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
+          PRIORITY_FIELD_ID: ${{ inputs.priority-field-id }}
           BASE_ARGS: ${{ inputs.claude-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -1720,7 +1736,8 @@ jobs:
               return;
             }
             const requested = [...new Set(env.ALLOWED_LABELS.split("\n").map((l) => l.trim()).filter(Boolean))];
-            const missing = requested.filter((label) => !live.has(label));
+            const offered = (label) => live.has(label) || (Boolean(env.PRIORITY_FIELD_ID) && label.startsWith("priority: "));
+            const missing = requested.filter((label) => !offered(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
             const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
@@ -1728,7 +1745,7 @@ jobs:
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
             }
-            const allowed = requested.filter((label) => live.has(label) && !label.includes("'") && !admission(label));
+            const allowed = requested.filter((label) => offered(label) && !label.includes("'") && !admission(label));
             // addLabels would create a missing floor label, so a missing one
             // turns floor handling off.
             let floor = env.FLOOR_LABEL || "";
@@ -2400,6 +2417,7 @@ jobs:
           ALLOWED_LABELS: ${{ inputs.allowed-labels }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
+          PRIORITY_FIELD_ID: ${{ inputs.priority-field-id }}
           BASE_ARGS: ${{ inputs.claude-args }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -2512,7 +2530,8 @@ jobs:
               return;
             }
             const requested = [...new Set(env.ALLOWED_LABELS.split("\n").map((l) => l.trim()).filter(Boolean))];
-            const missing = requested.filter((label) => !live.has(label));
+            const offered = (label) => live.has(label) || (Boolean(env.PRIORITY_FIELD_ID) && label.startsWith("priority: "));
+            const missing = requested.filter((label) => !offered(label));
             if (missing.length > 0) core.warning(`Allowed labels missing from the repository, skipped: ${missing.join(", ")}`);
             // Admission labels are a person's call, whatever the caller lists.
             const admission = (label) => label === "agent-ready" || label === "provenance: untrusted" || label.startsWith("work-class:");
@@ -2520,7 +2539,7 @@ jobs:
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' is an admission label.`);
               return;
             }
-            const allowed = requested.filter((label) => live.has(label) && !label.includes("'") && !admission(label));
+            const allowed = requested.filter((label) => offered(label) && !label.includes("'") && !admission(label));
             // addLabels would create a missing floor label, so a missing one
             // turns floor handling off.
             let floor = env.FLOOR_LABEL || "";
@@ -2862,6 +2881,7 @@ jobs:
           ALLOWED_LABELS: ${{ inputs.allowed-labels }}
           ESCALATION_LABEL: ${{ inputs.escalation-label }}
           FLOOR_LABEL: ${{ inputs.floor-label }}
+          PRIORITY_FIELD_ID: ${{ inputs.priority-field-id }}
           AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           SUB_RESULT: ${{ needs.subscription.result }}
           KEY_SUBTYPE: ${{ needs.claude.outputs.result-subtype }}
@@ -2976,11 +2996,12 @@ jobs:
               core.setFailed(`Escalation label '${env.ESCALATION_LABEL}' does not exist in this repository or is an admission label.`);
               return;
             }
+            const offered = (label) => live.has(label) || (Boolean(env.PRIORITY_FIELD_ID) && label.startsWith("priority: "));
             const allowed = new Set(
               (env.ALLOWED_LABELS ?? "")
                 .split("\n")
                 .map((label) => label.trim())
-                .filter((label) => label && live.has(label) && !label.includes("'") && !admission(label)),
+                .filter((label) => label && offered(label) && !label.includes("'") && !admission(label)),
             );
             let floor = env.FLOOR_LABEL || "";
             if (floor && admission(floor)) {
@@ -3093,6 +3114,50 @@ jobs:
             const replaced = [];
             const exclusive = [];
             let failure;
+            // The Priority issue field is read first; a `priority:` label
+            // still carries priority on an issue not yet backfilled. A failed
+            // read writes no field, so the pick falls back to its label.
+            const PRIORITY_FIELD = /^[1-9][0-9]{0,9}$/u.test(env.PRIORITY_FIELD_ID ?? "") ? Number(env.PRIORITY_FIELD_ID) : 0;
+            const FIELD_API = { "X-GitHub-Api-Version": "2026-03-10" };
+            const FIELD_VALUES = "/repos/{owner}/{repo}/issues/{issue_number}/issue-field-values";
+            const priorityOf = (rows) => (Array.isArray(rows) ? rows : []).find((row) => row?.issue_field_id === PRIORITY_FIELD)?.single_select_option?.name ?? "";
+            let fieldReadable = false;
+            let priorityOption = "";
+            if (PRIORITY_FIELD && priorities.length === 1) {
+              try {
+                const { data } = await github.request(`GET ${FIELD_VALUES}`, { ...context.repo, issue_number, per_page: 100, headers: FIELD_API });
+                priorityOption = priorityOf(data);
+                fieldReadable = true;
+              } catch (error) {
+                core.warning(`The Priority field could not be read, so priority stays on labels: ${error.message}`);
+              }
+            }
+            // Whether a listed person last set the field. An unreadable
+            // history counts as a person's, so the lane never overwrites one.
+            const fieldSetByPerson = async () => {
+              try {
+                const answer = await github.graphql(
+                  `query($owner: String!, $name: String!, $number: Int!) {
+                    repository(owner: $owner, name: $name) { issue(number: $number) {
+                      timelineItems(last: 100, itemTypes: [ISSUE_FIELD_ADDED_EVENT, ISSUE_FIELD_CHANGED_EVENT]) { nodes {
+                        ... on IssueFieldAddedEvent { actor { ...who } issueField { ...field } }
+                        ... on IssueFieldChangedEvent { actor { ...who } issueField { ...field } }
+                      } }
+                    } }
+                  }
+                  fragment who on Actor { __typename ... on User { databaseId } }
+                  fragment field on IssueFields { ... on IssueFieldSingleSelect { fullDatabaseId } }`,
+                  { owner: context.repo.owner, name: context.repo.repo, number: issue_number },
+                );
+                const last = (answer?.repository?.issue?.timelineItems?.nodes ?? []).filter((node) => String(node?.issueField?.fullDatabaseId) === String(PRIORITY_FIELD)).at(-1);
+                return last?.actor?.__typename === "User" && people.has(String(last.actor.databaseId));
+              } catch (error) {
+                core.warning(`The Priority field's history could not be read, so its value stands: ${error.message}`);
+                return true;
+              }
+            };
+            let priorityPick = "";
+            let priorityLost = false;
             try {
               const body = [MARKER + "\n" + proposal, comment, "<sub>Automated triage. A maintainer reviews it.</sub>"].filter(Boolean).join("\n\n");
               const earlier = (
@@ -3109,9 +3174,19 @@ jobs:
                   exclusive.push(`${picks.join(" and ")} picked, neither applied`);
                   continue;
                 }
+                if (priorityOption) {
+                  const current = `priority: ${priorityOption}`;
+                  if (current === picks[0]) exclusive.push(`kept ${current}`);
+                  else if (await fieldSetByPerson()) exclusive.push(`kept ${current}, set by a listed person, over ${picks[0]}`);
+                  else {
+                    priorityPick = picks[0];
+                    replaced.push(...held.filter((label) => label.startsWith(prefix)));
+                  }
+                  continue;
+                }
                 const on = held.filter((label) => label.startsWith(prefix));
                 if (on.length === 0) {
-                  labels.add(picks[0]);
+                  priorityPick = picks[0];
                   continue;
                 }
                 if (!setters) {
@@ -3127,8 +3202,35 @@ jobs:
                 };
                 const keep = on.filter(byPerson).sort((a, b) => setters.get(b).at - setters.get(a).at)[0] ?? picks[0];
                 if (on.includes(keep)) exclusive.push(`kept ${keep}${keep === picks[0] ? "" : `, set by a listed person, over ${picks[0]}`}`);
-                else labels.add(keep);
+                else priorityPick = keep;
                 replaced.push(...on.filter((label) => label !== keep));
+              }
+              // The field takes the pick; a field the lane cannot write falls
+              // back to the label, so a repository the field does not reach
+              // keeps working.
+              if (priorityPick) {
+                const value = priorityPick.slice("priority: ".length);
+                let written = "";
+                if (fieldReadable) {
+                  try {
+                    const { data } = await github.request(`POST ${FIELD_VALUES}`, {
+                      ...context.repo,
+                      issue_number,
+                      issue_field_values: [{ field_id: PRIORITY_FIELD, value }],
+                      headers: FIELD_API,
+                    });
+                    written = priorityOf(data);
+                    if (written !== value) core.warning(`GitHub kept Priority '${written}', not '${value}'.`);
+                  } catch (error) {
+                    core.warning(`The Priority field was not set: ${error.message}`);
+                  }
+                }
+                if (written === value) exclusive.push(`field set to ${value}`);
+                else if (live.has(priorityPick)) labels.add(priorityPick);
+                else {
+                  priorityLost = true;
+                  core.warning(`Neither the Priority field nor label '${priorityPick}' could carry the pick.`);
+                }
               }
               if (labels.size > 0) {
                 await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [...labels] });
@@ -3157,7 +3259,7 @@ jobs:
             const personNeeded = [...labels].some(
               (label) => label.startsWith("status:") || ["needs-owner-decision", "needs-reporter-info", "area: security"].includes(label),
             );
-            const routed = escalated || (priorities.length === 1 && !personNeeded);
+            const routed = escalated || (priorities.length === 1 && !priorityLost && !personNeeded);
             const existingType = typeof issue.type?.name === "string" ? issue.type.name : "";
             let typeSet = !failure && usable && existingType ? existingType : "";
             let floorCleared = false;

@@ -144,8 +144,15 @@ async function runApply(
     issueLabels = [],
     events = [],
     authorIds = "",
+    priorityField = "",
+    fieldOption = "",
+    fieldReadFails = false,
+    fieldWriteFails = false,
+    fieldKeeps,
+    fieldEvents = [],
   } = {},
 ) {
+  const fieldWrites = [];
   const labels = [];
   const removed = [];
   const typeCalls = [];
@@ -170,7 +177,31 @@ async function runApply(
       if (method === github.rest.issues.listEvents) return events;
       return [];
     },
+    request: async (route, request) => {
+      record(request);
+      const rows = (option) =>
+        option
+          ? [
+              {
+                issue_field_id: Number(priorityField),
+                single_select_option: { name: option },
+              },
+            ]
+          : [];
+      if (route.startsWith("GET")) {
+        if (fieldReadFails) throw new Error("field read failed");
+        return { data: rows(fieldOption) };
+      }
+      fieldWrites.push(request.issue_field_values);
+      if (fieldWriteFails) throw new Error("field write failed");
+      return { data: rows(fieldKeeps ?? request.issue_field_values[0].value) };
+    },
     graphql: async (query, variables) => {
+      if (query.includes("timelineItems")) {
+        return {
+          repository: { issue: { timelineItems: { nodes: fieldEvents } } },
+        };
+      }
       if (query.startsWith("query")) {
         return {
           repository: {
@@ -242,6 +273,7 @@ async function runApply(
       ESCALATION_LABEL: escalationLabel,
       FLOOR_LABEL: floorLabel,
       AUTHOR_IDS: authorIds,
+      PRIORITY_FIELD_ID: priorityField,
       SUB_RESULT: "skipped",
       FB_RESULT: "skipped",
       ...legEnv("KEY"),
@@ -252,6 +284,7 @@ async function runApply(
     github,
   );
   return {
+    fieldWrites,
     labels,
     removed,
     typeCalls,
@@ -1402,6 +1435,133 @@ test("after a subscription handoff the triage applies once, from the fallback le
   assert.equal(run.comments.length, 1);
   assert.match(run.comments[0], /From the fallback leg\./u);
   assert.match(run.summary, /- Leg: fallback/u);
+});
+
+const FIELD = "49622037";
+const fieldSetBy = (typename, databaseId) => [
+  {
+    actor: { __typename: typename, databaseId },
+    issueField: { fullDatabaseId: FIELD },
+  },
+];
+
+test("a priority pick sets the field and no label, and the floor clears", async () => {
+  const { labels, fieldWrites, removed, warnings } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+  });
+  assert.deepEqual(fieldWrites, [[{ field_id: 49622037, value: "high" }]]);
+  assert.deepEqual(labels, []);
+  assert.deepEqual(removed, [FLOOR_LABEL]);
+  assert.deepEqual(warnings, []);
+});
+
+test("a refused field write falls back to the label", async () => {
+  const { labels, fieldWrites, warnings } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldWriteFails: true,
+  });
+  assert.equal(fieldWrites.length, 1);
+  assert.deepEqual(labels, ["priority: high"]);
+  assert.ok(warnings.some((w) => /Priority field was not set/u.test(w)));
+});
+
+test("a field GitHub did not keep falls back to the label", async () => {
+  const { labels, warnings } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldKeeps: "low",
+  });
+  assert.deepEqual(labels, ["priority: high"]);
+  assert.ok(warnings.some((w) => /kept Priority 'low'/u.test(w)));
+});
+
+test("an unreadable field writes no field and falls back to the label", async () => {
+  const { labels, fieldWrites, warnings } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldReadFails: true,
+  });
+  assert.deepEqual(fieldWrites, []);
+  assert.deepEqual(labels, ["priority: high"]);
+  assert.equal(warnings.length, 1);
+});
+
+test("a field value matching the pick is left alone", async () => {
+  const { labels, fieldWrites } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldOption: "high",
+  });
+  assert.deepEqual(fieldWrites, []);
+  assert.deepEqual(labels, []);
+});
+
+test("a field a listed person set stands over the pick", async () => {
+  const { labels, fieldWrites } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldOption: "low",
+    fieldEvents: fieldSetBy("User", 42),
+    authorIds: "42",
+  });
+  assert.deepEqual(fieldWrites, []);
+  assert.deepEqual(labels, []);
+});
+
+test("a field no listed person set is replaced, and a priority label beside it goes", async () => {
+  const { fieldWrites, removed } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldOption: "low",
+    fieldEvents: fieldSetBy("Bot", 7),
+    authorIds: "42",
+    issueLabels: ["priority: low"],
+  });
+  assert.deepEqual(fieldWrites, [[{ field_id: 49622037, value: "high" }]]);
+  assert.ok(removed.includes("priority: low"));
+});
+
+test("with no field value, a priority label a listed person set stands and no field is written", async () => {
+  const { fieldWrites, labels } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    issueLabels: ["priority: low"],
+    events: [
+      {
+        event: "labeled",
+        label: { name: "priority: low" },
+        actor: { type: "User", id: 42 },
+      },
+    ],
+    authorIds: "42",
+  });
+  assert.deepEqual(fieldWrites, []);
+  assert.deepEqual(labels, []);
+});
+
+test("a pick neither the field nor a label can carry keeps the floor", async () => {
+  const { removed, labels, warnings } = await apply(SUCCESS, {
+    output: triaged(),
+    priorityField: FIELD,
+    fieldWriteFails: true,
+    liveLabels: [ESCALATION_LABEL, FLOOR_LABEL],
+  });
+  assert.deepEqual(labels, [FLOOR_LABEL]);
+  assert.deepEqual(removed, []);
+  assert.ok(warnings.some((w) => /Neither the Priority field/u.test(w)));
+});
+
+test("compose offers a priority the repository has no label for when the field is set", async () => {
+  const { outputs } = await compose(async () => ({ repository: null }), {
+    ALLOWED_LABELS: "priority: high\npriority: low\n",
+    PRIORITY_FIELD_ID: FIELD,
+  });
+  assert.deepEqual(JSON.parse(outputs.allowed), [
+    "priority: high",
+    "priority: low",
+  ]);
 });
 
 test("compose never offers admission labels to the model", async () => {

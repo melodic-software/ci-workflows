@@ -1064,7 +1064,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   silently drop out of the triage queue for lack of a label. The guard is a
   label-**set** membership check (any label starting with `label-prefix`), not
   a title/body content match, so an explicit priority label at creation always
-  wins. It reads the issue's live labels, not the event payload, and also
+  wins. It reads the org Priority issue field first (`priority-field-id`, empty
+  turns this off) and skips an issue with a value there. It reads the issue's
+  live labels, not the event payload, and also
   skips an issue carrying `human-label` (default `needs-human`; set it to the
   lane's `escalation-label`), so a run that lands after the intake-triage
   lane does not re-add the floor it removed. A reopened issue that still
@@ -1401,8 +1403,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   handling off) if the run
   escalated or picked exactly one `priority:` label and no `status:`,
   `needs-owner-decision`, `needs-reporter-info` or `area: security` label.
-  `priority:` is exclusive: a priority already on
-  the issue whose last labeled event came from a person in
+  A `priority:` pick sets the org Priority issue field (`priority-field-id`,
+  empty keeps labels), reading the field first and a `priority:` label only
+  when the field has no value; a field the job token cannot read or write
+  falls back to the label.
+  `priority:` is exclusive: a field value or label last set by a person in
   `allowed-author-ids` stands over the pick, any other is replaced by it,
   and two picks apply neither. An escalated usable triage also posts the run's
   `Proposed work class:` in its note, which only
