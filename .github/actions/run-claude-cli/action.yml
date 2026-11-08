@@ -31,10 +31,13 @@ description: >-
   lane whose Bash is limited to fixed read-only rules may stay in one job.
   Input contract, in this order: the caller runs
   `apply-claude-managed-settings` while sudo still works, then removes sudo and
-  docker access, installs bubblewrap and lets it create user namespaces
-  (runner isolation), and runs no head code in the job before this action.
-  This action fails closed when the settings are missing or unpinned, sudo
-  works, the docker socket is writable, `bwrap --unshare-pid` fails, or the
+  docker access, installs bubblewrap and socat and lets bubblewrap create
+  user namespaces (runner isolation), and runs no head code in the job before
+  this action. Unless `sandbox` is `false`, the CLI runs Bash in Claude
+  Code's sandbox, with no unsandboxed retry and network only to github.com
+  and api.github.com. This action fails closed when the settings are missing
+  or unpinned, sudo works, the docker socket is writable, `bwrap
+  --unshare-pid` fails, socat does not run (with the sandbox on), or the
   step environment sets NODE_OPTIONS, LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV,
   NODE_EXTRA_CA_CERTS, NODE_TLS_REJECT_UNAUTHORIZED or a `*_PROXY` variable
   other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
@@ -138,6 +141,17 @@ inputs:
       run commands.
     required: false
     default: ""
+  sandbox:
+    description: >-
+      `true` (the default) passes `--settings` turning on Claude Code's
+      sandbox: Bash runs under bubblewrap, a command that fails there is not
+      retried unsandboxed, and its network reaches only github.com and
+      api.github.com. `false` passes no settings, so Bash runs unsandboxed as
+      the runner user; set it only when the lane's Bash needs other hosts,
+      for example a nested `claude` or `npm ci`. Any other value fails the
+      step.
+    required: false
+    default: "true"
   plugin-dirs:
     description: >-
       Plugin directories, one per line, each passed to `--plugin-dir` and
@@ -296,6 +310,7 @@ runs:
       env:
         LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json
         LANE_LOOPBACK_BASE_URL: ${{ inputs.loopback-base-url }}
+        LANE_SANDBOX: ${{ inputs.sandbox }}
       run: node "$GITHUB_ACTION_PATH/lane.cjs" verify-isolation
 
     - name: Prepare the work directory
@@ -332,6 +347,7 @@ runs:
         LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
         LANE_TOOLS: ${{ inputs.tools }}
+        LANE_SANDBOX: ${{ inputs.sandbox }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
         LANE_ADD_DIRS: ${{ inputs.add-dirs }}
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}

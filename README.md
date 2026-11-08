@@ -722,11 +722,12 @@ consumer to audit it.
   and `--settings`" ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
   Callers run `apply-claude-managed-settings`
   while sudo still works, then runner isolation (sudo and docker removed,
-  bubblewrap installed, and on Ubuntu 24.04
+  bubblewrap and socat installed, and on Ubuntu 24.04
   `kernel.apparmor_restrict_unprivileged_userns=0`), then the head checkout,
   and run no head code before the action. It fails closed when the settings
   are missing or unpinned, sudo works, the docker socket is writable,
-  `bwrap --unshare-pid` fails, or the step environment sets `NODE_OPTIONS`,
+  `bwrap --unshare-pid` fails, socat does not run while `sandbox` is on, or
+  the step environment sets `NODE_OPTIONS`,
   `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `NODE_EXTRA_CA_CERTS`,
   `NODE_TLS_REJECT_UNAUTHORIZED` or a `*_PROXY` variable other than
   `NO_PROXY`. The CLI installs from the public npm registry, outside any
@@ -754,6 +755,18 @@ consumer to audit it.
   files under `--restricted`; `add-dirs` passes more `--add-dir` directories.
   Each entry must resolve, with no `..` part, to an existing directory inside
   `GITHUB_WORKSPACE`. Uploading the log is the caller's.
+
+  **Sandbox.** `sandbox` (`true` by default) passes the CLI
+  `--settings '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false,"network":{"allowedDomains":["github.com","api.github.com"]}}}'`:
+  Bash runs under bubblewrap, a command that fails there is not retried
+  unsandboxed, and its network reaches only GitHub through the sandbox's
+  proxy, which uses socat
+  ([sandboxing](https://code.claude.com/docs/en/sandboxing)). A caller
+  whose Bash needs other hosts, such as a nested `claude` or `npm ci`, sets
+  `sandbox: false`, which passes no settings and skips the socat check, so
+  that Bash runs unsandboxed as the runner user. The settings do not set
+  `failIfUnavailable`, so a sandbox that cannot start leaves Bash
+  unsandboxed rather than failing the leg.
 
   **Loopback key proxy.** By default the managed settings must pin
   `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that

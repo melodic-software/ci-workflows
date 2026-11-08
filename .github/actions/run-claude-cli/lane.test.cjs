@@ -23,6 +23,7 @@ const {
   LaneError,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
+  SANDBOX_SETTINGS,
   SIGNING_KEY_FINGERPRINT,
   cliArgs,
   fileClean,
@@ -1473,6 +1474,48 @@ test("an empty effort leaves --effort out; an invalid one still fails", () => {
   );
 });
 
+test("the sandbox settings pass by default; sandbox false omits them; other values fail", () => {
+  const settings = (args) =>
+    args.flatMap((arg, i) => (arg === "--settings" ? [args[i + 1]] : []));
+  const expected = [
+    JSON.stringify({
+      sandbox: {
+        enabled: true,
+        allowUnsandboxedCommands: false,
+        network: { allowedDomains: ["github.com", "api.github.com"] },
+      },
+    }),
+  ];
+  for (const value of [undefined, "", "true", " true "]) {
+    const config = readConfig(configEnv({ LANE_SANDBOX: value }));
+    assert.equal(config.sandbox, true, String(value));
+    assert.deepEqual(settings(cliArgs(config)), expected, String(value));
+  }
+  assert.equal(SANDBOX_SETTINGS, expected[0]);
+  const off = readConfig(configEnv({ LANE_SANDBOX: "false" }));
+  assert.equal(off.sandbox, false);
+  assert.equal(cliArgs(off).includes("--settings"), false);
+  for (const value of ["no", "False", "0"]) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_SANDBOX: value })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message ===
+          `sandbox ${JSON.stringify(value)} is not true, false or empty`,
+      value,
+    );
+  }
+});
+
+test("the sandbox input defaults to true and reaches both the isolation and run steps", () => {
+  const cli = readAction("run-claude-cli");
+  assert.equal(cli.inputs.sandbox.default, "true");
+  for (const id of ["isolation", "run"]) {
+    const step = cli.runs.steps.find((s) => s.id === id);
+    assert.equal(step.env.LANE_SANDBOX, "${{ inputs.sandbox }}", id);
+  }
+});
+
 test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, resolved in the workspace", () => {
   const workspace = path.join(root, "workspace");
   for (const dir of ["plugins/review", "plugins/tidy", "docs"]) {
@@ -2338,6 +2381,7 @@ test("verifyIsolation probes a PID namespace and refuses an unsafe environment",
   );
   assert.deepEqual(probes, [
     ["--unshare-pid", "--dev-bind", "/", "/", "true"],
+    ["-V"],
   ]);
   assert.throws(
     () =>
@@ -2374,6 +2418,59 @@ test("verifyIsolation probes a PID namespace and refuses an unsafe environment",
         spawn: answer({ status: 0 }),
       }),
     /sets LD_PRELOAD/u,
+  );
+});
+
+test("verifyIsolation fails closed on a missing socat unless the sandbox is off", () => {
+  const file = path.join(root, "socat-settings.json");
+  fs.writeFileSync(file, JSON.stringify(PINNED));
+  const options = {
+    managedSettings: file,
+    dockerSocket: path.join(root, "absent-socat.sock"),
+    stat: () => ({ uid: 0, mode: 0o100644 }),
+  };
+  const missing = Object.assign(new Error("spawnSync socat ENOENT"), {
+    code: "ENOENT",
+  });
+  // sudo fails and bubblewrap answers; socat answers as given.
+  const answer = (socat) => (command) => {
+    if (command === "sudo") return { status: 1 };
+    if (command === "socat") return socat;
+    return { status: 0 };
+  };
+  for (const env of [{}, { LANE_SANDBOX: "true" }]) {
+    assert.throws(
+      () =>
+        verifyIsolation({
+          ...options,
+          env,
+          spawn: answer({ status: null, error: missing }),
+        }),
+      /: socat is missing or does not run \(ENOENT\): Claude Code's sandbox needs it for its network proxy.*set the sandbox input to false$/u,
+    );
+    assert.throws(
+      () => verifyIsolation({ ...options, env, spawn: answer({ status: 1 }) }),
+      /: socat is missing or does not run \(exit 1\)/u,
+    );
+    assert.doesNotThrow(() =>
+      verifyIsolation({ ...options, env, spawn: answer({ status: 0 }) }),
+    );
+  }
+  assert.doesNotThrow(() =>
+    verifyIsolation({
+      ...options,
+      env: { LANE_SANDBOX: "false" },
+      spawn: answer({ status: null, error: missing }),
+    }),
+  );
+  assert.throws(
+    () =>
+      verifyIsolation({
+        ...options,
+        env: { LANE_SANDBOX: "maybe" },
+        spawn: answer({ status: 0 }),
+      }),
+    /: sandbox "maybe" is not true, false or empty$/u,
   );
 });
 
