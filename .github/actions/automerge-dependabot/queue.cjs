@@ -4,7 +4,8 @@
 // gate.cjs's gate and whose head has a green ci-status. A GITHUB_TOKEN arm
 // never enters a merge queue, so the arm uses the melodic-release App token
 // (`app`); every read uses the job token (`github`), since the App holds no
-// checks permission. Out-of-tier pull requests are left alone and noted.
+// checks permission. Out-of-tier pull requests are left alone and noted, and
+// disarmed if an earlier head was armed.
 // Nothing here throws: one pull request's failure is a warning and the next
 // one is still tried, so this job never blocks anything.
 
@@ -63,19 +64,31 @@ function warnArmFailure(core, pr, error) {
 
 // Returns what happened to one pull request: queued, skipped or failed.
 async function queueOne({ github, app, repo, core, pr, inputs, appSlug }) {
+  const disarm = () => app.graphql(DISARM, { id: pr.node_id });
   const commits = await github.paginate(github.rest.pulls.listCommits, {
     ...repo,
     pull_number: pr.number,
     per_page: 100,
   });
   const updates = parseCommitMetadata(commits.at(-1)?.commit?.message, pr.head.ref);
-  if (updates === null) {
-    core.notice(`#${pr.number} left alone: its head commit carries no readable Dependabot metadata.`);
-    return "skipped";
-  }
-  const reason = await gateFailure({ pr, updates, listCommits: async () => commits, inputs });
+  const reason =
+    updates === null
+      ? "its head commit carries no readable Dependabot metadata"
+      : await gateFailure({ pr, updates, listCommits: async () => commits, inputs });
   if (reason) {
     core.notice(`#${pr.number} left alone: ${reason}.`);
+    // GitHub keeps auto-merge on when a user with write access pushes to
+    // the branch, so an arm made on an earlier head that passed the gate
+    // would otherwise merge this one.
+    if (pr.auto_merge) {
+      try {
+        await disarm();
+        core.notice(`Disarmed the auto-merge armed on an earlier head of #${pr.number}.`);
+      } catch (error) {
+        core.warning(`Could not disarm #${pr.number}, which fails the gate: ${error.message}`);
+        return "failed";
+      }
+    }
     return "skipped";
   }
   const ci = await latestCiStatus(github, repo, pr.head.sha);
@@ -97,7 +110,7 @@ async function queueOne({ github, app, repo, core, pr, inputs, appSlug }) {
   try {
     // An arm by another actor (a GITHUB_TOKEN arm never enqueues) is
     // replaced by the App's.
-    if (pr.auto_merge) await app.graphql(DISARM, { id: pr.node_id });
+    if (pr.auto_merge) await disarm();
     const variables = { id: pr.node_id, head: pr.head.sha };
     try {
       await app.graphql(ARM, variables);

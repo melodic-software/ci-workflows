@@ -11,7 +11,8 @@ name: pr-automerge-dependabot-queue
 # the head commit's Dependabot metadata, then a `ci-status` check run that
 # succeeded on the head, then enablePullRequestAutoMerge at that head with no
 # merge method (the queue sets it), which enqueues it once it is mergeable.
-# An out-of-tier pull request is left alone with a notice. Arming a pull
+# An out-of-tier pull request is left alone with a notice, and disarmed if an
+# earlier head was armed, since a push keeps auto-merge on. Arming a pull
 # request that changes a workflow file needs the App's workflows: write; a
 # refusal for its lack is a warning naming it, and the run moves on. No step
 # fails the job over one pull request.

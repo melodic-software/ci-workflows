@@ -1183,7 +1183,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   head. It then arms each passing PR with the melodic-release App token from
   the `plugin-release` environment, at the verified head and with no merge
   method, so the merge queue takes it. Out-of-tier PRs are left alone with a
-  notice. Arming a PR that changes a workflow file needs the App's
+  notice, and one armed on an earlier head is disarmed. Arming a PR that changes a workflow file needs the App's
   `workflows: write`; without it the run warns
   `melodic-release lacks workflows: write` and moves on. No failure fails the
   job, and it logs both tokens' `api-calls`.

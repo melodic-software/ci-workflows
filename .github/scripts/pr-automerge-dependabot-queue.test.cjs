@@ -348,6 +348,62 @@ test("a pull request whose head commit is not Dependabot's is left alone", async
   assert.match(notices[0], /is not a verified Dependabot commit/u);
 });
 
+test("an armed pull request whose new head fails the gate is disarmed, not armed", async () => {
+  const forged = {
+    ...dependabotCommit(GROUP_MESSAGE),
+    committer: { id: 12345 },
+  };
+  const { counts, appCalls } = await runWithFakes({
+    pulls: [
+      dependabotPull(7, {
+        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+      }),
+    ],
+    commits: { 7: [forged] },
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(
+    appCalls.map((call) => [call.mutation, call.variables.id]),
+    [["disablePullRequestAutoMerge", "PR_7"]],
+  );
+});
+
+test("an armed pull request without readable metadata is disarmed", async () => {
+  const { appCalls } = await runWithFakes({
+    pulls: [
+      dependabotPull(7, {
+        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+      }),
+    ],
+    commits: { 7: [dependabotCommit("build: bump x")] },
+  });
+  assert.deepEqual(
+    appCalls.map((call) => call.mutation),
+    ["disablePullRequestAutoMerge"],
+  );
+});
+
+test("a failed disarm of a gate-failing pull request warns and counts as failed", async () => {
+  const forged = {
+    ...dependabotCommit(GROUP_MESSAGE),
+    committer: { id: 12345 },
+  };
+  const { counts, warnings } = await runWithFakes({
+    pulls: [
+      dependabotPull(7, {
+        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+      }),
+    ],
+    commits: { 7: [forged] },
+    appErrors: { "PR_7:disablePullRequestAutoMerge": "boom" },
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 0, failed: 1 });
+  assert.match(
+    warnings[0],
+    /^Could not disarm #7, which fails the gate: boom$/u,
+  );
+});
+
 test("a head commit without readable metadata is left alone", async () => {
   const { appCalls, notices } = await runWithFakes({
     commits: { 7: [dependabotCommit("build: bump x")] },
