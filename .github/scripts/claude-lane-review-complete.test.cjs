@@ -757,8 +757,11 @@ const warnings = (messages) =>
   messages
     .filter((line) => line.startsWith("warning: "))
     .map((line) => line.slice("warning: ".length));
-const DEAD_SHELL =
-  "A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.";
+const SECCOMP =
+  "apply-seccomp: unshare(CLONE_NEWPID|CLONE_NEWNS) after userns: Operation not permitted";
+const deadShell = (line) =>
+  `A Bash call failed in the sandbox, so this review ran with no working shell; it did read its diff file. Sandbox error: ${line}`;
+const DEAD_SHELL = deadShell(BWRAP);
 const NO_DIFF_ACCESS =
   "The execution file shows no successful Read of the diff file and no successful gh pr diff.";
 
@@ -798,8 +801,38 @@ for (const lane of lanes) {
         ...clean,
         executionFile: executionFile(JSON.stringify(messages)),
       });
-      assert.match(outputs.verdict, /bwrap could not start/u);
+      assert.match(outputs.verdict, /the sandbox could not start/u);
+      assert.ok(outputs.verdict.endsWith(`sandbox error: ${BWRAP}`));
       assert.equal(outputs.findings, undefined);
+    }
+  });
+
+  test(`${lane.lane}: the sandbox error logged is the first apply-seccomp or bwrap line, trimmed and capped, with nothing else`, async () => {
+    const long = `bwrap: ${"x".repeat(400)}`;
+    for (const [content, line] of [
+      [`secret output\n  ${SECCOMP}  \n${BWRAP}\nmore output`, SECCOMP],
+      [
+        [
+          { type: "text", text: "noise" },
+          { type: "text", text: `${BWRAP}\ntail` },
+        ],
+        BWRAP,
+      ],
+      [long, long.slice(0, 300)],
+    ]) {
+      const { outputs, messages } = await verify(lane, {
+        ...clean,
+        executionFile: executionFile(
+          JSON.stringify([
+            toolUse("b1", "Bash", { command: "ls" }),
+            toolResult("b1", content, true),
+            toolUse("r1", "Read", { file_path: diffPath("pr") }),
+            toolResult("r1", "@@ -1 +1 @@", false),
+          ]),
+        ),
+      });
+      assert.equal(outputs.verdict, "complete");
+      assert.deepEqual(warnings(messages), [deadShell(line)]);
     }
   });
 
@@ -827,6 +860,11 @@ for (const lane of lanes) {
 
   test(`${lane.lane}: no failed Bash call naming bwrap means no blind review`, async () => {
     const quiet = [
+      // A sandbox name mid-line is not the sandbox's own error line.
+      [
+        toolUse("b1", "Bash", { command: "grep x" }),
+        toolResult("b1", `notes: ${BWRAP}`, true),
+      ],
       // A failure that does not name bwrap.
       [
         toolUse("b1", "Bash", { command: "gh pr diff 7" }),
@@ -852,7 +890,11 @@ for (const lane of lanes) {
         executionFile: executionFile(JSON.stringify(messages)),
       });
       assert.equal(outputs.verdict, "complete");
-      assert.ok(!warnings(logged).includes(DEAD_SHELL));
+      assert.ok(
+        !warnings(logged).some((line) =>
+          line.startsWith("A Bash call failed in the sandbox"),
+        ),
+      );
     }
   });
 

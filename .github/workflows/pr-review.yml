@@ -1275,7 +1275,7 @@ jobs:
             const summary =
               typeof output.summary === "string" ? output.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
             if (!summary) return incomplete("the review returned no summary");
-            // A shell that bwrap could not start, with no successful Read of the
+            // A shell the sandbox could not start, with no successful Read of the
             // diff file, means the model saw no change, whatever it returned.
             // Only that match fails the review: an execution file that cannot
             // be read warns and proves nothing.
@@ -1299,15 +1299,25 @@ jobs:
             const diffReads = toolIds((part) => part.name === "Read" && DIFF_FILE.test(part.input?.file_path ?? ""));
             const bashCalls = toolIds((part) => part.name === "Bash");
             const prDiffs = toolIds((part) => part.name === "Bash" && String(part.input?.command ?? "").includes("gh pr diff"));
-            const noShell = results.some(
-              (result) =>
-                result.is_error === true && bashCalls.has(result.tool_use_id) && JSON.stringify(result.content ?? "").includes("bwrap:"),
-            );
+            // The first line of a failed Bash result that opens with the sandbox's
+            // error (bwrap's, or sandbox-runtime's apply-seccomp helper), so the
+            // log names the cause. Only that line: the rest of the output stays out.
+            const SANDBOX_ERROR = /^\s*(?:bwrap|apply-seccomp):/u;
+            const text = (content) =>
+              typeof content === "string"
+                ? content
+                : (Array.isArray(content) ? content : []).map((item) => (item?.type === "text" ? String(item.text ?? "") : "")).join("\n");
+            const noShell = results
+              .filter((result) => result.is_error === true && bashCalls.has(result.tool_use_id))
+              .flatMap((result) => text(result.content).split("\n"))
+              .find((line) => SANDBOX_ERROR.test(line))
+              ?.trim()
+              .slice(0, 300);
             const readDiff = succeeded(diffReads);
             if (noShell && !readDiff) {
-              return incomplete("bwrap could not start, so the shell failed, and the diff file was never read, so the review saw no change");
+              return incomplete(`the sandbox could not start, so the shell failed, and the diff file was never read, so the review saw no change; sandbox error: ${noShell}`);
             }
-            if (noShell) core.warning("A Bash call failed on bwrap, so this review ran with no working shell; it did read its diff file.");
+            if (noShell) core.warning(`A Bash call failed in the sandbox, so this review ran with no working shell; it did read its diff file. Sandbox error: ${noShell}`);
             // Warns only: this measures how often the file shows no diff access,
             // since whether it records subagent tool calls is unproven. The count
             // logged here settles that: a non-zero value proves they are recorded.
@@ -1533,7 +1543,7 @@ jobs:
             install-failed) why="the subprocess isolation or Bun install failed (often a slow package mirror or an HTTP 429 on the release download), so Claude never started; re-run the job" ;;
             no-execution) why="the review step ended before it wrote an execution file, so Claude crashed or never started; read the review step's log" ;;
             skipped-validation) why="claude-code-action skipped itself because the caller workflow differs from the default branch's copy; nothing was reviewed" ;;
-            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, the review saw only part of the diff, or bwrap could not start and the diff file was never read; read the verify step's log" ;;
+            incomplete) why="no completed review was found on this head: the model returned no findings count or summary, its count was below its inline comments, the review saw only part of the diff, or the sandbox could not start and the diff file was never read; read the verify step's log" ;;
             sandbox-unavailable) why="bubblewrap could not create a namespace on this runner, so Claude Code's sandbox could not start and no review ran; enable unprivileged user namespaces (read the probe step's log)" ;;
             no-outcome) why="the job ended ($JOB_STATUS) before the review reported an outcome; read the job log" ;;
             *) why="an unclassified failure; read the job log" ;;
