@@ -85,6 +85,61 @@ GH_FAILURE=""
 GH_GRAPHQL_ERRORS=false
 GH_GRAPHQL_ERROR_TYPES=""
 
+# Call counting. Every request appends one reading line to a file under
+# `gh_api_calls_dir`, which this step owns, in report-api-budget's format, so
+# that action's api_budget_emit_calls prints the notice. The composites share
+# one job and one RUNNER_TEMP, so the step's own directory keeps each count to
+# its own step. report-api-budget is resolved beside this file, so a caller
+# pinning these actions by SHA reads the function from the same ref.
+#
+# gh_api_calls_report prints the `api-calls` notice and a step-summary line;
+# each runner calls it once from its EXIT trap, so the notice is the step's
+# last annotation and appears on failure too. GitHub keeps 10 notice
+# annotations per step and drops later ones
+# (https://raw.githubusercontent.com/actions/toolkit/HEAD/docs/problem-matchers.md),
+# so the summary line still carries the count when the notice is dropped.
+# Neither counting nor reporting ever changes an exit status.
+gh_api_calls_dir="$(mktemp -d 2>/dev/null || true)"
+if [[ -n "$gh_api_calls_dir" ]] && ! mkdir -p "$gh_api_calls_dir/api-budget" 2>/dev/null; then
+  gh_api_calls_dir=""
+fi
+# shellcheck source=../report-api-budget/api-budget.bash
+source "${BASH_SOURCE[0]%/*}/../report-api-budget/api-budget.bash" 2>/dev/null || true
+
+# gh_api_count <method> <path> <status> <requests>: <requests> readings, each
+# `<status> na na na na <resource> <route>`. A 304 is recorded as such, and
+# api_budget_emit_calls counts it as not-modified rather than as a request.
+gh_api_count() {
+  local status="${3:-na}" requests="${4:-1}" resource=na route=other i
+  [[ -n "$gh_api_calls_dir" ]] || return 0
+  [[ "$status" =~ ^[0-9]{3}$ ]] || status=na
+  [[ "$requests" =~ ^[1-9][0-9]{0,4}$ ]] || requests=1
+  if [[ "$2" == graphql ]]; then
+    resource=graphql
+    route=graphql
+  fi
+  for ((i = 0; i < requests; i++)); do
+    printf '%s na na na na %s %s\n' "$status" "$resource" "$route"
+  done 2>/dev/null >>"$gh_api_calls_dir/api-budget/github-token" || true
+  return 0
+}
+
+gh_api_calls_report() {
+  local line
+  if [[ -z "$gh_api_calls_dir" ]] || ! declare -F api_budget_emit_calls >/dev/null; then
+    return 0
+  fi
+  # shellcheck disable=SC2310,SC2311 # counting never stops the step.
+  line="$(RUNNER_TEMP="$gh_api_calls_dir" api_budget_emit_calls github-token 2>/dev/null || true)"
+  rm -rf -- "${gh_api_calls_dir:?}" 2>/dev/null || true
+  [[ -n "$line" ]] || return 0
+  printf '%s\n' "$line"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf 'API calls: %s\n' "${line#*title=api-calls::}" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # The value of one response header, matched case-insensitively; gh prints the
 # names in Go's canonical case (`X-Ratelimit-Remaining`).
 gh_header() {
@@ -185,6 +240,19 @@ gh_api_once() {
       GH_MESSAGE="$(head -n1 "$gh_stderr")"
     fi
   fi
+  # A paginated call carries no status line; `--slurp` wraps one array element
+  # per page, so a successful one counts a request per page.
+  local count_status="" count_requests=1
+  if [[ "$include" == true ]]; then
+    count_status="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers" 2>/dev/null || true)"
+  elif [[ "$status" -eq 0 ]]; then
+    count_status=200
+    count_requests="$(jq 'if type == "array" then length else 1 end' <"$gh_stdout" 2>/dev/null || true)"
+  fi
+  if [[ -z "$count_status" ]]; then
+    count_status="$GH_HTTP_STATUS"
+  fi
+  gh_api_count "$method" "$path" "$count_status" "$count_requests"
   return "$status"
 }
 

@@ -1514,6 +1514,41 @@ if [[ -z "$metadata_default" || "$metadata_default" != "$runner_default" ]]; the
   failures=$((failures + 1))
 fi
 
+# --- api-calls count -------------------------------------------------------
+
+summary_file="$temporary_directory/step-summary"
+
+# Without the count in gh_api this reports zero requests.
+echo 'case: a passing run reports its one GraphQL read as the api-calls notice and summary line'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+: >"$summary_file"
+run_case 0 GITHUB_STEP_SUMMARY="$summary_file"
+expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=1'
+if ! grep -qxF 'API calls: github-token=1 not-modified=0 graphql=1' "$summary_file"; then
+  echo 'FAIL: expected the api-calls line in the step summary, got:'
+  cat "$summary_file"
+  failures=$((failures + 1))
+fi
+if [[ "$(tail -n1 "$log_file")" != '::notice title=api-calls::github-token=1 not-modified=0 graphql=1' ]]; then
+  echo 'FAIL: expected the api-calls notice as the last log line'
+  cat "$log_file"
+  failures=$((failures + 1))
+fi
+
+# Without the EXIT trap a failing run reports nothing; the exit status stays 1.
+echo 'case: a run that fails on three 500s still reports all three reads'
+printf '3\n' >"$fixtures/${pull_key}.fail-times"
+run_case 1
+expect_log '::notice title=api-calls::github-token=3 not-modified=0 graphql=3'
+rm -f -- "$fixtures/${pull_key}.fail-times"
+
+# Without the 304 branch a not-modified answer counts as a charged request.
+echo 'case: a 304 answer counts as not-modified, not as a request'
+printf 'HTTP/2.0 304 Not Modified\r\n' >"$fixtures/${pull_key}.headers"
+run_case 0
+expect_log '::notice title=api-calls::github-token=0 not-modified=1 graphql=1'
+rm -f -- "$fixtures/${pull_key}.headers"
+
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
   exit 1

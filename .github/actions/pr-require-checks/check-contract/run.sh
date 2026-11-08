@@ -28,7 +28,7 @@ export ISSUE_REF_PATTERN DEFAULT_ISSUE_REF_PATTERN
 LINKAGE_MARKER='<!-- pr-contract:linkage -->'
 
 scratch="$(mktemp -d)"
-trap 'rm -rf -- "$scratch"' EXIT
+trap 'declare -F gh_api_calls_report >/dev/null && gh_api_calls_report; rm -rf -- "$scratch"' EXIT
 gh_stdout="$scratch/gh-stdout"
 gh_stderr="$scratch/gh-stderr"
 
