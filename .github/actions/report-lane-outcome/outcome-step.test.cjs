@@ -986,33 +986,38 @@ const shellRun = (ids, ok = []) =>
     { type: "result", subtype: "success", is_error: false, num_turns: 3, permission_denials: [] },
   ]);
 
-test("with detect-failed-shell, a green run whose three allowed Bash calls all failed is shell-failed, not a review", async () => {
+test("with detect-failed-shell, a green run whose three allowed Bash calls all failed stays a success, flagged by a warning and the record", async () => {
   const executionFile = shellRun(["b1", "b2", "b3"]);
   const off = await runOutcome({ outcome: "success", executionFile });
   assert.equal(off.outputs.review_ran, "true", "without the input the plain success rule holds");
   assert.deepEqual(off.errors, []);
+  assert.deepEqual(off.warnings, [], "without the input nothing is flagged");
 
-  const { outputs, errors, notices } = await runOutcome({
+  const { outputs, errors, warnings, notices, failed } = await runOutcome({
     outcome: "success",
     executionFile,
     detectFailedShell: "true",
     laneId: "pr-review-security",
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
   });
-  assert.equal(outputs.failure_class, "shell-failed");
-  assert.equal(outputs.review_failed, "true");
-  assert.equal(outputs.review_ran, "false");
+  assert.equal(outputs.review_failed, "false", "a shell-failed run does not fail the lane");
+  assert.equal(outputs.review_ran, "true", "a shell-failed run concludes as the success it was");
+  assert.equal(outputs.failure_class, undefined, "a shell-failed run carries no failure class");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(failed, []);
   assert.deepEqual(notices, []);
-  assert.equal(errors.length, 1);
+  assert.equal(warnings.length, 1);
   assert.ok(
-    errors[0].startsWith(
-      "Claude review concluded: success class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3 — " +
+    warnings[0].startsWith(
+      "Claude review completed with class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3: " +
         "all 3 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
     ),
-    errors[0],
+    warnings[0],
   );
-  const record = readRecord(errors[0]);
-  assert.deepEqual([record.outcome, record.class], ["failure", "shell-failed"]);
+  const record = readRecord(warnings[0]);
+  assert.equal(record.outcome, "success");
+  assert.equal(record.shellFailed, true);
+  assert.equal("class" in record, false, "the record carries no failure class");
   assert.equal(outputs.record, JSON.stringify(record));
 });
 
@@ -1021,8 +1026,11 @@ test("with detect-failed-shell, one normal non-zero exit is still a review unles
   const kept = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true" });
   assert.equal(kept.outputs.review_ran, "true");
   assert.deepEqual(kept.errors, []);
+  assert.deepEqual(kept.warnings, []);
   const lowered = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: "1" });
-  assert.equal(lowered.outputs.failure_class, "shell-failed");
+  assert.equal(lowered.outputs.review_ran, "true");
+  assert.equal(lowered.warnings.length, 1);
+  assert.match(lowered.warnings[0], /class=shell-failed/u);
   for (const bad of ["0", "two", "-1"]) {
     const { failed, outputs } = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: bad });
     assert.deepEqual(failed, ["failed-shell-min-calls must be a whole number from 1."], bad);
@@ -1034,6 +1042,7 @@ test("with detect-failed-shell, a run with one working Bash call is still a revi
   const ran = await runOutcome({ outcome: "success", executionFile: shellRun(["b1", "b2", "b3", "b4"], ["b4"]), detectFailedShell: "true" });
   assert.equal(ran.outputs.review_ran, "true");
   assert.deepEqual(ran.errors, []);
+  assert.deepEqual(ran.warnings, []);
 
   const both = await runOutcome({
     outcome: "success",
