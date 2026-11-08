@@ -51,6 +51,12 @@ OCI_ACCEPT = (
     "application/vnd.docker.distribution.manifest.v2+json"
 )
 PSGALLERY = "https://www.powershellgallery.com/api/v2"
+GOPROXY = "https://proxy.golang.org"
+GOSUMDB = "https://sum.golang.org"
+NUGET_REGISTRATION = "https://api.nuget.org/v3/registration5-semver1"
+# Sources dated by a commit, whose date its author sets: a bump's auto-merge also waits the
+# cooldown from the bot's own GitHub-dated commit (arm_auto_merge).
+AUTHOR_DATED = {"github-tag", "goproxy"}
 ATOM = "{http://www.w3.org/2005/Atom}"
 ODATA_D = "{http://schemas.microsoft.com/ado/2007/08/dataservices}"
 ODATA_M = "{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}"
@@ -331,6 +337,36 @@ def parse_psgallery(xml_text: str) -> tuple[list[Release], str | None]:
     return out, nxt
 
 
+def goproxy_path(module: str) -> str:
+    """The module proxy's case encoding: each upper-case letter becomes ! and its lower case."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), module)
+
+
+def goproxy_versions(listing: str) -> list[Release]:
+    """`@v/list` tags as releases, undated until date_tags reads their `.info`; prereleases
+    and +incompatible versions dropped."""
+    out: list[Release] = []
+    for tag in listing.split():
+        version = tag.removeprefix("v")
+        if tag.startswith("v") and parse_version(version) is not None:
+            out.append(Release(version, tag, dt.datetime.max.replace(tzinfo=dt.UTC)))
+    return out
+
+
+def nuget_releases(pages: list[dict[str, Any]]) -> list[Release]:
+    """Listed, non-prerelease registration leaves dated by `published`."""
+    out: list[Release] = []
+    for page in pages:
+        for leaf in page.get("items", []):
+            entry = leaf["catalogEntry"]
+            version = entry["version"]
+            if entry.get("listed") is False or parse_version(version) is None:
+                continue
+            meta = {"catalog": entry["@id"], "nupkg": leaf["packageContent"]}
+            out.append(Release(version, version, parse_date(entry["published"]), meta))
+    return out
+
+
 def pypi_releases(doc: dict[str, Any]) -> list[Release]:
     """PyPI JSON `releases`: dated by the first upload, yanked files and versions dropped."""
     out: list[Release] = []
@@ -523,6 +559,17 @@ def list_releases(
         return npm_releases(
             http_json(f"{NPM_REGISTRY}/{quote(source['package'], safe='@')}")
         )
+    if kind == "goproxy":
+        return goproxy_versions(
+            http_text(f"{GOPROXY}/{goproxy_path(source['package'])}/@v/list")
+        )
+    if kind == "nuget":
+        index = http_json(
+            f"{NUGET_REGISTRATION}/{source['package'].lower()}/index.json"
+        )
+        # A large registration links its pages instead of inlining their leaves.
+        pages = [p if "items" in p else http_json(p["@id"]) for p in index["items"]]
+        return nuget_releases(pages)
     if kind == "psgallery":
         url: str | None = (
             f"{PSGALLERY}/FindPackagesById()?id='{source['package']}'"
@@ -586,17 +633,23 @@ def cpython_releases(policy: dict[str, Any], now: dt.datetime) -> list[Release]:
 def date_tags(
     source: dict[str, Any], releases: list[Release], current: str
 ) -> list[Release]:
-    """github-tag carries no date; read the tagged commit's date for tags above the pin only."""
-    if source["type"] != "github-tag":
+    """github-tag and goproxy list no date; read it for versions above the pin only (the
+    tagged commit's date, or the module proxy's `.info` Time)."""
+    if source["type"] not in {"github-tag", "goproxy"}:
         return releases
     cur = parse_version(current) or ()
     dated: list[Release] = []
     for r in releases:
         if (parse_version(r.version) or ()) > cur:
-            commit = gh_json(f"repos/{source['repo']}/commits/{r.tag}")
-            r = Release(
-                r.version, r.tag, parse_date(commit["commit"]["committer"]["date"])
-            )
+            if source["type"] == "goproxy":
+                info = http_json(
+                    f"{GOPROXY}/{goproxy_path(source['package'])}/@v/{r.tag}.info"
+                )
+                date = parse_date(info["Time"])
+            else:
+                commit = gh_json(f"repos/{source['repo']}/commits/{r.tag}")
+                date = parse_date(commit["commit"]["committer"]["date"])
+            r = Release(r.version, r.tag, date, r.meta)
         dated.append(r)
     return dated
 
@@ -628,6 +681,10 @@ def release_url(source: dict[str, Any], release: Release) -> str:
         return f"https://www.npmjs.com/package/{source['package']}/v/{v}"
     if kind == "psgallery":
         return f"https://www.powershellgallery.com/packages/{source['package']}/{v}"
+    if kind == "goproxy":
+        return f"https://pkg.go.dev/{source['package']}@{release.tag}"
+    if kind == "nuget":
+        return f"https://www.nuget.org/packages/{source['package']}/{v}"
     return f"https://www.python.org/downloads/release/{release.meta['slug']}/"
 
 
@@ -879,6 +936,10 @@ class Verifier:
             self.notes.append(self.npm_note(source["package"], rel))
         elif kind == "psgallery":
             self.notes.append(self.psgallery_note(source["package"], rel))
+        elif kind == "goproxy":
+            self.notes.append(self.gosum_note(source["package"], rel))
+        elif kind == "nuget":
+            self.notes.append(self.nuget_note(source["package"], rel))
         elif kind == "python-org":
             self.notes.append(
                 f"python.org stable release; uv {rel.meta['uv']}'s download metadata"
@@ -975,6 +1036,37 @@ class Verifier:
                 f"{package} {rel.version} .nupkg does not match its PackageHash"
             )
         return f"PSGallery: the .nupkg matches its {meta['algo']} PackageHash"
+
+    @staticmethod
+    def gosum_note(module: str, rel: Release) -> str:
+        record = http_text(f"{GOSUMDB}/lookup/{goproxy_path(module)}@{rel.tag}")
+        hashes = [
+            line
+            for line in record.splitlines()
+            if re.fullmatch(
+                rf"{re.escape(module)} {re.escape(rel.tag)}(/go\.mod)? h1:\S+", line
+            )
+        ]
+        if len(hashes) != 2:
+            raise BumpError(
+                f"sum.golang.org has no module and go.mod hash for {module}@{rel.tag}"
+            )
+        return (
+            f"sum.golang.org records {module}@{rel.tag}; go install checks the module "
+            "against it at install"
+        )
+
+    def nuget_note(self, package: str, rel: Release) -> str:
+        leaf = http_json(rel.meta["catalog"])
+        package_hash, algo = leaf.get("packageHash"), leaf.get("packageHashAlgorithm")
+        if not package_hash or not algo:
+            raise BumpError(f"NuGet lists no packageHash for {package} {rel.version}")
+        nupkg = self.download(rel.meta["nupkg"])
+        if not nupkg_hash_matches(nupkg.read_bytes(), package_hash, algo):
+            raise BumpError(
+                f"{package} {rel.version} .nupkg does not match its packageHash"
+            )
+        return f"NuGet: the .nupkg matches its catalog {algo} packageHash"
 
     def verification(self) -> str:
         if "note" in self.verify:
@@ -1398,11 +1490,20 @@ def own_prs(branch: str, repo: str, app_slug: str) -> list[dict[str, Any]]:
     return [p for p in bot_prs(branch, repo) if p["author"]["login"] in logins]
 
 
+def tag_cooldown(rows: list[dict[str, Any]]) -> int:
+    """Longest cooldown among a bump's author-dated rows, run again from the bot's commit."""
+    return max(
+        (int(r["targetCooldown"]) for r in rows if r.get("sourceType") in AUTHOR_DATED),
+        default=0,
+    )
+
+
 def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None:
     """Arm auto-merge, except while a tag source in the bump is still inside its cooldown.
 
-    A tag's commit date is set by whoever made the commit, so for a tag source the
-    cooldown also runs from the bot's own commit, whose date GitHub sets.
+    A tag's commit date (and the module proxy's .info Time for a git-sourced module) is set
+    by whoever made the commit, so for those sources the cooldown also runs from the bot's
+    own commit, whose date GitHub sets.
     """
     wait = int(bump.get("tagCooldown", 0))
     if wait:
@@ -1433,10 +1534,7 @@ def publish_bump(
 ) -> None:
     branch = bump["branch"]
     title = pr_title(bump, rows)
-    bump["tagCooldown"] = max(
-        (int(r["targetCooldown"]) for r in rows if r.get("sourceType") == "github-tag"),
-        default=0,
-    )
+    bump["tagCooldown"] = tag_cooldown(rows)
     prs = own_prs(branch, repo, app_slug)
     tip = branch_tip(repo, branch, f"{app_slug}[bot]")
     marker = TARGETS_MARKER.search(prs[0].get("body") or "") if prs else None
