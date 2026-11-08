@@ -565,7 +565,7 @@ jobs:
       - name: Test the workflow-naming runner
         run: bash .github/actions/check-workflow-naming/run.test.sh
       - name: Test the version-bump engine
-        run: python3 -B -m unittest discover -s .github/actions/version-bump -p 'test_*.py'
+        run: python3 -B -m unittest discover -s .github/actions/bump-versions -p 'test_*.py'
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner

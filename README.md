@@ -147,7 +147,7 @@ consumer to audit it.
   analyzer or rule error fails closed. `PSUseCorrectCasing` remains disabled
   while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
   crashing rule is not a quality gate.
-- `.github/actions/version-bump` — moves a repository's release pins to the newest
+- `.github/actions/bump-versions` — moves a repository's release pins to the newest
   release past its cooldown, as declared in a policy file (cooldown days, per-tool
   source, verification and pins; a pin in a file yq cannot parse is addressed by a
   regex with one capture group that must match one line). `command: prepare` resolves

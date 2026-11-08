@@ -71,6 +71,11 @@ class BumpError(Exception):
     """A tool's bump cannot proceed; recorded as that tool's failed outcome."""
 
 
+def failure_text(exc: Exception) -> str:
+    """A BumpError's own message; any other exception also names its type."""
+    return str(exc) if isinstance(exc, BumpError) else f"{type(exc).__name__}: {exc}"
+
+
 # ---------------------------------------------------------------- pure logic
 
 
@@ -465,6 +470,15 @@ def decoded_text(data: bytes) -> str:
     return data.decode("utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8")
 
 
+def read_exact(path: Path) -> str:
+    """The file's text with its line endings unchanged."""
+    return path.read_bytes().decode("utf-8")
+
+
+def write_exact(path: Path, text: str) -> None:
+    path.write_bytes(text.encode("utf-8"))
+
+
 def file_digest(path: Path, algo: str) -> str:
     return hashlib.new(algo, path.read_bytes()).hexdigest()
 
@@ -769,6 +783,11 @@ class Verifier:
             value = found
         elif "manifest" in spec:
             value = self.manifest_value(spec["manifest"])
+            # The value is written into a tracked file, so it must be exactly what the field is.
+            if "pattern" not in spec or not re.fullmatch(spec["pattern"], value):
+                raise BumpError(
+                    f"manifest value at {spec['manifest']} fails its required pattern"
+                )
         else:
             raise BumpError("a digest names no asset, url, download, oci or manifest")
         return apply_case(value, spec.get("case"))
@@ -1008,7 +1027,7 @@ def planned_edits(
     verifier.publisher()
     for edit in edits:
         pin_file = Path(edit["file"])
-        text = pin_file.read_text(encoding="utf-8")
+        text = read_exact(pin_file)
         if isinstance(edit["path"], dict):
             edit["old"], edit["line"] = regex_pin(text, edit["path"]["regex"])
             continue
@@ -1073,11 +1092,11 @@ def file_list_edits(
 def rewrite(edits: list[dict[str, Any]]) -> None:
     for name in dict.fromkeys(e["file"] for e in edits):
         file = Path(name)
-        text = file.read_text(encoding="utf-8")
+        text = read_exact(file)
         for edit in (e for e in edits if e["file"] == name):
             if edit["old"] != edit["new"]:
                 text = replace_on_line(text, edit["line"], edit["old"], edit["new"])
-        file.write_text(text, encoding="utf-8")
+        write_exact(file, text)
 
 
 def run_hooks(
@@ -1109,7 +1128,7 @@ def load_policy(path: Path) -> dict[str, Any]:
 
 def read_pin(path: str | dict[str, str], file: Path) -> Any:
     if isinstance(path, dict):
-        return regex_pin(file.read_text(encoding="utf-8"), path["regex"])[0]
+        return regex_pin(read_exact(file), path["regex"])[0]
     return yq_json(path, file)
 
 
@@ -1235,8 +1254,8 @@ def prepare_bump(
                 edits = resolve_tool(row, tool, policy, now, Path(tmp) / name)
                 if edits is not None:
                     ready.append((row, tool, edits))
-            except BumpError as exc:
-                row["outcome"], row["detail"] = "failed", str(exc)
+            except Exception as exc:  # noqa: BLE001  # one tool's bad data must not end the run
+                row["outcome"], row["detail"] = "failed", failure_text(exc)
             rows.append(row)
             print(
                 json.dumps({k: v for k, v in row.items() if k != "edits"}), flush=True
@@ -1251,8 +1270,8 @@ def prepare_bump(
                 try:
                     apply_bump(bump, ready, out, policy)
                     bump["outcome"] = "prepared"
-                except BumpError as exc:
-                    bump["outcome"], bump["detail"] = "failed", str(exc)
+                except Exception as exc:  # noqa: BLE001  # recorded as this bump's failure
+                    bump["outcome"], bump["detail"] = "failed", failure_text(exc)
             for row, _, _ in ready:
                 row["outcome"] = (
                     "failed" if bump["outcome"] == "failed" else bump["outcome"]
@@ -1410,6 +1429,7 @@ def publish_bump(
     app_slug: str,
     workflow_url: str,
     results: dict[str, Any],
+    base_branch: str,
 ) -> None:
     branch = bump["branch"]
     title = pr_title(bump, rows)
@@ -1448,7 +1468,8 @@ def publish_bump(
     else:
         url = run(
             [
-                *["gh", "pr", "create", "-R", repo, "--base", "main", "--head", branch],
+                *["gh", "pr", "create", "-R", repo, "--base", base_branch],
+                *["--head", branch],
                 *["--title", title, "--body-file", str(body)],
             ]
         ).strip()
@@ -1488,7 +1509,7 @@ def signed_commit(
     env = {"GIT_INDEX_FILE": str(index)}
     run(["git", "read-tree", base], env=env)
     for i, path in enumerate(bump["paths"]):
-        content = (files / str(i)).read_text(encoding="utf-8")
+        content = read_exact(files / str(i))
         staged = run(["git", "ls-files", "-s", "--", path]).split()
         mode = staged[0] if staged else "100644"
         entries.append({"path": path, "mode": mode, "type": "blob", "content": content})
@@ -1570,11 +1591,28 @@ def close_stale(bump: dict[str, Any], repo: str, app_slug: str) -> None:
     bump["outcome"], bump["pr"] = "stale-pr-closed", bump["stalePr"]
 
 
+def checked_out_default_branch(repo: str, head: str) -> str:
+    """The default branch; refuses a checkout with commits that branch does not have.
+
+    Each bump commit is parented on the checkout and opened against the default branch, so
+    a checkout ahead of it would carry those commits into the auto-merged pull request.
+    """
+    branch = run(["gh", "api", f"repos/{repo}", "--jq", ".default_branch"]).strip()
+    compare = f"repos/{repo}/compare/{branch}...{head}"
+    ahead = int(run(["gh", "api", compare, "--jq", ".ahead_by"]).strip())
+    if ahead:
+        raise SystemExit(
+            f"publish needs a checkout of {branch}: HEAD is {ahead} commit(s) ahead of it"
+        )
+    return branch
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     out = Path(args.out).resolve()
     results = json.loads((out / "results.json").read_text(encoding="utf-8"))
     repo = os.environ["GITHUB_REPOSITORY"]
     base = run(["git", "rev-parse", "HEAD"]).strip()
+    base_branch = checked_out_default_branch(repo, base)
     workflow_url = os.environ.get("RUN_URL", "the version-bump workflow")
     for bump in results["bumps"]:
         if bump.get("outcome") not in {"prepared", "stale-pr"}:
@@ -1589,10 +1627,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
                 close_stale(bump, repo, args.app_slug)
             else:
                 publish_bump(
-                    bump, rows, out, repo, base, args.app_slug, workflow_url, results
+                    bump,
+                    rows,
+                    out,
+                    repo,
+                    base,
+                    args.app_slug,
+                    workflow_url,
+                    results,
+                    base_branch,
                 )
-        except BumpError as exc:
-            bump["outcome"], bump["detail"] = "failed", str(exc)
+        except Exception as exc:  # noqa: BLE001  # recorded as this bump's failure
+            bump["outcome"], bump["detail"] = "failed", failure_text(exc)
         for r in rows:
             r["outcome"], r["pr"] = bump["outcome"], bump.get("pr")
             if bump.get("detail"):

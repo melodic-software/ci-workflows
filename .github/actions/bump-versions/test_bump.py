@@ -657,6 +657,69 @@ class PublisherChecksTest(unittest.TestCase):
             self.run_authenticode(self.GOOD, 0, digest="0" * 64)
 
 
+class ManifestPatternTest(unittest.TestCase):
+    def digest(self, spec: dict[str, str], value: str) -> str:
+        rel = bump.Release("1.2.0", "v1.2.0", NOW)
+        v = bump.Verifier("t", {"source": {}}, rel, Path("/x"), {})
+        with mock.patch.object(v, "manifest_value", return_value=value):
+            return v.digest(spec, "1.2.0")
+
+    def test_value_must_fully_match_a_declared_pattern(self) -> None:
+        spec = {"manifest": ".a", "pattern": "[0-9a-f]{4}"}
+        self.assertEqual(self.digest(spec, "abcd"), "abcd")
+        for bad in ("abcd\ninjected", "abc", "`abcd`"):
+            with self.subTest(bad), self.assertRaises(bump.BumpError):
+                self.digest(spec, bad)
+
+    def test_pattern_is_required(self) -> None:
+        with self.assertRaises(bump.BumpError):
+            self.digest({"manifest": ".a"}, "abcd")
+
+
+class BaseBranchTest(unittest.TestCase):
+    def test_checkout_ahead_of_the_default_branch_is_refused(self) -> None:
+        with (
+            mock.patch.object(bump, "run", side_effect=["trunk\n", "2\n"]),
+            self.assertRaises(SystemExit),
+        ):
+            bump.checked_out_default_branch("o/r", "abc")
+
+    def test_behind_or_equal_returns_the_default_branch(self) -> None:
+        with mock.patch.object(bump, "run", side_effect=["trunk\n", "0\n"]) as run:
+            self.assertEqual(bump.checked_out_default_branch("o/r", "abc"), "trunk")
+        self.assertIn("repos/o/r/compare/trunk...abc", run.call_args.args[0])
+
+
+class ToolIsolationTest(unittest.TestCase):
+    def test_an_unexpected_exception_fails_only_that_tool(self) -> None:
+        tools = {"a": {"class": "own", "file": "f"}, "b": {"class": "own", "file": "f"}}
+        policy = {"tools": tools}
+
+        def resolve(row: dict[str, Any], *_: Any) -> None:
+            if row["tool"] == "a":
+                raise KeyError("realm")
+            row["outcome"] = "current"
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(bump, "resolve_tool", side_effect=resolve),
+        ):
+            _, rows = bump.prepare_bump("a", ["a"], tools, policy, NOW, Path(tmp), True)
+            self.assertEqual(rows[0]["outcome"], "failed")
+            self.assertEqual(rows[0]["detail"], "KeyError: 'realm'")
+            _, rows = bump.prepare_bump("b", ["b"], tools, policy, NOW, Path(tmp), True)
+            self.assertEqual(rows[0]["outcome"], "current")
+
+
+class LineEndingsTest(unittest.TestCase):
+    def test_rewrite_keeps_crlf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp, "a.psd1")
+            f.write_bytes(b"Version = '1.0.0'\r\nOther = 'x'\r\n")
+            bump.rewrite([{"file": str(f), "old": "1.0.0", "new": "2.0.0", "line": 1}])
+            self.assertEqual(f.read_bytes(), b"Version = '2.0.0'\r\nOther = 'x'\r\n")
+
+
 class HookTest(unittest.TestCase):
     def test_after_bump_receives_the_ready_tools(self) -> None:
         ready = [({"tool": "a", "target": "1.1"}, {"file": "f"}, [])]
