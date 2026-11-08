@@ -1677,13 +1677,21 @@ test("every review job stages the review plugin from claude-code-plugins' defaul
     const stage = step(leg, "plugin");
     assert.equal(stage.name, "Stage the review plugin", leg.name);
     const lines = stage.run.split("\n").map((line) => line.trim());
-    const clone = lines.filter((line) => /\bgit clone\b/u.test(line));
+    const clone = [
+      'git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"',
+    ];
+    // Any later fetch, checkout or reset in the clone could move it off the tip.
     assert.deepEqual(
-      clone,
+      lines.filter((line) => /\bgit\b/u.test(line) && !line.startsWith("#")),
       [
-        'git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"',
+        'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
+        ...clone,
+        'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main',
+        'echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"',
+        "mkdir -p .git/info",
+        "echo /.lane/ >>.git/info/exclude",
       ],
-      `${leg.name}: one depth-1 clone of claude-code-plugins with no ref, so the default branch's tip`,
+      `${leg.name}: one depth-1 clone of claude-code-plugins with no ref, so the default branch's tip, and no git command that moves it`,
     );
     assert.equal(stage.env.SOURCE, `\${{ runner.temp }}/claude-code-plugins`);
     assert.ok(
