@@ -219,6 +219,58 @@ function apiErrorFacts(messages) {
   };
 }
 
+// shell-failed: a run that made at least `minCalls` Bash calls the permission
+// system allowed, and every one of them returned `is_error: true`, as a lost
+// sandbox (`bwrap:` on every call) leaves it. One or two failures are often a
+// normal non-zero exit (a grep with no match, a `test -f`), so they never
+// qualify on their own. A denied call also returns `is_error: true`, so it is
+// taken out first: by its id in the result message's `permission_denials`,
+// the Agent SDK's authoritative denial record, or, should a CLI leave it off
+// that list, by its result text matching a CLI permission-denied message. A
+// call with no result proves nothing either way and is not counted. Returns
+// the failed count, or 0 when the run is not shell-failed.
+//
+// The denial texts, as CLI 2.1.303 (claude-code-action v1.0.253) writes them
+// for a Bash call: no allow rule matched; a deny rule matched; dontAsk mode.
+const DENIAL_TEXTS = [
+  /^This command requires approval$/u,
+  /^Permission to use Bash (?:with command [\s\S]* )?has been denied\b/u,
+];
+const FAILED_SHELL_MIN_CALLS = 3;
+function resultText(block) {
+  if (typeof block.content === "string") return block.content;
+  return (Array.isArray(block.content) ? block.content : [])
+    .map((part) => (part?.type === "text" ? String(part.text ?? "") : ""))
+    .join("\n");
+}
+function failedShellCalls(messages, minCalls = FAILED_SHELL_MIN_CALLS) {
+  if (!Array.isArray(messages)) return 0;
+  const blocks = (type) =>
+    messages
+      .flatMap((m) => (Array.isArray(m?.message?.content) ? m.message.content : []))
+      .filter((block) => block?.type === type);
+  const result = messages.findLast((message) => message?.type === "result");
+  const denied = new Set(
+    (Array.isArray(result?.permission_denials) ? result.permission_denials : []).map(
+      (denial) => denial?.tool_use_id,
+    ),
+  );
+  const shellIds = new Set(
+    blocks("tool_use")
+      .filter((block) => block.name === "Bash" && !denied.has(block.id))
+      .map((block) => block.id),
+  );
+  const results = blocks("tool_result").filter(
+    (block) =>
+      shellIds.has(block.tool_use_id) &&
+      !DENIAL_TEXTS.some((pattern) => pattern.test(resultText(block))),
+  );
+  return results.length >= Math.max(1, minCalls) &&
+    results.every((block) => block.is_error === true)
+    ? results.length
+    : 0;
+}
+
 function classifyExecutionFile(
   executionFilePath,
   {
@@ -577,6 +629,7 @@ const FAILURE_CLASSES = [
   "sandbox-unavailable",
   "skipped-validation",
   "incomplete",
+  "shell-failed",
   "no-credential",
   "no-outcome",
   "other",
@@ -686,12 +739,15 @@ function recordOutcome(outcome, failureClass) {
 
 // `recordClass` overrides the class in the record alone, for a branch whose
 // legacy tokens carry no class (incomplete, skipped-validation).
+// `shellFailed` flags a success whose allowed Bash calls all failed without
+// failing it.
 function factRecord(
   facts,
   {
     laneId = "",
     outcome = "",
     handoff = "",
+    shellFailed = false,
     recordClass = facts.failureClass,
     context = {},
   },
@@ -720,6 +776,7 @@ function factRecord(
     ],
     ["credential", credential],
     ["handoff", handoff === "true" ? true : null],
+    ["shellFailed", shellFailed === true ? true : null],
     ["fallback", present([["reason", facts.fallbackReason]])],
     [
       "resets",
@@ -784,6 +841,7 @@ module.exports = {
   creditStopResetsAt,
   FAILURE_CLASSES,
   FALLBACK_REASONS,
+  failedShellCalls,
   isCreditStop,
   JOB_PATTERN,
   RUN_ATTEMPT_PATTERN,

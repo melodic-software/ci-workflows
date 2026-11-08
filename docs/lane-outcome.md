@@ -55,7 +55,8 @@ does not depend on newlines, because none are required. A success record is
 a notice, a `skipped-validation` record a warning, and any other failure an
 error, except that a failure record with `handoff: true` is a notice. A
 handoff stays a notice when the caller sets `lane-id` but no record can be
-written. The `incomplete` and `skipped-validation` records keep their levels
+written. The `incomplete` and `skipped-validation` records keep their levels, and a
+`shellFailed` success record is a warning,
 whatever `handoff` says.
 
 A record is at most 1,024 characters. The runner cuts a workflow-command
@@ -124,6 +125,7 @@ their closed values and where `report-lane-outcome` takes them from.
 | `credential.kind` | yes | `oauth-token` or `api-key` | the secret's suffix: `_CLAUDE_API_KEY` is `api-key`; `CLAUDE_CODE_OAUTH_TOKEN`, alone or as a suffix, is `oauth-token` |
 | `credential.role` | no | the `<ROLE>` prefix | `<ROLE>_CLAUDE_API_KEY` or `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` |
 | `handoff` | no | boolean; true when this attempt handed off to another credential | `handoff` input |
+| `shellFailed` | no | boolean; true on a `success` record whose run made at least `failed-shell-min-calls` (default 3) Bash calls it was allowed to make and every one returned an error, so it ran with no working shell. It flags the run and never fails it: a runner fault across the fleet must not hold every repository's merges. A denied call is not counted: one listed in the result message's `permission_denials`, or whose result is a CLI permission-denied message | `detect-failed-shell` input |
 | `fallback.reason` | no | `credit-stop`, `auth`, `no-key` or `limit-stop` | `fallback-reason` input, on the record of the leg that ran after a handoff; `limit-stop` only on the fallback leg's |
 | `resets.at`, `resets.window` | no | ISO 8601 UTC time; string | the newest rejected `rate_limit_event`, on `rate-limit` only |
 | `error.type`, `error.code`, `error.status`, `error.requestId` | no | strings, or null; `status` an integer | type, code and requestId from the API error body in a run with no model output, on a failure; the v1 emitter writes no `status` and omits null values |
@@ -176,6 +178,7 @@ emitter's copy; a test holds the two equal.
 | `sandbox-unavailable` | the subprocess sandbox probe kept the run from starting |
 | `skipped-validation` | the action skipped itself on its workflow-validation check |
 | `incomplete` | the run succeeded but the lane's completion check found no completed review |
+| `shell-failed` | no longer written; a run with no working shell is a `success` record with `shellFailed: true`. Kept so earlier records stay valid |
 | `no-credential` | the leg had no credential to run with |
 | `no-outcome` | the leg stopped before its outcome step |
 | `other` | anything else, and any caller class outside this enum |

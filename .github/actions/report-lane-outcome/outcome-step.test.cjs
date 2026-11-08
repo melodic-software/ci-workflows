@@ -69,6 +69,8 @@ async function runOutcome({
   handoff = "",
   requireCompletion = "",
   completion = "",
+  detectFailedShell = "",
+  failedShellMinCalls = "",
   runId = "",
   runAttempt = "",
   jobId = "",
@@ -93,6 +95,8 @@ async function runOutcome({
     "HANDOFF",
     "REQUIRE_COMPLETION",
     "COMPLETION",
+    "DETECT_FAILED_SHELL",
+    "FAILED_SHELL_MIN_CALLS",
     "ACTION_PATH",
   ];
   const originalValues = Object.fromEntries(
@@ -113,6 +117,8 @@ async function runOutcome({
     HANDOFF: handoff,
     REQUIRE_COMPLETION: requireCompletion,
     COMPLETION: completion,
+    DETECT_FAILED_SHELL: detectFailedShell,
+    FAILED_SHELL_MIN_CALLS: failedShellMinCalls,
     RUN_ID: runId,
     RUN_ATTEMPT: runAttempt,
     JOB_ID: jobId,
@@ -968,6 +974,87 @@ test("the step outcome and class map to the record's outcome", async () => {
   }
 });
 
+// The #816 probe's shapes: a failed Bash call's tool_result carries
+// `is_error: true`, the run's own result stays a success. `ok` names the
+// calls that succeeded.
+const shellRun = (ids, ok = []) =>
+  writeExecutionFile([
+    ...ids.flatMap((id) => [
+      { type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: "gh pr diff 7" } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: ok.includes(id) ? "ok" : "Exit code 1", is_error: !ok.includes(id) }] } },
+    ]),
+    { type: "result", subtype: "success", is_error: false, num_turns: 3, permission_denials: [] },
+  ]);
+
+test("with detect-failed-shell, a green run whose three allowed Bash calls all failed stays a success, flagged by a warning and the record", async () => {
+  const executionFile = shellRun(["b1", "b2", "b3"]);
+  const off = await runOutcome({ outcome: "success", executionFile });
+  assert.equal(off.outputs.review_ran, "true", "without the input the plain success rule holds");
+  assert.deepEqual(off.errors, []);
+  assert.deepEqual(off.warnings, [], "without the input nothing is flagged");
+
+  const { outputs, errors, warnings, notices, failed } = await runOutcome({
+    outcome: "success",
+    executionFile,
+    detectFailedShell: "true",
+    laneId: "pr-review-security",
+    credential: "CLAUDE_CODE_OAUTH_TOKEN",
+  });
+  assert.equal(outputs.review_failed, "false", "a shell-failed run does not fail the lane");
+  assert.equal(outputs.review_ran, "true", "a shell-failed run concludes as the success it was");
+  assert.equal(outputs.failure_class, undefined, "a shell-failed run carries no failure class");
+  assert.deepEqual(errors, []);
+  assert.deepEqual(failed, []);
+  assert.deepEqual(notices, []);
+  assert.equal(warnings.length, 1);
+  assert.ok(
+    warnings[0].startsWith(
+      "Claude review completed with class=shell-failed credential=CLAUDE_CODE_OAUTH_TOKEN turns=3: " +
+        "all 3 allowed Bash call(s) failed, so the review ran with no working shell. lane-outcome {",
+    ),
+    warnings[0],
+  );
+  const record = readRecord(warnings[0]);
+  assert.equal(record.outcome, "success");
+  assert.equal(record.shellFailed, true);
+  assert.equal("class" in record, false, "the record carries no failure class");
+  assert.equal(outputs.record, JSON.stringify(record));
+});
+
+test("with detect-failed-shell, one normal non-zero exit is still a review unless the caller lowers the minimum", async () => {
+  const one = shellRun(["b1"]);
+  const kept = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true" });
+  assert.equal(kept.outputs.review_ran, "true");
+  assert.deepEqual(kept.errors, []);
+  assert.deepEqual(kept.warnings, []);
+  const lowered = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: "1" });
+  assert.equal(lowered.outputs.review_ran, "true");
+  assert.equal(lowered.warnings.length, 1);
+  assert.match(lowered.warnings[0], /class=shell-failed/u);
+  for (const bad of ["0", "two", "-1"]) {
+    const { failed, outputs } = await runOutcome({ outcome: "success", executionFile: one, detectFailedShell: "true", failedShellMinCalls: bad });
+    assert.deepEqual(failed, ["failed-shell-min-calls must be a whole number from 1."], bad);
+    assert.equal("review_ran" in outputs, false, bad);
+  }
+});
+
+test("with detect-failed-shell, a run with one working Bash call is still a review, and incomplete is reported first", async () => {
+  const ran = await runOutcome({ outcome: "success", executionFile: shellRun(["b1", "b2", "b3", "b4"], ["b4"]), detectFailedShell: "true" });
+  assert.equal(ran.outputs.review_ran, "true");
+  assert.deepEqual(ran.errors, []);
+  assert.deepEqual(ran.warnings, []);
+
+  const both = await runOutcome({
+    outcome: "success",
+    executionFile: shellRun(["b1", "b2", "b3"]),
+    detectFailedShell: "true",
+    requireCompletion: "true",
+    completion: "no summary",
+  });
+  assert.equal(both.outputs.failure_class, "incomplete");
+  assert.equal(both.errors.length, 1);
+});
+
 test("a caller that sets lane-id but cannot get a record gets the tokens alone and a warning naming what is missing", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "success", is_error: false, num_turns: 3 },
@@ -1375,7 +1462,7 @@ test("the schema accepts a record with every run-context field and rejects value
 test("every class the classifier, run-claude-cli and the review lanes produce is in the closed enum", () => {
   for (const known of [
     "auth", "credit-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
-    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "no-credential", "no-outcome", "other",
+    "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "shell-failed", "no-credential", "no-outcome", "other",
   ]) {
     assert.ok(schema.properties.class.enum.includes(known), known);
   }

@@ -662,7 +662,11 @@ consumer to audit it.
   subscription leg's `auth` handoff adds a warning annotation naming the
   refused secret, so the owner replaces it even when the fallback job
   succeeds, and the job summary's Stop note for any handoff to the fallback
-  job says the fallback job runs instead. A
+  job says the fallback job runs instead. A caller whose subscription leg is
+  the last, with no fallback job, but that still ends green on a capacity
+  stop passes `fallback-ready: handoff-only`: the leg hands off on the same
+  stops with the same outputs, and its warning and Stop note say no further
+  leg runs. A
   subscription leg's credit stop keeps its class. A caller that falls back to
   the subscription does so in a second job (the two-job pattern below);
   a caller that does not reports `credit-stop` as `rate-limit`. The leg's CLI
@@ -681,7 +685,9 @@ consumer to audit it.
   job that validates its inputs; a lane whose Bash is limited to fixed
   read-only rules may stay in one job. The CLI runs with
   `--restricted`, so Bash and the other code-running tools are available
-  only when `tools` names them. Callers run `apply-claude-managed-settings`
+  only when `tools` names them, and the CLI "loads only managed settings
+  and `--settings`" ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
+  Callers run `apply-claude-managed-settings`
   while sudo still works, then runner isolation (sudo and docker removed,
   bubblewrap installed, and on Ubuntu 24.04
   `kernel.apparmor_restrict_unprivileged_userns=0`), then the head checkout,
@@ -696,8 +702,13 @@ consumer to audit it.
   on a successful leg with `json-schema-file`, a `structured-output-file`
   holding the result's `structured_output`; the action writes each of the
   last two only after a credential scan, and a hit on the structured output
-  fails the step. Read the structured output from that file, never from the
-  unscanned `execution-file`. Every log line records the `lane` and
+  fails the step. Read the structured output from that file, never from
+  `execution-file`. The action scans `execution-file` the same way but keeps
+  it, since callers parse it, and reports the scan as
+  `execution-file-clean`: `true` only when the file read and held no
+  credential, `false` on a hit or a missing or unreadable file. Gate any
+  upload of it on `execution-file-clean == 'true'`, so an empty value from a
+  step that failed early stays closed. Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
   `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake, or the fixed
@@ -1024,7 +1035,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   skips an issue carrying `human-label` (default `needs-human`; set it to the
   lane's `escalation-label`), so a run that lands after the intake-triage
   lane does not re-add the floor it removed. A reopened issue that still
-  carries `human-label` stays without the floor.
+  carries `human-label` stays without the floor. A rate-limited call waits
+  once and retries, as `pr-require-checks/gh-api.sh` does, with up to 10
+  minutes of waits per run; a limit it cannot wait out fails the job with the
+  reset time. The job ends with the job token's `api-calls` and `api-budget`
+  notices.
   **Fail-closed on a missing label**: the raw add-labels endpoint
   auto-creates an unknown label name instead of failing, so this workflow
   first calls `GET /repos/{owner}/{repo}/labels/{name}` and hard-fails the job
@@ -1102,8 +1117,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   required check pass. It never merges directly. All gates must hold: the PR
   author and the event sender are account id `49699333` (dependabot[bot]);
   fetch-metadata succeeded; every update is `github_actions` or, unless the
-  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`
-  (docker, uv, dotnet-sdk and other ecosystems stay manual); every GitHub
+  caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or
+  `nuget` (docker, dotnet-sdk and other ecosystems stay manual); every GitHub
   Actions dependency name matches a glob in the caller's `publisher-allowlist`
   JSON array (default `["actions/*","github/*","anthropics/*"]`, mirroring
   standards `dependabot-policy` `autoMerge`; an input that is not a JSON array
@@ -1144,11 +1159,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   from the schema-v2 component manifest in `melodic-software/standards`. The
   standards checkout validates and materializes its own manifest; this workflow
   resolves one immutable standards SHA, then blocks every write lane until a
-  separate metadata-only credential proves the expected App identity, active
-  selected-repository installation metadata, and two consecutive exact views of
-  the full unfiltered manifest's repository set. A caller's `targets` filter
-  limits materialization only; it never weakens this installation-scope
-  attestation. After that barrier, the workflow scopes a different GitHub App
+  separate metadata-only credential proves the expected App identity and active
+  selected-repository installation metadata, and reads two consecutive identical
+  views of the installation's repositories. It compares them with the full
+  unfiltered manifest: a target the App cannot reach fails only that target's
+  sync job, and a selected repository that is not a target is reported as an
+  over-grant warning without blocking the sync, unless it is the trust root
+  `melodic-software/azure-iac`, which fails the whole run. A caller's `targets` filter
+  limits materialization only; it never narrows this installation-scope
+  comparison. After that barrier, the workflow scopes a different GitHub App
   token to each target and opens a signed, human-reviewed PR enumerating every
   managed source-to-destination mapping. It never writes a downstream receipt
   and never copies components declared `locally-owned`; the owner-scoped

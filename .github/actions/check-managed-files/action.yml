@@ -42,7 +42,7 @@ runs:
     # hand-edit check, so a lookalike PR is held to the stricter rule. A
     # Dependabot-opened PR is only a candidate for skipping: the next step
     # skips it only when every commit is a verified Dependabot commit. A
-    # merge_group payload carries no pull request; the next step maps the group
+    # merge_group payload carries no pull request; a later step maps the group
     # and applies these rules to each pull request in it (merge-group.cjs).
     - name: Select the guard mode
       id: mode
@@ -69,44 +69,6 @@ runs:
         fi
         echo "mode=$mode" >>"$GITHUB_OUTPUT"
         echo "managed-files-guard mode: $mode"
-
-    # Resolves the group to sync, hand-edit or skip. It fails the run when the
-    # head ref names no pull request, a pull request cannot be read, or a path
-    # the group changes belongs to none of its pull requests.
-    - name: Map the merge group to its pull requests
-      id: group
-      if: steps.mode.outputs.mode == 'merge-group'
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-      env:
-        ACTION_PATH: ${{ github.action_path }}
-        QUEUE_HEAD_REF: ${{ github.event.merge_group.head_ref }}
-        QUEUE_BASE_REF: ${{ github.event.merge_group.base_ref }}
-        QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
-        QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-      with:
-        github-token: ${{ inputs.github-token }}
-        script: |
-          const fs = require("node:fs");
-          const path = require("node:path");
-          const { resolveMergeGroup } = require(`${process.env.ACTION_PATH}/merge-group.cjs`);
-          const pathsDir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "managed-files-guard-"));
-          const mode = await resolveMergeGroup({
-            github,
-            core,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            headRef: process.env.QUEUE_HEAD_REF,
-            baseRef: process.env.QUEUE_BASE_REF,
-            baseSha: process.env.QUEUE_BASE_SHA,
-            headSha: process.env.QUEUE_HEAD_SHA,
-            workspace: process.env.GITHUB_WORKSPACE,
-            pathsDir,
-          });
-          if (mode) {
-            core.setOutput("mode", mode);
-            core.setOutput("paths-dir", pathsDir);
-            core.info(`managed-files-guard merge-group mode: ${mode}`);
-          }
 
     # Resolves the dependabot candidate to skip or hand-edit. Later steps read
     # this step's mode first and fall back to the mode step's.
@@ -152,6 +114,59 @@ runs:
             pullNumber: context.payload.pull_request.number,
             headSha: process.env.HEAD_SHA,
           });
+
+    # Before the merge-group step, which diffs in the workspace, and before
+    # the standards checkout, since checking out the workspace root deletes
+    # or cleans everything under it. A caller's own checkout of the same
+    # repository is reused, and clean: false keeps its untracked files. A
+    # merge group's skip is known only after this step, so it does not gate it.
+    - name: Check out the repository under check
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.head-ref }}
+        fetch-depth: 0
+        clean: false
+        persist-credentials: false
+
+    # Resolves the group to sync, hand-edit or skip. It fails the run when the
+    # head ref names no pull request, a pull request cannot be read, or a path
+    # the group changes belongs to none of its pull requests.
+    - name: Map the merge group to its pull requests
+      id: group
+      if: steps.mode.outputs.mode == 'merge-group'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        QUEUE_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        QUEUE_BASE_REF: ${{ github.event.merge_group.base_ref }}
+        QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { resolveMergeGroup } = require(`${process.env.ACTION_PATH}/merge-group.cjs`);
+          const pathsDir = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "managed-files-guard-"));
+          const mode = await resolveMergeGroup({
+            github,
+            core,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            headRef: process.env.QUEUE_HEAD_REF,
+            baseRef: process.env.QUEUE_BASE_REF,
+            baseSha: process.env.QUEUE_BASE_SHA,
+            headSha: process.env.QUEUE_HEAD_SHA,
+            workspace: process.env.GITHUB_WORKSPACE,
+            pathsDir,
+          });
+          if (mode) {
+            core.setOutput("mode", mode);
+            core.setOutput("paths-dir", pathsDir);
+            core.info(`managed-files-guard merge-group mode: ${mode}`);
+          }
 
     # Sync mode verifies against standards main HEAD, never a SHA the PR names,
     # so a sync PR cannot roll managed files back to older reviewed content.
