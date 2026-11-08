@@ -1135,6 +1135,39 @@ jobs:
               typeof content === "string"
                 ? content
                 : (Array.isArray(content) ? content : []).map((item) => (item?.type === "text" ? String(item.text ?? "") : "")).join("\n");
+            // One line per Bash call and per Read or Grep of .claude-lane/, plus
+            // each permission denial, so the log shows why the blind-review or
+            // no-diff-access checks below fire. Only targets, error flags and an
+            // error's first line: file content and command output stay out of
+            // the public log.
+            const flat = (value) => String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 200);
+            const firstLine = (value) => flat(String(value ?? "").split("\n").find((line) => line.trim()));
+            const toolLog = [];
+            for (const part of parts) {
+              if (part?.type !== "tool_use") continue;
+              const target = part.name === "Bash" ? part.input?.command : (part.input?.file_path ?? part.input?.path);
+              const laneFile = (part.name === "Read" || part.name === "Grep") && String(target ?? "").includes(".claude-lane/");
+              if (part.name !== "Bash" && !laneFile) continue;
+              const result = results.find((item) => item.tool_use_id === part.id);
+              const error = result?.is_error === true;
+              const body = text(result?.content);
+              const first = !result
+                ? "<no result>"
+                : error
+                  ? firstLine(body)
+                  : part.name === "Bash"
+                    ? `<ok, ${body.split("\n").filter((line) => line.trim()).length} lines>`
+                    : "<omitted>";
+              toolLog.push(`${lane}: tool=${part.name} target=${flat(target)} error=${error} first=${first}`);
+            }
+            const denials = (Array.isArray(messages) ? messages : []).find((message) => message?.type === "result")?.permission_denials;
+            for (const denial of Array.isArray(denials) ? denials : []) {
+              toolLog.push(
+                `${lane}: denied tool=${flat(denial?.tool_name)} target=${flat(denial?.tool_input?.command ?? denial?.tool_input?.file_path)}`,
+              );
+            }
+            for (const line of toolLog.slice(0, 40)) core.info(line);
+            if (toolLog.length > 40) core.info(`${lane}: ... ${toolLog.length - 40} more`);
             const noShell = results
               .filter((result) => result.is_error === true && bashCalls.has(result.tool_use_id))
               .flatMap((result) => text(result.content).split("\n"))

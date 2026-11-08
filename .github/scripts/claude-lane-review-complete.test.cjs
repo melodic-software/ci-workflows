@@ -991,6 +991,109 @@ for (const lane of lanes) {
     });
     assert.equal(outputs.verdict, "complete");
   });
+
+  const toolLines = async (messages) =>
+    (
+      await verify(lane, {
+        ...clean,
+        executionFile: executionFile(JSON.stringify(messages)),
+      })
+    ).messages.filter((line) =>
+      / (?:tool|denied tool)=|\.\.\. \d+ more$/u.test(line),
+    );
+
+  test(`${lane.lane}: a successful gh pr diff logs its line count and no diff text`, async () => {
+    const lines = await toolLines([
+      toolUse("b1", "Bash", { command: "gh pr diff 7" }),
+      toolResult(
+        "b1",
+        "diff --git a/x b/x\n@@ -1 +1 @@\n-secret\n+secret2",
+        false,
+      ),
+    ]);
+    assert.equal(lines.length, 1);
+    assert.match(
+      lines[0],
+      / tool=Bash target=gh pr diff 7 error=false first=<ok, 4 lines>$/u,
+    );
+    assert.ok(!lines[0].includes("secret") && !lines[0].includes("diff --git"));
+  });
+
+  test(`${lane.lane}: a failed Bash logs its first error line, capped`, async () => {
+    const lines = await toolLines([
+      toolUse("b1", "Bash", { command: `  ls ${"y".repeat(300)}` }),
+      toolResult(
+        "b1",
+        [{ type: "text", text: `\n  ${BWRAP}  \nmore output` }],
+        true,
+      ),
+    ]);
+    assert.equal(lines.length, 1);
+    assert.ok(lines[0].includes(` target=ls ${"y".repeat(197)} error=true`));
+    assert.ok(lines[0].endsWith(` first=${BWRAP}`));
+    assert.ok(!lines[0].includes("more output"));
+  });
+
+  test(`${lane.lane}: a Read of the diff file logs first=<omitted>, and other Reads are not logged`, async () => {
+    const lines = await toolLines([
+      toolUse("r1", "Read", { file_path: diffPath("pr") }),
+      toolResult("r1", "@@ -1 +1 @@ content", false),
+      toolUse("r2", "Read", { file_path: "/runner/work/r/r/README.md" }),
+      toolResult("r2", "readme", false),
+      toolUse("g1", "Grep", {
+        pattern: "x",
+        path: "/runner/work/r/r/.claude-lane/",
+      }),
+      toolResult("g1", "match text", false),
+      toolUse("r3", "Read", { file_path: diffPath("incremental") }),
+      toolResult("r3", "File does not exist.", true),
+    ]);
+    assert.deepEqual(
+      lines.map((line) => line.slice(line.indexOf("tool="))),
+      [
+        `tool=Read target=${diffPath("pr")} error=false first=<omitted>`,
+        "tool=Grep target=/runner/work/r/r/.claude-lane/ error=false first=<omitted>",
+        `tool=Read target=${diffPath("incremental")} error=true first=File does not exist.`,
+      ],
+    );
+  });
+
+  test(`${lane.lane}: a permission denial logs its tool and command only`, async () => {
+    const lines = await toolLines([
+      {
+        type: "result",
+        permission_denials: [
+          {
+            tool_name: "Bash",
+            tool_use_id: "b9",
+            tool_input: { command: "gh pr diff 7", description: "hidden" },
+          },
+          { tool_name: "Read", tool_input: { file_path: diffPath("pr") } },
+        ],
+      },
+    ]);
+    assert.deepEqual(
+      lines.map((line) => line.slice(line.indexOf("denied"))),
+      [
+        "denied tool=Bash target=gh pr diff 7",
+        `denied tool=Read target=${diffPath("pr")}`,
+      ],
+    );
+  });
+
+  test(`${lane.lane}: the tool log stops at 40 lines and counts the rest`, async () => {
+    const messages = [];
+    for (let index = 0; index < 45; index += 1) {
+      messages.push(
+        toolUse(`b${index}`, "Bash", { command: `echo ${index}` }),
+        toolResult(`b${index}`, "ok", false),
+      );
+    }
+    const lines = await toolLines(messages);
+    assert.equal(lines.length, 41);
+    assert.match(lines[39], /target=echo 39 /u);
+    assert.match(lines[40], /: \.\.\. 5 more$/u);
+  });
 }
 
 test("the composite keeps its old behavior for a lane that does not ask for completion", async () => {
