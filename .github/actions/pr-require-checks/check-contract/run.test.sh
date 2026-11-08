@@ -269,6 +269,7 @@ run_case() {
     LINKAGE_LABEL=needs-issue-linkage \
     LINKAGE_MODE=advisory \
     ISSUE_REF_PATTERN='' \
+    GH_API_RETRY_BASE_SECONDS=0 \
     "$@" \
     bash "$script_directory/run.sh" >"$log_file" 2>&1
   actual_status=$?
@@ -910,6 +911,88 @@ set_pull 'feat: add pr-contract' 'nothing here' someone ''
 run_case 0
 expect_log '::notice::pr-contract: adding the linkage label was refused (HTTP 403); continuing without it'
 rm -f -- "$fixtures/POST_${labels_key}.err"
+
+# expect_sends <key> <n>
+# How many times the shim served one key.
+expect_sends() {
+  local actual=0
+  if [[ -f "$calls/${1}.count" ]]; then
+    actual="$(cat "$calls/${1}.count")"
+  fi
+  if [[ "$actual" != "$2" ]]; then
+    echo "FAIL: expected $2 send(s) of ${1}, got ${actual}"
+    cat "$gh_log"
+    failures=$((failures + 1))
+  fi
+}
+
+# Without the resend a single 5xx on the one read every verdict needs fails
+# the required check.
+echo 'case: a pull-request read that fails with a 5xx is sent again'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+printf '1\n' >"$fixtures/${pull_key}.fail-times"
+run_case 0
+expect_output 'linkage=pass'
+expect_sends "$pull_key" 2
+expect_log "POST graphql failed (HTTP 500); sending it again in 0s (attempt 2 of 3)."
+rm -f -- "$fixtures/${pull_key}.fail-times"
+
+# Without the attempt cap a read that keeps failing is sent until the job
+# times out.
+echo 'case: a pull-request read is sent at most three times'
+set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+printf '99\n' >"$fixtures/${pull_key}.fail-times"
+run_case 1
+expect_sends "$pull_key" 3
+expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 500)"
+rm -f -- "$fixtures/${pull_key}.fail-times"
+
+# Without the resend rule a comment POST that errored after GitHub created the
+# comment would be sent again and post it twice.
+echo 'case: a comment create that fails with a 5xx is sent once'
+set_comments '[]'
+set_pull 'feat: add pr-contract' 'nothing here' someone ''
+printf '1\n' >"$fixtures/POST_${comments_key}.fail-times"
+run_case 0
+expect_sends "POST_${comments_key}" 1
+expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
+rm -f -- "$fixtures/POST_${comments_key}.fail-times"
+
+# Without sending the advisory calls once, their resends could push the step
+# past a short ci-status job's timeout.
+echo 'case: an advisory comment edit that fails with a 5xx is sent once'
+set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale text')]"
+set_pull 'feat: add pr-contract' 'nothing here' someone ''
+printf '1\n' >"$fixtures/PATCH_repos_melodic-software_ci-workflows_issues_comments_1001.fail-times"
+run_case 0
+expect_sends PATCH_repos_melodic-software_ci-workflows_issues_comments_1001 1
+expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
+rm -f -- "$fixtures/PATCH_repos_melodic-software_ci-workflows_issues_comments_1001.fail-times"
+
+# Without the mutation test every GraphQL POST is resent, and a mutation that
+# errored after it took effect would run twice. No runner sends one, so this
+# calls gh_api itself, through the same shim.
+echo 'case: a GraphQL mutation that fails with a 5xx is sent once, a query again'
+for query in 'mutation { addLabelsToLabelable { clientMutationId } }' 'query { viewer { login } }'; do
+  rm -rf -- "$calls"
+  mkdir -p "$calls"
+  printf '1\n' >"$fixtures/${pull_key}.fail-times"
+  # shellcheck disable=SC2016 # The inner script expands its own variables.
+  env PATH="$shim_directory:$PATH" GH_LOG="$gh_log" GH_FIXTURES="$fixtures" GH_CALLS="$calls" SLEEP_LOG="$sleep_log" \
+    GH_API_RETRY_BASE_SECONDS=0 QUERY="$query" GH_API_SH="$script_directory/../gh-api.sh" \
+    bash -c 'set -euo pipefail
+      scratch="$(mktemp -d)"
+      gh_stdout="$scratch/out" gh_stderr="$scratch/err" gh_headers="$scratch/headers"
+      escape_annotation() { printf "%s" "$1"; }
+      source "$GH_API_SH"
+      gh_api POST graphql -f query="$QUERY" || true
+      rm -rf -- "$scratch"' >"$log_file" 2>&1
+  case "$query" in
+    mutation*) expect_sends "$pull_key" 1 ;;
+    *) expect_sends "$pull_key" 2 ;;
+  esac
+  rm -f -- "$fixtures/${pull_key}.fail-times"
+done
 
 # Without the pass branch the label stays on a body that now conforms.
 echo 'case: a linkage pass removes the label and rewrites the marker comment'

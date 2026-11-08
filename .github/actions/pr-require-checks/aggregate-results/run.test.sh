@@ -62,7 +62,10 @@ chmod +x "$shim_directory/date"
 # can make every call to a key take time on the fake clock (`<key>.advance`).
 # Under `-i` it prints `<key>.<n>.headers` or `<key>.headers` (a status line
 # and header lines) before the output, as `gh api -i` does, and
-# `<key>.<n>.err` fails only the Nth call with that stderr.
+# `<key>.<n>.err` fails only the Nth call with that stderr. Under `-i`, a key
+# with `<key>.etag` (or `<key>.<n>.etag` for the Nth call) answers with that
+# `etag`, and a request whose `If-None-Match` names it gets a `304` as gh
+# prints one: the status line, no body, `gh: HTTP 304` and exit 1.
 cat >"$shim_directory/gh" <<'SHIM'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -75,11 +78,18 @@ input=""
 slurp=false
 include=false
 seen_api=false
+if_none_match=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     api)
       seen_api=true
       shift
+      ;;
+    -H)
+      if [[ "$2" == 'If-None-Match: '* ]]; then
+        if_none_match="${2#If-None-Match: }"
+      fi
+      shift 2
       ;;
     -X)
       method="$2"
@@ -129,7 +139,21 @@ if [[ -f "$count_file" ]]; then
 fi
 printf '%s\n' "$call_number" >"$count_file"
 
-if [[ "$include" == true ]]; then
+etag=""
+for etag_file in "$GH_FIXTURES/${key}.${call_number}.etag" "$GH_FIXTURES/${key}.etag"; do
+  if [[ -f "$etag_file" ]]; then
+    etag="$(cat "$etag_file")"
+    break
+  fi
+done
+if [[ "$include" == true && -n "$etag" ]]; then
+  if [[ "$if_none_match" == "$etag" ]]; then
+    printf 'HTTP/2.0 304 Not Modified\r\nEtag: %s\r\n\r\n' "$etag"
+    echo 'gh: HTTP 304' >&2
+    exit 1
+  fi
+  printf 'HTTP/2.0 200 OK\r\nEtag: %s\r\n\r\n' "$etag"
+elif [[ "$include" == true ]]; then
   for headers in "$GH_FIXTURES/${key}.${call_number}.headers" "$GH_FIXTURES/${key}.headers"; do
     if [[ -f "$headers" ]]; then
       cat "$headers"
@@ -153,13 +177,18 @@ if [[ -f "$fail_times" ]]; then
   fi
 fi
 
-# Fail one specific call to a key while every other call to it succeeds, which
-# `.fail-times` (always the FIRST n) cannot express. A read that fails part way
-# through the poll loop is a different path from one that fails on entry.
+# Fail one specific call to a key, or a range `<first>-<last>` of them, while
+# every other call to it succeeds, which `.fail-times` (always the FIRST n)
+# cannot express. A read that fails part way through the poll loop is a
+# different path from one that fails on entry; a read whose every send fails
+# takes a range of three, since `gh_api` sends a 5xx read three times.
 fail_on_call="$GH_FIXTURES/${key}.fail-on-call"
-if [[ -f "$fail_on_call" && "$call_number" == "$(cat "$fail_on_call")" ]]; then
-  echo "gh: Internal Server Error (HTTP 500)" >&2
-  exit 1
+if [[ -f "$fail_on_call" ]]; then
+  IFS=- read -r fail_first fail_last <"$fail_on_call"
+  if [[ "$call_number" -ge "$fail_first" && "$call_number" -le "${fail_last:-$fail_first}" ]]; then
+    echo "gh: Internal Server Error (HTTP 500)" >&2
+    exit 1
+  fi
 fi
 
 if [[ -f "$GH_FIXTURES/${key}.${call_number}.err" ]]; then
@@ -237,7 +266,7 @@ run_case() {
     YIELD_TO_FULL_RUN=false \
     REPOSITORY="$repository" \
     SHA="$sha" \
-    STATUS_RETRY_BASE_DELAY=0 \
+    GH_API_RETRY_BASE_SECONDS=0 \
     GITHUB_SERVER_URL=https://github.com \
     GITHUB_RUN_ID=4242 \
     GITHUB_EVENT_NAME=pull_request \
@@ -531,13 +560,15 @@ printf '%s\n' 99 >"$fixtures/POST_repos_melodic-software_ci-workflows_statuses_$
 run_case 1 'success success' pass ''
 expect_log 'All lanes passed or were skipped.'
 expect_log "::error::could not record ci-lanes on ${sha} (500); the calling job needs statuses: write"
+# Without the attempt cap a failing write is sent until the job times out.
+expect_calls "POST_repos_melodic-software_ci-workflows_statuses_${sha}" 3
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 
-# Without the retry loop the first 500 fails the run.
+# Without the resend the first 500 fails the run.
 echo 'case: full mode passes when the status write succeeds on the second attempt'
 printf '%s\n' 1 >"$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 run_case 0 'success success' pass ''
-expect_log 'retrying in 0s'
+expect_log "POST repos/${repository}/statuses/${sha} failed (HTTP 500); sending it again in 0s (attempt 2 of 3)."
 expect_log "Recorded ci-lanes=success on ${sha}."
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 
@@ -635,13 +666,16 @@ expect_no_sleep
 clear_rate_limit_fixtures
 
 # Without the permission branch this would wait as if rate limited, or name no
-# scope at all.
-echo 'case: a permission 403 names the scope and does not wait'
+# scope at all; without the 4xx rule it would be sent again.
+echo 'case: a permission 403 names the scope, does not wait and is not resent'
 printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${status_post_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: statuses=write\r\nX-Ratelimit-Remaining: 4999\r\n' >"$fixtures/${status_post_key}.1.headers"
-run_case 0 'success success' pass ''
+run_case 1 'success success' pass ''
 expect_log 'returned HTTP 403 (permission): Resource not accessible by integration; x-ratelimit-remaining=4999 x-ratelimit-reset=absent retry-after=absent x-accepted-github-permissions=statuses=write'
+expect_log "::error::could not record ci-lanes on ${sha} (403); the calling job needs statuses: write"
 expect_no_log 'rate limited'
+expect_no_sleep
+expect_calls "${status_post_key}" 1
 clear_rate_limit_fixtures
 
 echo 'case: an out-of-range rate-limit-wait-seconds is rejected'
@@ -1188,8 +1222,48 @@ printf '%s\n' 2 >"$fixtures/${workflow_runs_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log '::warning::could not read'
+# Without turning the resend off in the wait, a slow 5xx would be sent three
+# times on each poll before the degraded read.
+expect_no_log 'sending it again'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${workflow_runs_key}.fail-on-call"
+
+# Without the conditional read every poll of an unchanged listing is billed.
+# Each poll lists once, so three polls send three listings: the second and
+# third carry the first one's etag, and their 304s must still show run 4000 in
+# flight, or the wait would stop on an empty listing and fail.
+echo 'case: a repeated runs listing sends its etag and a 304 reuses the listing'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list_on_call 1 '[]'
+status_list_on_call 2 '[]'
+status_list "[$(full_run_success 100)]"
+workflow_runs "[${earlier_full_run}]"
+printf '%s' '"runs-v1"' >"$fixtures/${workflow_runs_key}.etag"
+run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 15s of 60s)."
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_calls "$workflow_runs_key" 3
+if [[ "$(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")" != 2 ]]; then
+  echo "FAIL: expected 2 conditional listings, got: $(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")"
+  failures=$((failures + 1))
+fi
+
+# Without keeping the etag per call, a listing whose content changed (a new
+# etag) would be answered from the first poll's body.
+echo 'case: a listing answered with a new etag replaces the remembered one'
+clear_status_fixtures
+clear_run_fixtures
+current_run
+status_list '[]'
+workflow_runs_on_call 1 "[${earlier_full_run}]"
+printf '%s' '"runs-v1"' >"$fixtures/${workflow_runs_key}.1.etag"
+workflow_runs "[$(run_entry 4000 completed 2026-09-05T12:00:00Z)]"
+printf '%s' '"runs-v2"' >"$fixtures/${workflow_runs_key}.etag"
+run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
+expect_gh_call 'If-None-Match: "runs-v1"'
+expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000)"
 
 echo 'case: a 403 on the current-run fetch warns and never reaches the workflow-runs endpoint'
 clear_status_fixtures
@@ -1476,6 +1550,7 @@ printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "Waiting 15s for in-flight run(s) 4000 on ${sha} to finish (waited 0s of 60s)."
 expect_log "::warning::could not read repos/${repository}/commits/${sha}/statuses"
+expect_no_log 'sending it again'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
 
@@ -1491,7 +1566,7 @@ current_run
 status_list '[]'
 workflow_runs_on_call 1 "[${earlier_full_run}]"
 workflow_runs_on_call 2 "[${earlier_full_run},$(run_entry 4700 in_progress "$current_run_created_at")]"
-printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
+printf '%s\n' 2-4 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_log "${fail_prefix}${absent_remedy} (waited 15s of 60s on in-flight run(s): 4000 4700)"
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
@@ -1670,6 +1745,16 @@ expect_log "::warning::re-running run 5000 returned HTTP 403; rerun-contract-onl
 expect_gh_call "POST repos/${repository}/actions/runs/5600/rerun-failed-jobs"
 expect_log "Re-ran 1 failed contract-only run(s) on ${sha}."
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs.err"
+
+# Without the resend rule a re-run request that errored, and may still have
+# started the re-run, would be sent again and could start another.
+echo 'case: a re-run request that fails with a 5xx is sent once'
+printf '%s\n' 1 >"$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs.fail-times"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_calls POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs 1
+expect_no_log 'rerun-failed-jobs failed (HTTP 500); sending it again'
+expect_gh_call "POST repos/${repository}/actions/runs/5600/rerun-failed-jobs"
+rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_5000_rerun-failed-jobs.fail-times"
 
 echo 'case: a jobs read failure skips that sibling and still passes'
 printf '%s\n' 'gh: Internal Server Error (HTTP 500)' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5000_jobs.err"
@@ -2142,6 +2227,9 @@ if [[ "$(paste -sd' ' "$sleep_log")" != '30 30' ]]; then
   echo "FAIL: expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
   failures=$((failures + 1))
 fi
+# Without turning the resend off in the hold, the failed poll is sent again
+# at once instead of on the next poll.
+expect_no_log 'sending it again'
 
 # Without the rate-limit return the hold polls a limited token to the ceiling.
 echo 'case: a rate-limited read ends a hold and fails closed'
@@ -2231,7 +2319,7 @@ reset_yield_fixtures
 status_list "[$(writer_status 100 success 2026-09-05T12:05:00Z 4000)]"
 workflow_runs "$late_writer_runs"
 writer_running_then_success
-printf '2\n' >"$fixtures/${statuses_key}.fail-on-call"
+printf '2-4\n' >"$fixtures/${statuses_key}.fail-on-call"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true RERUN_CONTRACT_ONLY_SIBLINGS=true
 expect_log "${fail_prefix}${absent_remedy}"
 expect_no_log 'Carried forward'
@@ -2321,6 +2409,28 @@ workflow_runs '[]'
 printf '2\n' >"$fixtures/${workflow_runs_key}.fail-times"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures/${workflow_runs_key}.fail-times"
+
+# Without the jitter ceiling a resend waits a fixed or unbounded time. Full
+# jitter waits 0 to the base, then 0 to twice it, so each sleep is checked
+# against its own ceiling rather than an exact value.
+echo 'case: a read resent after 5xx answers waits a full-jitter time under each ceiling'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs '[]'
+printf '2\n' >"$fixtures/${workflow_runs_key}.fail-times"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true GH_API_RETRY_BASE_SECONDS=4
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_log '(attempt 2 of 3).'
+expect_log '(attempt 3 of 3).'
+expect_calls "$workflow_runs_key" 3
+# A wait of 0 sleeps not at all, so the waits are read from the log lines.
+jitter_second="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 2 of 3).*/\1/p' "$log_file")"
+jitter_third="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 3 of 3).*/\1/p' "$log_file")"
+if [[ ! "$jitter_second" =~ ^[0-9]+$ || ! "$jitter_third" =~ ^[0-9]+$ || "$jitter_second" -gt 4 || "$jitter_third" -gt 8 ]]; then
+  echo "FAIL: expected at most a 4s then an 8s wait, got: ${jitter_second:-none} ${jitter_third:-none}"
+  failures=$((failures + 1))
+fi
 rm -f -- "$fixtures/${workflow_runs_key}.fail-times"
 
 echo 'case: an invalid yield-to-full-run value is rejected'
@@ -2431,6 +2541,9 @@ jobs_for 5300 failure skipped
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
 expect_log 'Waiting 10s for in-flight run(s) 5300'
 expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
+# Without turning the resend off in the wait, the unreadable sibling is read
+# again at once instead of on the next poll.
+expect_no_log 'sending it again'
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.fail-on-call"
 
 # Without the ceiling a sibling that never finishes would hold this run's
@@ -2979,12 +3092,36 @@ expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_log "This run's gate job is 'ci-status' (REST id 9100, job.check_run_id 9100), found by job.check_run_id 9100 in run 4242."
 expect_no_sleep
 
+# The jobs API has listed a running job's finished steps without the one still
+# running (#883: 8 entries, no 'Aggregate lane results'). Without trusting a
+# named step that is listed nowhere, that listing fails closed like `[]` did.
+echo 'case: job.check_run_id with step-name carries forward when the listed steps omit the running step'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+jq -c '. + {run_id: 4242, steps: [{name: "Check the pull-request contract", status: "completed", conclusion: "success"}]}' <<<"$own_gate_job" >"$fixtures/${check_job_key}.json"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100 'STEP_NAME=Aggregate lane results'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+expect_no_sleep
+lagging_check_job queued
+
 # Without step-name nothing names the running step, so an unlisted step still
 # fails closed: the step check is not dropped, only trusted when named.
 echo 'case: job.check_run_id without step-name still needs the running step listed'
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
 expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
 expect_no_log 'Carried forward'
+
+# Without the conditional read each of the lookup's nine reads of an unchanged
+# job is billed; with it the eight after the first carry its etag.
+echo 'case: the own-job lookup sends its etag on every read after the first'
+printf '%s' '"job-v1"' >"$fixtures/${check_job_key}.etag"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
+expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
+if [[ "$(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")" != 8 ]]; then
+  echo "FAIL: expected 8 conditional job reads, got: $(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")"
+  failures=$((failures + 1))
+fi
+rm -f -- "$fixtures/${check_job_key}.etag"
 
 # Without the completed-step test, a step-name naming a step that already
 # finished would be trusted as the step running this action.
@@ -3068,6 +3205,18 @@ run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${own_jobs_key}.fail-times"
 
+# Without turning off gh_api's resend inside the lookup, each of its nine reads
+# would be sent up to three times on a 5xx.
+echo 'case: the own-job lookup sends each of its reads once'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+printf '99\n' >"$fixtures/${own_jobs_key}.fail-times"
+run_case 1 'skipped skipped' pass true
+expect_calls "$own_jobs_key" 9
+expect_no_log 'sending it again'
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/${own_jobs_key}.fail-times"
+
 # expect_total_sleep <seconds>
 expect_total_sleep() {
   if [[ "$(awk '{ t += $1 } END { print t + 0 }' "$sleep_log")" != "$1" ]]; then
@@ -3117,7 +3266,7 @@ expect_no_log 'Carried forward'
 echo 'case: a single status read whose re-read fails does not carry forward'
 reset_yield_fixtures
 status_list "[$(full_run_success 100)]"
-printf '%s\n' 2 >"$fixtures/${statuses_key}.fail-on-call"
+printf '%s\n' 2-4 >"$fixtures/${statuses_key}.fail-on-call"
 run_case 1 'skipped skipped' pass true
 rm -f -- "$fixtures/${statuses_key}.fail-on-call"
 expect_no_log 'Carried forward'

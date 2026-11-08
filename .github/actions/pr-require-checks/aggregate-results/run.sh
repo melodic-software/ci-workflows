@@ -104,9 +104,6 @@ YIELD_TO_FULL_RUN="${YIELD_TO_FULL_RUN:-}"
 STATUS_CONTEXT="${STATUS_CONTEXT:-ci-lanes}"
 REPOSITORY="${REPOSITORY:-}"
 SHA="${SHA:-}"
-# Retries are 1s, 2s, 4s in CI; the harness sets 0 so a nine-second sleep does
-# not ride on every refused-write case.
-STATUS_RETRY_BASE_DELAY="${STATUS_RETRY_BASE_DELAY:-1}"
 # The login a `GITHUB_TOKEN`-authored commit status carries. Overridable only so
 # the harness can exercise the check; a caller minting statuses with a GitHub
 # App token would need its own value and takes on proving that identity itself.
@@ -239,13 +236,16 @@ require_pattern yield-wait-seconds "$YIELD_WAIT_SECONDS" '^(0|[1-9][0-9]*)$' 'a 
 # At most an hour, the life of a GitHub App installation token.
 require_pattern rate-limit-wait-seconds "$RATE_LIMIT_WAIT_SECONDS" '^(0|[1-9][0-9]{0,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|3600)$' 'an integer number of seconds from 0 to 3600'
 
-# POST one `status-context` entry on `sha` naming this run, retrying after 1s,
-# 2s and 4s. Every write is load-bearing, not best-effort: the carry-forward
-# branch reads nothing else, so a silently missing status turns every later
-# contract-only run red, or lets one carry an older verdict, with no way to tell
-# a refused write from a real result. Returns 1 after printing the error.
+# POST one `status-context` entry on `sha` naming this run. Every write is
+# load-bearing, not best-effort: the carry-forward branch reads nothing else, so
+# a silently missing status turns every later contract-only run red, or lets one
+# carry an older verdict, with no way to tell a refused write from a real
+# result. A resend posts the same state, context and run again, so it changes
+# nothing a reader decides on, and `gh_api` may send it up to three times.
+# Returns 1 after printing the error.
 write_status() {
-  local state="$1" description="$2" attempt delay
+  local state="$1" description="$2"
+  local GH_API_RESEND=true
   jq -n \
     --arg state "$state" \
     --arg context "$STATUS_CONTEXT" \
@@ -253,21 +253,10 @@ write_status() {
     --arg target_url "${GITHUB_SERVER_URL:-https://github.com}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-0}" \
     '{state: $state, context: $context, description: $description, target_url: $target_url}' \
     >"$scratch/status-payload.json"
-  for attempt in 1 2 3 4; do
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
-    if gh_api POST "repos/${REPOSITORY}/statuses/${SHA}" --input "$scratch/status-payload.json"; then
-      return 0
-    fi
-    # gh_api already took the one bounded wait a rate limit allows.
-    if [[ "$GH_FAILURE" == rate-limit ]]; then
-      break
-    fi
-    if [[ "$attempt" -lt 4 ]]; then
-      delay=$((STATUS_RETRY_BASE_DELAY * (1 << (attempt - 1))))
-      echo "::warning::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS:-unknown}); retrying in ${delay}s"
-      sleep "$delay"
-    fi
-  done
+  # shellcheck disable=SC2310 # gh_api handles its own errexit; the status is classified below.
+  if gh_api POST "repos/${REPOSITORY}/statuses/${SHA}" --input "$scratch/status-payload.json"; then
+    return 0
+  fi
   cat "$gh_stderr" >&2
   if [[ "$GH_FAILURE" == rate-limit ]]; then
     echo "::error::could not record ${STATUS_CONTEXT} on ${SHA} (HTTP ${GH_HTTP_STATUS}): rate limited past rate-limit-wait-seconds; re-run this job after the limit resets"
@@ -601,6 +590,8 @@ resolve_own_gate() {
 lookup_own_gate() {
   local consequence="$1" endpoint
   local delay reads=0 own_gate_retries verdict job_name job_id step_name count cause=""
+  # This loop reads a 5xx again on its own schedule, so `gh_api` does not.
+  local GH_API_RETRY_ERRORS=false
   own_job_identity
   endpoint="$own_job_endpoint"
   own_gate_endpoint="$endpoint"
@@ -973,8 +964,11 @@ wait_for_sibling_runs() {
     # Not `--paginate`: this endpoint returns an object, and concatenated
     # objects are not valid input to the filter below. 100 runs on one head SHA
     # is already far past the burst this wait exists for.
+    # A failed read here ends the wait in the caller's one fresh read, so
+    # `gh_api` sends it once: resends of slow 5xx answers on every poll
+    # would outlast the margin the job timeout keeps for that read.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
-    if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    if ! GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$no_wait"
       # Discard any earlier poll's read so the caller takes the single fresh
       # read the warning above promises. Without this, a listing that fails on
@@ -1001,9 +995,10 @@ wait_for_sibling_runs() {
     carry_forward_waited=$((now - wait_started))
     # The status read comes AFTER the listing above, never before it: a sibling
     # writes the status and flips to `completed` moments later, and the other
-    # order lets that completion land between the two calls.
+    # order lets that completion land between the two calls. Every read under
+    # it is sent once, for the reason the listing above is.
     # shellcheck disable=SC2310 # read_carried_state handles its own errexit; the caller classifies the status.
-    if ! read_carried_state listed; then
+    if ! GH_API_RETRY_ERRORS=false read_carried_state listed; then
       # The same degraded path the listing failure above takes, for the same
       # reason. This endpoint is read once per poll, up to sixteen times
       # under the 240s ceiling, so failing the run on the first transient 5xx
@@ -1172,23 +1167,17 @@ fail_carry_forward() {
 yield_full_runs=""
 list_in_flight_full_runs() {
   local closed='Cannot tell whether a full run is in flight on this SHA, so this run fails closed; re-run it.'
-  local attempt ids id shape gate=""
+  local ids id shape gate=""
   yield_full_runs=""
   # shellcheck disable=SC2310 # resolve_workflow_id warns itself; the caller fails closed.
   if ! resolve_workflow_id 'actions: read' "$closed"; then
     return 1
   fi
-  for attempt in 1 2 3; do
-    # shellcheck disable=SC2310 # gh_api handles its own errexit; the retry loop classifies the status.
-    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
-      break
-    fi
-    if [[ "$attempt" -eq 3 ]]; then
-      warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$closed"
-      return 1
-    fi
-    sleep "$((STATUS_RETRY_BASE_DELAY * attempt))"
-  done
+  # shellcheck disable=SC2310 # gh_api handles its own errexit and its retries; the caller fails closed.
+  if ! gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$closed"
+    return 1
+  fi
   ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
     '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
     <"$gh_stdout")" || return 1
@@ -1259,8 +1248,9 @@ yield_hold() {
     fi
     echo "Holding ${sleep_for}s for full run(s) ${waiting} in flight on ${SHA} (${remaining}s left of ${YIELD_WAIT_SECONDS}s)."
     sleep "$sleep_for"
+    # The next poll is this read's retry, so `gh_api` sends it once.
     # shellcheck disable=SC2310 # gh_api handles its own errexit; a failed read holds for one more poll.
-    if gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
+    if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs?head_sha=${SHA}&per_page=100"; then
       waiting="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --arg ids " ${waiting} " \
         '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | .id | tostring | select(. as $id | $ids | contains(" \($id) ")) ] | join(" ")' \
         <"$gh_stdout")" || waiting=""
@@ -1591,8 +1581,9 @@ rerun_failed_contract_only_siblings() {
     waiting=""
     for id in $in_flight; do
       ran=0
+      # The next poll is this read's retry, so `gh_api` sends it once.
       # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling is waited for.
-      if gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
         ran="$(jq -r '[ .jobs[]? | select(.status == "in_progress" or ((.conclusion // "skipped") != "skipped")) ] | length' <"$gh_stdout")" || ran=0
       fi
       if [[ ! "$ran" =~ ^[0-9]+$ || "$ran" -lt 2 ]]; then
