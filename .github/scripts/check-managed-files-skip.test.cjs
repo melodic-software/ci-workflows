@@ -216,3 +216,38 @@ test("verification steps run only in sync mode and no step skips it", () => {
     );
   }
 });
+
+// actions/checkout empties or cleans the directory it checks out into, so the
+// repository under check must land at the workspace root before the standards
+// tree is checked out beneath it.
+test("the action checks out the repository under check, in full, before the standards source, and skips both with the guard", () => {
+  const { parseWorkflow } = require("./workflow-yaml.cjs");
+  const { steps } = parseWorkflow(action).runs;
+  const checkouts = steps.filter((s) =>
+    String(s.uses ?? "").startsWith("actions/checkout@"),
+  );
+  assert.deepEqual(
+    checkouts.map((s) => s.with),
+    [
+      {
+        repository: `\${{ inputs.repository }}`,
+        ref: `\${{ inputs.head-ref }}`,
+        "fetch-depth": 0,
+        clean: false,
+        "persist-credentials": false,
+      },
+      {
+        repository: "melodic-software/standards",
+        ref: `\${{ (steps.group.outputs.mode || steps.mode.outputs.mode) == 'sync' && 'main' || inputs.standards-ref }}`,
+        path: ".managed-files-guard-standards",
+        "persist-credentials": false,
+      },
+    ],
+  );
+  const skip =
+    "(steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'";
+  assert.deepEqual(
+    checkouts.map((s) => s.if),
+    [skip, skip],
+  );
+});

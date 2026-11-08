@@ -153,6 +153,19 @@ runs:
             headSha: process.env.HEAD_SHA,
           });
 
+    # Before the standards checkout: checking out the workspace root deletes
+    # or cleans everything under it. A caller's own full checkout of the same
+    # repository is reused, and clean: false keeps its untracked files.
+    - name: Check out the repository under check
+      if: (steps.group.outputs.mode || steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.head-ref }}
+        fetch-depth: 0
+        clean: false
+        persist-credentials: false
+
     # Sync mode verifies against standards main HEAD, never a SHA the PR names,
     # so a sync PR cannot roll managed files back to older reviewed content.
     # If main moves mid-sync the check fails closed; the sync workflow runs on
