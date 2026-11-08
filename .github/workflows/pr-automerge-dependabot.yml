@@ -6,7 +6,10 @@ name: pr-automerge-dependabot
 # `ci-status` included, passes. Nothing here calls a merge mutation, so this
 # workflow cannot bypass the required check. A repository without a required
 # check makes GitHub refuse the arm (the pull request is already mergeable),
-# and the job fails rather than merging.
+# and the job fails rather than merging. A GITHUB_TOKEN arm never enters a
+# merge queue; a repository whose default branch has one queues these pull
+# requests with an App token on a schedule instead, as this repository does in
+# pr-automerge-dependabot-queue.yml with the same gate.
 #
 # Canonical caller (the caller owns the trigger, concurrency and the
 # permission grant; a called workflow can only downgrade the caller's grant):
@@ -42,6 +45,9 @@ name: pr-automerge-dependabot
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
 #     its minor component (the policy's non-major rule); a grouped PR with one
 #     major bump, or an update type Dependabot could not compute, is skipped;
+#   - the updates in the metadata are exactly those the title or the body's
+#     `Updates` lines name, each with the same from and to version
+#     (standards dependabot-policy README, auto tier);
 #   - the event's sender (the pusher on opened/synchronize/reopened) is
 #     49699333, so a push or reopen by anyone else is skipped;
 #   - fetch-metadata succeeded; it fails when the first commit is not
@@ -61,7 +67,8 @@ name: pr-automerge-dependabot
 # TRUST: every PR-derived value (dependency names, versions, the metadata
 # JSON) is untrusted. Values reach the script through `env:` only, never a
 # `${{ }}` expansion inside script text. No checkout: nothing from the pull
-# request is executed.
+# request is executed. The gate is the automerge-dependabot composite, reached
+# through `$/`, so it runs at the commit of this workflow the caller calls.
 on:
   workflow_call:
     inputs:
@@ -106,151 +113,20 @@ jobs:
       - name: Fetch Dependabot metadata
         id: metadata
         # dependabot/* is GitHub's own verified organization, and this is the
-        # documented parser for Dependabot's update metadata; a script would
-        # reimplement its version and update-type logic. Its bumps stay manual.
-        # fetch-metadata fails when the PR's first commit is not Dependabot's
-        # (a force-push by another user). The gate must still run then, to
-        # disarm, so a failure here is a skip, not a stop.
+        # documented parser for Dependabot's update metadata. Its bumps stay
+        # manual. fetch-metadata fails when the PR's first commit is not
+        # Dependabot's (a force-push by another user). The gate must still
+        # run then, to disarm, so a failure here is a skip, not a stop.
         continue-on-error: true
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
       - name: Gate and arm auto-merge
         if: ${{ !cancelled() }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          METADATA_OUTCOME: ${{ steps.metadata.outcome }}
-          SENDER_ID: ${{ github.event.sender.id }}
-          UPDATED_DEPENDENCIES_JSON: ${{ steps.metadata.outputs.updated-dependencies-json }}
-          PUBLISHER_ALLOWLIST: ${{ inputs.publisher-allowlist }}
-          PACKAGE_AUTO_MERGE: ${{ inputs.package-auto-merge }}
-          REVIEW_ONLY_DEPENDENCIES: ${{ inputs.review-only-dependencies }}
+        uses: $/.github/actions/automerge-dependabot
         with:
-          script: |
-            const DEPENDABOT_ID = 49699333;
-            const WEB_FLOW_ID = 19864447;
-            const ACTIONS_ECOSYSTEM = "github_actions";
-            // fetch-metadata's ids for npm, pip, uv and NuGet (Dependabot branch names).
-            const PACKAGE_ECOSYSTEMS = new Set(["npm_and_yarn", "pip", "uv", "nuget"]);
-            const UPDATE_TYPES = new Set([
-              "version-update:semver-patch",
-              "version-update:semver-minor",
-            ]);
-            const pr = context.payload.pull_request;
-
-            const globToRegExp = (glob) =>
-              new RegExp(
-                `^${glob.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join(".*")}$`,
-                "u",
-              );
-            const packageAutoMerge = process.env.PACKAGE_AUTO_MERGE === "true";
-
-            const majorMinor = (version) => /^v?(\d+)\.(\d+)/u.exec(String(version ?? ""));
-            function breaksBelowOne(update) {
-              const previous = majorMinor(update?.prevVersion);
-              if (previous?.[1] !== "0") return false;
-              const next = majorMinor(update?.newVersion);
-              return next === null || next[1] !== "0" || next[2] !== previous[2];
-            }
-
-            async function gateFailure() {
-              if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
-              if (process.env.SENDER_ID !== String(DEPENDABOT_ID)) return "this event was not sent by Dependabot";
-              if (process.env.METADATA_OUTCOME !== "success") return "fetching the Dependabot metadata failed";
-              let updates;
-              try {
-                updates = JSON.parse(process.env.UPDATED_DEPENDENCIES_JSON || "");
-              } catch {
-                return "the Dependabot metadata is not valid JSON";
-              }
-              if (!Array.isArray(updates) || updates.length === 0) return "no updated dependencies";
-              let reviewOnly;
-              try {
-                reviewOnly = JSON.parse(process.env.REVIEW_ONLY_DEPENDENCIES);
-              } catch {
-                reviewOnly = null;
-              }
-              if (!Array.isArray(reviewOnly) || !reviewOnly.every((entry) => typeof entry === "string")) {
-                return "the review-only-dependencies input is not a JSON array of names";
-              }
-              let publishers;
-              try {
-                publishers = JSON.parse(process.env.PUBLISHER_ALLOWLIST);
-              } catch {
-                publishers = null;
-              }
-              if (
-                !Array.isArray(publishers) ||
-                !publishers.every((entry) => typeof entry === "string" && entry.length > 0)
-              ) {
-                return "the publisher-allowlist input is not a JSON array of non-empty globs";
-              }
-              const allowlist = publishers.map(globToRegExp);
-              for (const update of updates) {
-                const name = String(update?.dependencyName ?? "");
-                const ecosystem = update?.packageEcosystem;
-                if (ecosystem === ACTIONS_ECOSYSTEM) {
-                  if (!allowlist.some((pattern) => pattern.test(name))) return `${name} is not an allowlisted publisher`;
-                } else if (!PACKAGE_ECOSYSTEMS.has(ecosystem)) {
-                  return `${name} is not a GitHub Actions, npm, pip, uv or NuGet update`;
-                } else if (!packageAutoMerge) {
-                  return `${name} is a package update and this repository turned package auto-merge off`;
-                } else if (reviewOnly.includes(name)) {
-                  return `${name} is a review-only dependency`;
-                }
-                if (!UPDATE_TYPES.has(update?.updateType)) return `${name} is not a patch or minor update`;
-                if (breaksBelowOne(update)) return `${name} changes its minor version below 1.0`;
-              }
-              const commits = await github.paginate(github.rest.pulls.listCommits, {
-                ...context.repo,
-                pull_number: pr.number,
-                per_page: 100,
-              });
-              if (commits.length === 0 || commits.at(-1).sha !== pr.head.sha) {
-                return "the PR head moved after this event";
-              }
-              for (const commit of commits) {
-                const verification = commit.commit?.verification;
-                if (
-                  commit.author?.id !== DEPENDABOT_ID ||
-                  commit.committer?.id !== WEB_FLOW_ID ||
-                  verification?.verified !== true ||
-                  verification?.reason !== "valid"
-                ) {
-                  return `commit ${commit.sha} is not a verified Dependabot commit`;
-                }
-              }
-              return "";
-            }
-
-            const reason = await gateFailure();
-            if (reason) {
-              core.notice(`Auto-merge not armed: ${reason}.`);
-              if (pr.auto_merge) {
-                await github.graphql(
-                  `mutation($id: ID!) {
-                    disablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId }
-                  }`,
-                  { id: pr.node_id },
-                );
-                core.notice("Disarmed the auto-merge armed on an earlier head.");
-              }
-              return;
-            }
-
-            try {
-              await github.graphql(
-                `mutation($id: ID!, $head: GitObjectID!) {
-                  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: SQUASH, expectedHeadOid: $head}) {
-                    clientMutationId
-                  }
-                }`,
-                { id: pr.node_id, head: pr.head.sha },
-              );
-            } catch (error) {
-              // An already-mergeable PR (mergeStateStatus CLEAN or UNSTABLE) makes
-              // the mutation error instead of no-op, as in the standards-sync arm.
-              if (!/is in (clean|unstable) status/iu.test(error.message)) throw error;
-              core.warning(`Could not arm auto-merge on #${pr.number}: ${error.message}`);
-              return;
-            }
-            core.info(`Armed squash auto-merge on #${pr.number} at ${pr.head.sha}.`);
+          metadata-outcome: ${{ steps.metadata.outcome }}
+          sender-id: ${{ github.event.sender.id }}
+          updated-dependencies-json: ${{ steps.metadata.outputs.updated-dependencies-json }}
+          publisher-allowlist: ${{ inputs.publisher-allowlist }}
+          package-auto-merge: ${{ inputs.package-auto-merge }}
+          review-only-dependencies: ${{ inputs.review-only-dependencies }}

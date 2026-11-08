@@ -676,10 +676,11 @@ jobs:
     cache-mode: none
     uses: melodic-software/ci-workflows/.github/workflows/intake-label-needs-triage.yml@main
 
-  # No pr-automerge-dependabot job: melodic-software callers float on this
-  # repository's main, so an action bump merged here runs next in every
-  # consumer's secret-holding lanes. This repository's Dependabot pull requests
-  # wait for a person.
+  # No pr-automerge-dependabot job: its GITHUB_TOKEN arm never enters main's
+  # merge queue, and a Dependabot-triggered run holds no App secret.
+  # pr-automerge-dependabot-queue.yml runs the same gate on main every 30
+  # minutes and queues in-tier bumps with the melodic-release App token; every
+  # other Dependabot pull request waits for a person.
 
   ci-status:
     if: ${{ github.event_name != 'issues' && always() }}

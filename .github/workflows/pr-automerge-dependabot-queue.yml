@@ -1,0 +1,103 @@
+name: pr-automerge-dependabot-queue
+
+# Queues this repository's in-tier Dependabot pull requests. A GITHUB_TOKEN
+# arm never enters the merge queue main requires, and a Dependabot-triggered
+# run sees only Dependabot secrets, so this runs on main on a schedule and
+# arms with the melodic-release App token from the plugin-release
+# environment, which admits main only (as release-tag.yml mints it).
+#
+# Per open pull request authored by account 49699333 (dependabot[bot]): the
+# gate pr-automerge-dependabot.yml runs (automerge-dependabot/gate.cjs) over
+# the head commit's Dependabot metadata, then a `ci-status` check run that
+# succeeded on the head, then enablePullRequestAutoMerge at that head with no
+# merge method (the queue sets it), which enqueues it once it is mergeable.
+# An out-of-tier pull request is left alone with a notice, and disarmed if an
+# earlier head was armed, since a push keeps auto-merge on. Arming a pull
+# request that changes a workflow file needs the App's workflows: write; a
+# refusal for its lack is a warning naming it, and the run moves on. No step
+# fails the job over one pull request.
+#
+# Every 30 minutes, off the hour: a judgment of how long an in-tier bump may
+# wait after ci-status passes, at one listing and a few reads per run.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pr-automerge-dependabot-queue
+  cancel-in-progress: false
+
+jobs:
+  automerge-dependabot-prs:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    # One listing, then per pull request a commit listing, a check-run read,
+    # a merge-queue read and at most three mutations.
+    timeout-minutes: 10
+    environment:
+      name: plugin-release
+      # Secrets only: a run every 30 minutes would otherwise write a
+      # deployment each time. plugin-release has no custom protection rule.
+      deployment: false
+    permissions:
+      contents: read # Check out main for the gate scripts.
+      pull-requests: read # List the pull requests and their commits; read the merge-queue state.
+      checks: read # Read ci-status on each head; the App holds no checks permission.
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mint the release App token
+        id: app-token
+        # A mint refused (a missing permission included) warns below instead
+        # of failing the run.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PLUGIN_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PLUGIN_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.repository }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Warn that no token was minted
+        if: ${{ steps.app-token.outcome != 'success' }}
+        run: |
+          echo "::warning::Could not mint the melodic-release token with contents, pull-requests and workflows write, so no Dependabot pull request was queued. If melodic-release lacks workflows: write, enable it on the App and accept it on the installation."
+
+      - name: Queue in-tier Dependabot pull requests
+        if: ${{ steps.app-token.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          # The reusable's input defaults, which this repository's tier uses.
+          PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
+          PACKAGE_AUTO_MERGE: "true"
+          REVIEW_ONLY_DEPENDENCIES: "[]"
+        with:
+          script: |
+            const path = require("node:path");
+            const actions = path.join(process.env.GITHUB_WORKSPACE, ".github", "actions");
+            const budget = require(path.join(actions, "report-api-budget", "api-budget.cjs"));
+            const app = getOctokit(process.env.APP_TOKEN);
+            budget.watch(github, "github-token");
+            budget.watch(app, "release-app-token");
+            const { runQueue } = require(path.join(actions, "automerge-dependabot", "queue.cjs"));
+            await runQueue({ github, app, context, core, env: process.env });
+
+      - name: Log the API budget
+        if: ${{ always() }}
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token release-app-token
