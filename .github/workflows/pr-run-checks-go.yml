@@ -1,4 +1,4 @@
-name: pr-run-checks-go
+name: PR Run Checks Go
 
 # Reusable blocking Go contract. Standards owns analyzer policy; this workflow
 # owns exact native installation and execution. Consume at job level with a full

@@ -1,4 +1,4 @@
-name: publish-review
+name: Publish Review
 description: >-
   pr-review-cli's publish step, with no model: reads the review of the leg
   that counts (the subscription job's when it ran, else the key job's) from

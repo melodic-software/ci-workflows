@@ -1,4 +1,4 @@
-name: powershell
+name: PSScriptAnalyzer
 description: Analyze PowerShell exactly once per file with fail-closed PSScriptAnalyzer handling.
 
 inputs:

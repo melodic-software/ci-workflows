@@ -1,4 +1,4 @@
-name: markdown
+name: markdownlint
 description: Lint Markdown with markdownlint-cli2 against a caller-supplied config.
 
 inputs:

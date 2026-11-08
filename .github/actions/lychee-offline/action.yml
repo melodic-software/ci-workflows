@@ -1,4 +1,4 @@
-name: lychee-offline
+name: Lychee Offline
 description: Deterministic offline link/anchor reference-integrity check via lychee.
 
 inputs:

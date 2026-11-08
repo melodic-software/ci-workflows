@@ -1,4 +1,4 @@
-name: eol-renormalize
+name: Check Line Endings
 description: >-
   Detect index-level line-ending drift: re-stage every tracked file through
   git's clean filter (driven by the caller's .gitattributes) and fail if the

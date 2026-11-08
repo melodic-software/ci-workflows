@@ -1,4 +1,4 @@
-name: Scan an upload for credentials
+name: Scan Upload
 description: >
   Before an actions/upload-artifact step: run claude-code-plugins'
   lib/publish-gate.mjs scanLeak, fetched from that repository's default-branch

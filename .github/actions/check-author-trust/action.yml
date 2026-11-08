@@ -1,4 +1,4 @@
-name: check-author-trust
+name: Check Author Trust
 description: >-
   The Claude lanes' author trust rule, defined once. A GitHub `User` is
   trusted when its numeric id is in allowed-author-ids; a `Bot` when its id

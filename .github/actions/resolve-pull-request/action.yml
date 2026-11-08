@@ -1,4 +1,4 @@
-name: resolve-pull-request
+name: Resolve Pull Request
 description: >-
   pr-review-cli's resolve-pull-request job, for a workflow_run or
   workflow_dispatch caller: one pulls.get

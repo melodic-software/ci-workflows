@@ -1,4 +1,4 @@
-name: check-workflow-naming
+name: Check Workflow Naming
 description: >-
   Check workflow file names, workflow `name:` values, job ids and composite
   action directories against melodic-software/standards'

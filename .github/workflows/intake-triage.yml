@@ -1,4 +1,4 @@
-name: intake-triage
+name: Intake Triage
 
 # Reusable workflow: the intake-triage lane. A script step fetches one newly
 # opened (or dispatched) issue; a read-only Claude run reads it and returns

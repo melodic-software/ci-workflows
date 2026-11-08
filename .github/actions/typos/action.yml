@@ -1,4 +1,4 @@
-name: typos
+name: Typos
 description: Spell-check source code with typos against a caller-supplied config.
 
 inputs:

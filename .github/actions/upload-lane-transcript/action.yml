@@ -1,4 +1,4 @@
-name: Upload lane transcript
+name: Upload Lane Transcript
 description: >
   Keep one lane leg's transcript (run-claude-cli's execution-file) for 7 days
   as an encrypted artifact, so a puller outside CI can copy it to a private

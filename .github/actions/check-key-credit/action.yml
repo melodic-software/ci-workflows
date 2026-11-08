@@ -1,4 +1,4 @@
-name: Key credit gate
+name: Check Key Credit
 description: >
   Before a keyed lane's key job: whether that job should skip its key because
   the key ended in a credit stop in this workflow inside the window, or

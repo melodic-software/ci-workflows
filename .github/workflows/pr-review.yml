@@ -1,4 +1,4 @@
-name: pr-review
+name: PR Review
 
 # Reusable workflow: automated PR code review with anthropics/claude-code-action,
 # running the org review plugin's command.

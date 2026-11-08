@@ -1,4 +1,4 @@
-name: pr-automerge-dependabot
+name: PR Automerge Dependabot
 
 # Reusable workflow: arms GitHub auto-merge (squash) on a Dependabot pull
 # request whose every update is a patch or minor bump of an allowlisted GitHub

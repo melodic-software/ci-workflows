@@ -1,4 +1,4 @@
-name: claude-lane-outcome
+name: Report Lane Outcome
 description: >-
   Outcome reporter for the Claude lanes. On a successful action outcome WITH
   execution evidence it records review-failed=false / review-ran=true and
