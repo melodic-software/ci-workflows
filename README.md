@@ -111,8 +111,10 @@ not the consumer's: every external reference its own actions and workflows
 make — third-party actions such as `astral-sh/setup-uv`,
 `anthropics/claude-code-action`, and `peter-evans/create-issue-from-file` — is
 itself pinned to a full commit SHA with a dual-form trailing comment
-(`melodic-software/standards#248`), and a bump to one waits for a person,
-since it reaches every `@main` caller on merge. Dependabot leaves
+(`melodic-software/standards#248`). A bump reaches every `@main` caller on
+merge, so only patch and minor bumps of the standards `dependabot-policy`
+publishers (`actions/*`, `github/*`, `anthropics/*`) arm auto-merge; any
+other bump waits for a person. Dependabot leaves
 `anthropics/claude-code-action` alone for now; `.github/dependabot.yml` says
 why. A consumer's reference to this
 repository is only as trustworthy as this repository's own pins one level
