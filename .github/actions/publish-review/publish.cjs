@@ -20,6 +20,7 @@ const CLASSES = new Set([
   "install-failed",
   "skipped-validation",
   "incomplete",
+  "review-unposted",
   "no-execution",
   "other",
 ]);
@@ -236,16 +237,21 @@ function judge(env) {
   // A leg stopped before its outcome step (runner isolation) names its class.
   if (failed === "" && failureClass === "")
     return { ok: false, leg, failureClass: "no-outcome" };
+  // The extract step's verdict is a fixed-vocabulary reason, never model text.
+  const verdict = value("VERDICT");
+  const reason = verdict === "complete" ? "" : verdict;
   if (failed === "true" || failureClass !== "") {
+    const known = CLASSES.has(failureClass) ? failureClass : "other";
     return {
       ok: false,
       leg,
-      failureClass: CLASSES.has(failureClass) ? failureClass : "other",
+      failureClass: known,
+      detail: ["incomplete", "review-unposted"].includes(known) ? reason : "",
     };
   }
-  const review =
-    value("VERDICT") === "complete" ? parseReview(value("REVIEW")) : null;
-  if (!review) return { ok: false, leg, failureClass: "incomplete" };
+  const review = verdict === "complete" ? parseReview(value("REVIEW")) : null;
+  if (!review)
+    return { ok: false, leg, failureClass: "incomplete", detail: reason };
   return { ok: true, leg, review };
 }
 
@@ -481,6 +487,8 @@ const WHY = {
     "the runner isolation or the Claude Code CLI install or its integrity check failed",
   incomplete:
     "the model returned no usable review (findings, files read, summary and comments)",
+  "review-unposted":
+    "the review session ended without returning a review to post",
   partial:
     "the review read only part of the pull request, so the head is not reviewed",
   "no-credential": "both secrets were empty, so no review ran",
@@ -581,7 +589,7 @@ async function publish({ github, context, core, env }) {
         ...facts,
         failure_class: verdict.failureClass,
       });
-    return fail(verdict.failureClass);
+    return fail(verdict.failureClass, verdict.detail);
   }
 
   const { review } = verdict;

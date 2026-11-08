@@ -55,7 +55,7 @@ does not depend on newlines, because none are required. A success record is
 a notice, a `skipped-validation` record a warning, and any other failure an
 error, except that a failure record with `handoff: true` is a notice. A
 handoff stays a notice when the caller sets `lane-id` but no record can be
-written. The `incomplete` and `skipped-validation` records keep their levels, and a
+written. The `incomplete`, `review-unposted` and `skipped-validation` records keep their levels, and a
 `shellFailed` success record is a warning,
 whatever `handoff` says.
 
@@ -152,6 +152,7 @@ The schema allows unknown properties at every level
 | `success` | none | `success` |
 | `success` | `skipped-validation` | `skip` |
 | `success` | `incomplete` | `failure` |
+| `success` | `review-unposted` | `failure` |
 | `cancelled` | any | `cancellation` |
 | `skipped` | any | `skip` |
 | `failure` or anything else | `timeout` | `timeout` |
@@ -178,6 +179,7 @@ emitter's copy; a test holds the two equal.
 | `sandbox-unavailable` | the subprocess sandbox probe kept the run from starting |
 | `skipped-validation` | the action skipped itself on its workflow-validation check |
 | `incomplete` | the run succeeded but the lane's completion check found no completed review |
+| `review-unposted` | the run succeeded but returned no review to post: no structured output, or no summary |
 | `shell-failed` | no longer written; a run with no working shell is a `success` record with `shellFailed: true`. Kept so earlier records stay valid |
 | `no-credential` | the leg had no credential to run with |
 | `no-outcome` | the leg stopped before its outcome step |

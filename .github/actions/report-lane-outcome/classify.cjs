@@ -629,6 +629,7 @@ const FAILURE_CLASSES = [
   "sandbox-unavailable",
   "skipped-validation",
   "incomplete",
+  "review-unposted",
   "shell-failed",
   "no-credential",
   "no-outcome",

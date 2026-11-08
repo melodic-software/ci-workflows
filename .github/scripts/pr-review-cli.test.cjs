@@ -1889,6 +1889,60 @@ test("the extract step calls a review incomplete on every gap it checks", async 
   assert.equal(outputs.verdict, "complete");
 });
 
+test("the extract step classes a review with nothing to post review-unposted and any other gap incomplete, in every leg", async () => {
+  const good = {
+    files_read: 1,
+    findings: 1,
+    summary: "S",
+    comments: [COMMENT],
+  };
+  for (const job of [key, subscription, fallback]) {
+    for (const [files, verdictClass] of [
+      [{}, "review-unposted"],
+      [
+        { structured: JSON.stringify({ ...good, summary: " " }) },
+        "review-unposted",
+      ],
+      [{ structured: JSON.stringify({ ...good, findings: -1 }) }, "incomplete"],
+      [
+        {
+          structured: JSON.stringify({ ...good, hold: { criteria: ["cost"] } }),
+        },
+        "incomplete",
+      ],
+      [
+        { structured: JSON.stringify({ ...good, files_read: "1" }) },
+        "incomplete",
+      ],
+    ]) {
+      const outputs = await extract(files, {}, job);
+      assert.equal(
+        outputs["verdict-class"],
+        verdictClass,
+        `${job.name}: ${outputs.verdict}`,
+      );
+    }
+    const passed = await extract({ structured: JSON.stringify(good) }, {}, job);
+    assert.equal(passed.verdict, "complete");
+    assert.equal(passed["verdict-class"], undefined);
+    assert.equal(
+      step(job, "review-outcome").with["completion-class"],
+      `\${{ steps.extract.outputs.verdict-class }}`,
+    );
+  }
+  const permission = await extract(
+    { structured: JSON.stringify(good) },
+    { MODE_OK: "false" },
+  );
+  assert.equal(permission["verdict-class"], "incomplete");
+  const chunk = await extractChunks([good, null]);
+  assert.equal(
+    chunk.verdict,
+    "chunk 2 of 2: the leg wrote no structured output",
+  );
+  assert.equal(chunk["verdict-class"], "review-unposted");
+});
+
 test("the extract step keeps the valid comments and passes a malformed one on for the summary", async () => {
   const critical = "Injection.\n\nseverity: CRITICAL";
   for (const bad of [
