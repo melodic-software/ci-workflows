@@ -18,8 +18,12 @@ const {
   laneReport,
   readRunRecord,
   recordText,
-  recordTokens,
 } = require("./classify.cjs");
+
+// The record laneReport writes for `run` under `inputs`, with a lane id set.
+function recordOf(run, inputs) {
+  return laneReport(run, { laneId: "pr-review", outcome: "failure", ...inputs }).record;
+}
 
 // A distinctive string standing in for the model-authored `result` text and the
 // raw error stacks: it must never reach an output, because those two fields are
@@ -451,70 +455,49 @@ test("no rate_limit_event, a missing file or an unparsable one leaves the record
   assert.deepEqual(readRunRecord(""), empty);
 });
 
-test("record tokens: resets only on a limit stop, unknown and malformed values omitted", () => {
+test("record facts: resets only on a limit stop, unknown and malformed values omitted", () => {
   const run = {
     turns: 16,
     models: ["claude-sonnet-5"],
     resetsAt: "2026-01-01T00:00:00Z",
     resetsWindow: "seven_day",
   };
-  assert.equal(
-    recordTokens(run, {
-      failureClass: "rate-limit",
-      maxTurns: "15",
-      credential: "CLAUDE_CODE_OAUTH_TOKEN",
-    }),
-    "resets=2026-01-01T00:00:00Z resets-window=seven_day " +
-      "credential=CLAUDE_CODE_OAUTH_TOKEN " +
-      "turns=16 max-turns=15 models=claude-sonnet-5",
-  );
-  assert.equal(
-    recordTokens(run, { failureClass: "auth", maxTurns: "15" }),
-    "turns=16 max-turns=15 models=claude-sonnet-5",
-  );
-  // A value that is not a secret name, a lower-case name or a non-number
-  // never prints.
-  assert.equal(
-    recordTokens(
-      { turns: null, models: [], resetsAt: null },
-      { maxTurns: "15; x", credential: "value-not-a-name" },
-    ),
-    "",
-  );
-  assert.equal(
-    recordTokens(
-      { turns: 0, models: [], resetsAt: null },
-      { credential: "lower_case" },
-    ),
-    "turns=0",
-  );
+  const credential = "CLAUDE_CODE_OAUTH_TOKEN";
+  const limited = recordOf(run, { failureClass: "rate-limit", maxTurns: "15", credential });
+  assert.deepEqual(limited.resets, { at: "2026-01-01T00:00:00Z", window: "seven_day" });
+  assert.equal(limited.turns, 16);
+  assert.equal(limited.maxTurns, 15);
+  assert.deepEqual(limited.models, ["claude-sonnet-5"]);
+  const auth = recordOf(run, { failureClass: "auth", maxTurns: "15", credential });
+  assert.equal("resets" in auth, false);
+  assert.equal(auth.maxTurns, 15);
+  // A turn cap that is not a number never reaches the record, and a value
+  // that is not a secret name writes no record at all.
+  const capless = recordOf({ turns: 0, models: [], resetsAt: null }, { maxTurns: "15; x", credential });
+  assert.equal("maxTurns" in capless, false);
+  assert.equal(capless.turns, 0);
+  for (const forged of ["value-not-a-name", "lower_case"]) {
+    const { record, missing } = laneReport(
+      { turns: 1, models: [], resetsAt: null },
+      { laneId: "pr-review", outcome: "success", credential: forged },
+    );
+    assert.equal(record, null, forged);
+    assert.deepEqual(missing, ["credential"], forged);
+  }
 });
 
 // ci-workflows#806: a subscription job that ran because the key job
-// credit-stopped, or had no key, says so right after the credential.
-test("record tokens: a fallback reason prints right after the credential, only from its vocabulary", () => {
+// credit-stopped, or had no key, says so in the record.
+test("record facts: a fallback reason rides on the record only from its vocabulary", () => {
   const run = { turns: 4, models: [], resetsAt: null };
   const credential = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
-  assert.equal(
-    recordTokens(run, { credential, fallbackReason: "credit-stop" }),
-    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=credit-stop turns=4",
-  );
-  assert.equal(
-    recordTokens(run, { credential, fallbackReason: "no-key" }),
-    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=no-key turns=4",
-  );
-  assert.equal(
-    recordTokens(run, { credential, fallbackReason: "auth" }),
-    "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN fallback=auth turns=4",
-  );
+  for (const reason of ["credit-stop", "no-key", "auth"]) {
+    assert.deepEqual(recordOf(run, { credential, fallbackReason: reason }).fallback, { reason }, reason);
+  }
   // The fallback leg after a subscription limit stop.
-  assert.equal(
-    recordTokens(run, {
-      credential: "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
-      fallbackReason: "limit-stop",
-    }),
-    "credential=FALLBACK_CLAUDE_CODE_OAUTH_TOKEN fallback=limit-stop turns=4",
-  );
+  const fallback = recordOf(run, { credential: "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN", fallbackReason: "limit-stop" });
+  assert.deepEqual(fallback.fallback, { reason: "limit-stop" });
+  assert.equal(fallback.credential.role, "FALLBACK");
   for (const forged of [
     "",
     "Auth",
@@ -522,11 +505,7 @@ test("record tokens: a fallback reason prints right after the credential, only f
     " no-key",
     "credit-stop\n::error::x",
   ]) {
-    assert.equal(
-      recordTokens(run, { credential, fallbackReason: forged }),
-      "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN turns=4",
-      JSON.stringify(forged),
-    );
+    assert.equal("fallback" in recordOf(run, { credential, fallbackReason: forged }), false, JSON.stringify(forged));
   }
 });
 
@@ -806,18 +785,21 @@ test("api error facts: a 403's type, error_code and request_id from the CLI's ow
   );
 });
 
-test("record tokens: error facts print only on a failure", () => {
+test("record facts: error facts ride on the record only on a failure", () => {
   const run = {
     turns: 1,
+    models: [],
     errorType: "permission_error",
     errorCode: "workspace_access_denied",
     requestId: "req_fake0000000000000000",
   };
-  assert.equal(
-    recordTokens(run, { failureClass: "auth" }),
-    "error-type=permission_error error-code=workspace_access_denied request-id=req_fake0000000000000000 turns=1",
-  );
-  assert.equal(recordTokens(run, {}), "turns=1");
+  const credential = "AUTOMATIONS_CLAUDE_API_KEY";
+  assert.deepEqual(recordOf(run, { failureClass: "auth", credential }).error, {
+    type: "permission_error",
+    code: "workspace_access_denied",
+    requestId: "req_fake0000000000000000",
+  });
+  assert.equal("error" in recordOf(run, { outcome: "success", credential }), false);
 });
 
 test("credit-stop: a 403 is never a credit stop, whatever its text", () => {
@@ -932,7 +914,7 @@ test("lane record: past 1,024 characters the models list is dropped", () => {
   assert.equal(recordText(null), "");
 });
 
-test("one report: the legacy tokens and the record carry the same gated facts", () => {
+test("one report: the record carries the gated facts", () => {
   const run = {
     turns: 2,
     models: ["claude-sonnet-5"],
@@ -951,7 +933,7 @@ test("one report: the legacy tokens and the record carry the same gated facts", 
     credential: "CLAUDE_CODE_OAUTH_TOKEN",
     fallbackReason: "bogus",
   });
-  assert.equal(auth.tokens, "error-type=permission_error credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
+  assert.equal("tokens" in auth, false);
   assert.deepEqual(auth.record, {
     v: 1,
     lane: "pr-review",
@@ -964,7 +946,6 @@ test("one report: the legacy tokens and the record carry the same gated facts", 
   });
   // A success: neither error facts nor resets.
   const ok = laneReport(run, { laneId: "pr-review", outcome: "success", credential: "CLAUDE_CODE_OAUTH_TOKEN" });
-  assert.equal(ok.tokens, "credential=CLAUDE_CODE_OAUTH_TOKEN turns=2 models=claude-sonnet-5");
   assert.equal("error" in ok.record || "resets" in ok.record, false);
 });
 
@@ -975,7 +956,6 @@ test("lane record: costUsd rides on every outcome and is omitted when unknown", 
     { laneId: "pr-verify", outcome: "success", credential: "AUTOMATIONS_CLAUDE_API_KEY" },
   );
   assert.equal(ok.record.costUsd, 0.5);
-  assert.equal(ok.tokens.includes("cost"), false);
   const stopped = laneReport(
     { turns: 1, costUsd: 0, models: [] },
     { laneId: "intake-triage", outcome: "failure", failureClass: "credit-stop", credential: "AUTOMATIONS_CLAUDE_API_KEY" },
@@ -1095,18 +1075,17 @@ test("the leg log's values are re-checked: a forged value is dropped, the rest k
   assert.deepEqual(readLegLog(path.join(temporaryDirectory, "never-written.jsonl")), none);
 });
 
-test("lane record: usage and windows ride on the record, never as legacy tokens", () => {
+test("lane record: usage and windows ride on the record", () => {
   const usage = { input: 12, output: 3400, cacheRead: 2_345_678, cacheCreation: 9100 };
   const windows = {
     five_hour: { utilization: 0.82, resetsAt: "2026-01-01T00:00:00Z", status: "allowed_warning" },
   };
-  const { tokens, record } = laneReport(
+  const { record } = laneReport(
     { turns: 3, models: [], usage, windows },
     { laneId: "intake-triage", outcome: "success", credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN" },
   );
   assert.deepEqual(record.usage, usage);
   assert.deepEqual(record.windows, windows);
-  assert.equal(tokens, "credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN turns=3");
   const bare = laneReport(
     { turns: 3, models: [], usage: null, windows: null },
     { laneId: "intake-triage", outcome: "success", credential: "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN" },
