@@ -664,12 +664,23 @@ jobs:
       # Linux's, and a runner without apt-get must already have bwrap. The
       # AppArmor sysctl is lifted only on GitHub-hosted runners, which are
       # discarded after the job, so no reused host keeps the change.
+      # The step also installs sandbox-runtime's apply-seccomp helper. Without
+      # it, Claude Code passes bubblewrap --disable-userns, which writes
+      # /proc/sys/user/max_user_namespaces and dies where Docker mounts
+      # /proc/sys read-only, so every Bash call fails. Claude Code looks for
+      # the helper under the global npm roots, /usr/local/lib/node_modules
+      # among them (sandbox-runtime src/sandbox/generate-seccomp-filter.ts,
+      # buildGlobalNpmPaths). The worker image has no npm, so the helper is
+      # taken from the package tarball after a SHA-256 check.
       - name: Install subprocess isolation
         id: isolate
         if: steps.scope.outputs.review != 'false' && runner.os == 'Linux'
-        timeout-minutes: 1
+        timeout-minutes: 2
         env:
           RUNNER_HOSTING: ${{ runner.environment }}
+          SANDBOX_RUNTIME_VERSION: 0.0.81
+          # SHA-256 of that version's npm tarball; change both together.
+          SANDBOX_RUNTIME_SHA256: 0e0b8249062047f7b592c7995f8ec2f251f3bbebdc0402db1ee23af09983953f
         run: |
           if command -v apt-get >/dev/null &&
             ! { command -v bwrap && command -v socat; } >/dev/null; then
@@ -699,6 +710,34 @@ jobs:
             echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
             exit 1
           fi
+          case "$RUNNER_ARCH" in
+            X64) arch=x64 ;;
+            ARM64) arch=arm64 ;;
+            *)
+              echo "::error::sandbox-runtime ships no apply-seccomp helper for runner architecture $RUNNER_ARCH"
+              exit 1
+              ;;
+          esac
+          work="$(mktemp -d "$RUNNER_TEMP/sandbox-runtime.XXXXXX")"
+          tarball="$work/package.tgz"
+          member="package/vendor/seccomp/$arch/apply-seccomp"
+          helper="/usr/local/lib/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/$arch/apply-seccomp"
+          if ! curl -q --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 15 --retry 2 --retry-all-errors \
+            --output "$tarball" \
+            "https://registry.npmjs.org/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-$SANDBOX_RUNTIME_VERSION.tgz"; then
+            echo "::error::the sandbox-runtime $SANDBOX_RUNTIME_VERSION tarball did not download from the npm registry"
+            exit 1
+          fi
+          if ! printf '%s  %s\n' "$SANDBOX_RUNTIME_SHA256" "$tarball" | sha256sum -c --quiet -; then
+            echo "::error::the sandbox-runtime $SANDBOX_RUNTIME_VERSION tarball does not match its pinned SHA-256"
+            exit 1
+          fi
+          tar -xzf "$tarball" -C "$work" -- "$member"
+          sudo install -D -o root -g root -m 0755 -- "$work/$member" "$helper"
+          rm -rf -- "${work:?}"
+          echo "installed apply-seccomp from sandbox-runtime $SANDBOX_RUNTIME_VERSION at $helper"
 
       # Installed bubblewrap can still fail to create a namespace (unprivileged
       # user namespaces off), and then every Bash call the model makes fails

@@ -5,7 +5,10 @@
 // lane without the isolation the other has.
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -75,4 +78,96 @@ test("every apt-get call ends before its step limit", () => {
       `${label} fails without bwrap or socat`,
     );
   }
+});
+
+// Without the helper, bubblewrap gets --disable-userns and dies on a
+// read-only /proc/sys. sandbox-runtime looks for it only under these static
+// global npm roots and `npm root -g` (src/sandbox/generate-seccomp-filter.ts,
+// buildGlobalNpmPaths, v0.0.81), so a helper anywhere else is never used.
+const helperRoots = [
+  "/usr/lib/node_modules",
+  "/usr/local/lib/node_modules",
+  "/opt/homebrew/lib/node_modules",
+];
+const helperSuffix =
+  "@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp";
+
+const runHelperInstall = (tarballSha256) => {
+  const run = installStep("pr-review.yml").run;
+  const fragment = run.slice(run.indexOf('case "$RUNNER_ARCH" in'));
+  assert.ok(fragment.startsWith("case"), "the step installs the helper");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seccomp-helper-"));
+  const root = path.join(dir, "root");
+  const stubs = path.join(dir, "stubs");
+  const packageDir = path.join(
+    dir,
+    "pkg",
+    "package",
+    "vendor",
+    "seccomp",
+    "x64",
+  );
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.mkdirSync(stubs);
+  fs.writeFileSync(path.join(packageDir, "apply-seccomp"), "helper-bytes\n");
+  const tarball = path.join(dir, "package.tgz");
+  spawnSync("tar", ["-czf", tarball, "-C", path.join(dir, "pkg"), "package"]);
+  const sha256 =
+    tarballSha256 ??
+    crypto.createHash("sha256").update(fs.readFileSync(tarball)).digest("hex");
+  fs.writeFileSync(
+    path.join(stubs, "curl"),
+    '#!/bin/bash\nwhile [ $# -gt 1 ]; do [ "$1" = --output ] && out="$2"; shift; done\necho "$1" >> "$STUB_LOG"\ncp "$FAKE_TARBALL" "$out"\n',
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(stubs, "sudo"),
+    '#!/bin/bash\necho "sudo $*" >> "$STUB_LOG"\nfor arg; do src="$dest"; dest="$arg"; done\nmkdir -p "$(dirname "$FAKE_ROOT$dest")"\ncp "$src" "$FAKE_ROOT$dest"\n',
+    { mode: 0o755 },
+  );
+  const log = path.join(dir, "stub.log");
+  const result = spawnSync("bash", ["-eo", "pipefail", "-c", fragment], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${stubs}:${process.env.PATH}`,
+      RUNNER_ARCH: "X64",
+      RUNNER_TEMP: dir,
+      SANDBOX_RUNTIME_VERSION: "0.0.81",
+      SANDBOX_RUNTIME_SHA256: sha256,
+      FAKE_TARBALL: tarball,
+      FAKE_ROOT: root,
+      STUB_LOG: log,
+    },
+  });
+  const stubLog = fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "";
+  return { result, root, stubLog, dir };
+};
+
+test("the helper lands root-owned where sandbox-runtime looks for it", (t) => {
+  const { result, root, stubLog, dir } = runHelperInstall();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  assert.equal(result.status, 0, result.stderr);
+  const installed = helperRoots
+    .map((base) => path.join(base, helperSuffix))
+    .filter((target) => fs.existsSync(path.join(root, target)));
+  assert.equal(installed.length, 1, "one helper under a searched root");
+  assert.equal(
+    fs.readFileSync(path.join(root, installed[0]), "utf8"),
+    "helper-bytes\n",
+  );
+  assert.match(stubLog, /^sudo install -D -o root -g root -m 0755 -- /mu);
+  assert.match(
+    stubLog,
+    /^https:\/\/registry\.npmjs\.org\/@anthropic-ai\/sandbox-runtime\/-\/sandbox-runtime-0\.0\.81\.tgz$/mu,
+  );
+});
+
+test("a tarball that does not match the pinned SHA-256 installs nothing", (t) => {
+  const { result, root, stubLog, dir } = runHelperInstall("0".repeat(64));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /::error::.*does not match its pinned SHA-256/u);
+  assert.equal(fs.existsSync(root), false, "nothing installed");
+  assert.doesNotMatch(stubLog, /^sudo /mu);
 });
