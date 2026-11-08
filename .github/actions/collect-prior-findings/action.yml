@@ -1,4 +1,4 @@
-name: collect-prior-findings
+name: Collect Prior Findings
 description: >-
   pr-review-cli's prior-findings step, with no model: runs
   claude-code-plugins' plugins/review/lib/prior-findings.mjs, which writes

@@ -1,4 +1,4 @@
-name: maintenance-check-links-online
+name: Maintenance Check Links Online
 
 # Reusable workflow: runs lychee with the network on over the caller's
 # Markdown, with the caller's lychee.toml (the standards-synced config the

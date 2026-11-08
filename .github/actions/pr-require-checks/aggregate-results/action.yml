@@ -1,4 +1,4 @@
-name: ci-status
+name: Aggregate Results
 description: >-
   Aggregate lane results into one pass/fail gate. Fails naming the first result
   that does not pass; whether `skipped` passes is the caller's policy. Records

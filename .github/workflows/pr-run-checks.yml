@@ -1,4 +1,4 @@
-name: pr-run-checks
+name: PR Run Checks
 
 # One job, one runner, every content-agnostic hygiene composite as a step:
 # `change-detection` runs once, then each composite behind its own toggle, and a

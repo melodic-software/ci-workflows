@@ -1,4 +1,4 @@
-name: editorconfig
+name: EditorConfig Checker
 description: >-
   Validate files against the repo .editorconfig with editorconfig-checker,
   using a caller-supplied config.

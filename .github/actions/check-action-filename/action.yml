@@ -1,4 +1,4 @@
-name: action-metadata-filename
+name: Check Action Filename
 description: >-
   Reject any tracked action.yaml (GitHub also accepts this spelling for action
   metadata, but every lane here globs action.yml only). Repo-wide, not scoped

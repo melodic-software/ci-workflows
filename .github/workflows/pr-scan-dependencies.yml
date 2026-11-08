@@ -1,4 +1,4 @@
-name: pr-scan-dependencies
+name: PR Scan Dependencies
 
 # Reusable dependency-vulnerability lane. The caller supplies its governed
 # runner selection; the workload itself needs only a Linux X64 worker and no

@@ -1,4 +1,4 @@
-name: apply-review-hold
+name: Apply Review Hold
 description: >-
   pr-review-cli's hold step, with no model: holds the pull request for a
   person when the review of the leg that counts (the subscription job's when

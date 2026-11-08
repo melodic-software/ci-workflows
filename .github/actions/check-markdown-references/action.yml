@@ -1,4 +1,4 @@
-name: reference-integrity
+name: Check Markdown References
 description: >-
   Resolve `file.md` "Anchor" prose citations across the markdown corpus against
   each cited file's actual headings and bold lead-ins (dependency-free awk).

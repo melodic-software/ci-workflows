@@ -1,4 +1,4 @@
-name: comment-hygiene
+name: Check Comment Markers
 description: >-
   Scan code comments for deferred-work markers (TODO/FIXME/HACK/XXX) and
   issue-tracker references. Uses the bundled organization policy by default;

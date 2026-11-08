@@ -1,4 +1,4 @@
-name: pyright
+name: Pyright
 description: Type-check Python with Pyright (strict, warnings-as-errors) against a caller-supplied config.
 
 inputs:

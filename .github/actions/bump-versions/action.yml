@@ -1,4 +1,4 @@
-name: bump-versions
+name: Bump Versions
 description: >-
   Resolve, verify and bump a repository's release pins under its version-bump policy file.
   Call with command prepare under a read-only token, then, when prepared-count is above zero,

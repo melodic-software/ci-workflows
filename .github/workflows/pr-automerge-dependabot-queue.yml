@@ -1,4 +1,4 @@
-name: pr-automerge-dependabot-queue
+name: PR Automerge Dependabot Queue
 
 # Queues this repository's in-tier Dependabot pull requests. A GITHUB_TOKEN
 # arm never enters the merge queue main requires, and a Dependabot-triggered

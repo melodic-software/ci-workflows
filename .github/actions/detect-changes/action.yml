@@ -1,4 +1,4 @@
-name: change-detection
+name: Detect Changes
 description: >-
   Decide which CI lanes a pull request's changed files make relevant, so a
   caller can skip lanes at JOB level while its single aggregated required

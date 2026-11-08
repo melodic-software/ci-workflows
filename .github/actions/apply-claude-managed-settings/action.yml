@@ -1,4 +1,4 @@
-name: apply-claude-managed-settings
+name: Apply Claude Managed Settings
 description: >-
   Write a root-owned /etc/claude-code/managed-settings.json that pins
   `apiKeyHelper` and `env.ANTHROPIC_BASE_URL`, disables bypassPermissions

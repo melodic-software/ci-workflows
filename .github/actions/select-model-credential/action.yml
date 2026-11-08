@@ -1,4 +1,4 @@
-name: Select the model credential
+name: Select Model Credential
 description: >
   The one place a Claude model lane picks its credential: the role's API key,
   then its subscription token, then the central fallback token, each leg its

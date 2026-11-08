@@ -1,4 +1,4 @@
-name: check-jsonschema
+name: Check Jsonschema
 description: >-
   Validate JSON/YAML files against one JSON Schema with check-jsonschema. One
   invocation = one schema source + one-or-more files; call once per schema group.

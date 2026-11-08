@@ -1,4 +1,4 @@
-name: machine-specific-paths
+name: Check Machine Paths
 description: >-
   Reject machine-specific absolute paths (Windows / macOS / Linux user-home and
   repo-checkout roots) in tracked files. Portable placeholders such as

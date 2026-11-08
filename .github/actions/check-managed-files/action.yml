@@ -1,4 +1,4 @@
-name: managed-files-guard
+name: Check Managed Files
 description: >-
   Fail when a PR hand-edits files managed by melodic-software/standards'
   sync-manifest (ci-workflows#208). A standards-sync PR is instead verified to

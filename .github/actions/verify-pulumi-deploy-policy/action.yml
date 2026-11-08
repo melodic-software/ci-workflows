@@ -1,4 +1,4 @@
-name: Pulumi deployment guard
+name: Verify Pulumi Deploy Policy
 description: Verify the exact Pulumi OIDC policy and inventory operational state before a protected apply.
 
 inputs:

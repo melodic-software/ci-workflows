@@ -1,4 +1,4 @@
-name: ruff
+name: Ruff
 description: Lint and format-check Python with Ruff against a caller-supplied config.
 
 inputs:

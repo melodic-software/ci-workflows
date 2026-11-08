@@ -1,4 +1,4 @@
-name: pr-review-security
+name: PR Review Security
 
 # Reusable workflow: dedicated LLM security review with
 # anthropics/claude-code-action, running the org review plugin's security

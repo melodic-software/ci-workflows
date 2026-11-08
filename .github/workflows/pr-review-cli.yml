@@ -1,4 +1,4 @@
-name: pr-review-cli
+name: PR Review Cli
 
 # Reusable workflow: one Claude review lane (code or security) on the
 # run-claude-cli launcher, funded by one role's API key first and its

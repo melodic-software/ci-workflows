@@ -1,4 +1,4 @@
-name: gitleaks
+name: Gitleaks
 description: Scan a file, directory, or local Git history with gitleaks against a caller-supplied config.
 
 inputs:

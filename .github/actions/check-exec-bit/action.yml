@@ -1,4 +1,4 @@
-name: exec-bit
+name: Check Exec Bit
 description: >-
   Verify every tracked file whose content starts with a shebang (#! at byte 0)
   has git index mode 100755, so executable scripts keep their executable bit on

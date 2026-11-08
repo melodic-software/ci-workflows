@@ -1,4 +1,4 @@
-name: maintenance-sync-standards
+name: Maintenance Sync Standards
 
 # Reusable workflow for exact-file standards distribution. The standards
 # checkout owns the schema-v2 manifest and its interpreter; this workflow owns

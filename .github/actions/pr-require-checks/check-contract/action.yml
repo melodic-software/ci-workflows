@@ -1,4 +1,4 @@
-name: pr-contract
+name: Check Contract
 description: >-
   One step carrying the whole pull-request contract: Conventional Commits title,
   do-not-merge label, issue linkage, and an opt-in hold label. The title and

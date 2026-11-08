@@ -1,4 +1,4 @@
-name: shellcheck
+name: Shellcheck
 description: Lint shell scripts with ShellCheck against a caller-supplied rcfile.
 
 inputs:

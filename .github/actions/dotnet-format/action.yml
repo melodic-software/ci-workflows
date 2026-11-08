@@ -1,4 +1,4 @@
-name: dotnet-format
+name: .NET Format
 description: >-
   Verify C# formatting that the build does not own: whitespace/layout via `dotnet
   format whitespace --verify-no-changes`, and using-directive organization via

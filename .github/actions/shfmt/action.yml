@@ -1,4 +1,4 @@
-name: shfmt
+name: Shfmt
 description: Check shell script formatting with shfmt, driven by the repo .editorconfig.
 
 inputs:

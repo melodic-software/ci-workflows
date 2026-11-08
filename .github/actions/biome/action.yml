@@ -1,4 +1,4 @@
-name: biome
+name: Biome
 description: Lint and format-check JavaScript/TypeScript with Biome against a caller-supplied config.
 
 inputs:

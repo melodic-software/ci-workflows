@@ -1,4 +1,4 @@
-name: automerge-dependabot
+name: Automerge Dependabot
 description: >-
   pr-automerge-dependabot's gate and arm step on a pull_request event: runs
   gate.cjs's gate over fetch-metadata's output and arms squash auto-merge at

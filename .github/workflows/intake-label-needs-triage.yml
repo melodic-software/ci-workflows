@@ -1,4 +1,4 @@
-name: intake-label-needs-triage
+name: Intake Label Needs Triage
 
 # Reusable workflow — applies a configured floor label (default bare
 # `needs-triage`) to an issue that carries no label matching a configured

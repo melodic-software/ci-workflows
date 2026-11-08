@@ -1,4 +1,4 @@
-name: collect-settled-threads
+name: Collect Settled Threads
 description: >-
   pr-review-cli's settled-threads step, with no model: collects the pull
   request's review threads that a trusted-actor-listed account resolved or a
