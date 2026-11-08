@@ -2,7 +2,7 @@ name: pr-automerge-dependabot
 
 # Reusable workflow: arms GitHub auto-merge (squash) on a Dependabot pull
 # request whose every update is a patch or minor bump of an allowlisted GitHub
-# Actions publisher or of an npm, pip or NuGet package. Arming never merges: GitHub merges once every required check,
+# Actions publisher or of an npm, pip, uv or NuGet package. Arming never merges: GitHub merges once every required check,
 # `ci-status` included, passes. Nothing here calls a merge mutation, so this
 # workflow cannot bypass the required check. A repository without a required
 # check makes GitHub refuse the arm (the pull request is already mergeable),
@@ -31,8 +31,8 @@ name: pr-automerge-dependabot
 #   - the event is `pull_request` and the PR author's id is 49699333
 #     (dependabot[bot]); an id, not a login, so no look-alike account matches;
 #   - every update is `github_actions`, or, unless the caller passes
-#     `package-auto-merge: false`, `npm_and_yarn`, `pip` or `nuget`; any other
-#     ecosystem (docker, uv, dotnet_sdk and the rest) is left for a human;
+#     `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or `nuget`; any
+#     other ecosystem (docker, dotnet_sdk and the rest) is left for a human;
 #   - every GitHub Actions dependency name matches a glob in the caller's
 #     `publisher-allowlist` (default mirrors standards
 #     `components/dependabot-policy/policy.json` `autoMerge`); an input that is
@@ -74,7 +74,7 @@ on:
         default: ubuntu-24.04
       package-auto-merge:
         description: >-
-          Also arm npm, pip and NuGet patch and minor bumps. Pass false where a
+          Also arm npm, pip, uv and NuGet patch and minor bumps. Pass false where a
           merge can lead to a deploy.
         type: boolean
         default: true
@@ -132,8 +132,8 @@ jobs:
             const DEPENDABOT_ID = 49699333;
             const WEB_FLOW_ID = 19864447;
             const ACTIONS_ECOSYSTEM = "github_actions";
-            // fetch-metadata's ids for npm, pip and NuGet (Dependabot branch names).
-            const PACKAGE_ECOSYSTEMS = new Set(["npm_and_yarn", "pip", "nuget"]);
+            // fetch-metadata's ids for npm, pip, uv and NuGet (Dependabot branch names).
+            const PACKAGE_ECOSYSTEMS = new Set(["npm_and_yarn", "pip", "uv", "nuget"]);
             const UPDATE_TYPES = new Set([
               "version-update:semver-patch",
               "version-update:semver-minor",
@@ -220,7 +220,7 @@ jobs:
                 if (ecosystem === ACTIONS_ECOSYSTEM) {
                   if (!allowlist.some((pattern) => pattern.test(name))) return `${name} is not an allowlisted publisher`;
                 } else if (!PACKAGE_ECOSYSTEMS.has(ecosystem)) {
-                  return `${name} is not a GitHub Actions, npm, pip or NuGet update`;
+                  return `${name} is not a GitHub Actions, npm, pip, uv or NuGet update`;
                 } else if (!packageAutoMerge) {
                   return `${name} is a package update and this repository turned package auto-merge off`;
                 } else if (reviewOnly.includes(name)) {

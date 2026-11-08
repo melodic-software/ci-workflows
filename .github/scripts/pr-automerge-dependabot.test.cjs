@@ -454,6 +454,7 @@ test("package auto-merge is on by default with no review-only names", () => {
 for (const [ecosystem, name, updateType] of [
   ["npm_and_yarn", "lefthook", "version-update:semver-minor"],
   ["pip", "requests", "version-update:semver-patch"],
+  ["uv", "ruff", "version-update:semver-patch"],
   ["nuget", "Microsoft.Extensions.Logging", "version-update:semver-minor"],
 ]) {
   test(`a ${ecosystem} ${updateType.split("-").at(-1)} from any publisher is armed`, async () => {
@@ -549,13 +550,13 @@ test("an invalid review-only-dependencies input is skipped", async () => {
   );
 });
 
-for (const ecosystem of ["docker", "uv", "dotnet_sdk"]) {
+for (const ecosystem of ["docker", "dotnet_sdk"]) {
   test(`a ${ecosystem} update is skipped`, async () => {
     assertSkipped(
       await runGate({
         updates: [update("thing", "version-update:semver-patch", ecosystem)],
       }),
-      /thing is not a GitHub Actions, npm, pip or NuGet update/u,
+      /thing is not a GitHub Actions, npm, pip, uv or NuGet update/u,
     );
   });
 }

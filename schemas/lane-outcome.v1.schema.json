@@ -26,6 +26,7 @@
         "sandbox-unavailable",
         "skipped-validation",
         "incomplete",
+        "shell-failed",
         "no-credential",
         "no-outcome",
         "other"
@@ -46,6 +47,10 @@
       }
     },
     "handoff": { "type": "boolean" },
+    "shellFailed": {
+      "description": "True on a success record whose every allowed Bash call failed (docs/lane-outcome.md, Fields). A flag, never a failure.",
+      "const": true
+    },
     "fallback": {
       "type": "object",
       "additionalProperties": true,

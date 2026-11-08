@@ -1660,11 +1660,82 @@ test("run-claude-cli accepts the launcher step's inputs for both lanes and passe
       "Agent",
     ]);
     assert.ok(args.includes("--disallowedTools"));
-    assert.equal(
-      args[args.indexOf("--plugin-dir") + 1],
-      path.join(workspace, ".lane", "plugins", "review"),
+    assert.deepEqual(
+      args.flatMap((a, i) => (a === "--plugin-dir" ? [args[i + 1]] : [])),
+      [path.join(workspace, ".lane", "plugins", "review")],
+      "exactly one --plugin-dir, the staged review plugin",
     );
     assert.equal(args[args.indexOf("--permission-prompts") + 1], "none");
+  }
+});
+
+// claude-code-plugins' pr-merge binds review evidence on a pull request that
+// changes plugins/review/ only because the plugin comes from its default
+// branch's tip, never the head (claude-code-plugins#10027).
+test("every review job stages the review plugin from claude-code-plugins' default-branch tip, read-only in .lane/, and loads only that plugin", () => {
+  for (const leg of [key, subscription, fallback]) {
+    const stage = step(leg, "plugin");
+    assert.equal(stage.name, "Stage the review plugin", leg.name);
+    const lines = stage.run.split("\n").map((line) => line.trim());
+    const clone = [
+      'git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"',
+    ];
+    // Any later fetch, checkout or reset in the clone could move it off the tip.
+    assert.deepEqual(
+      lines.filter((line) => /\bgit\b/u.test(line) && !line.startsWith("#")),
+      [
+        'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
+        ...clone,
+        'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main',
+        'echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"',
+        "mkdir -p .git/info",
+        "echo /.lane/ >>.git/info/exclude",
+      ],
+      `${leg.name}: one depth-1 clone of claude-code-plugins with no ref, so the default branch's tip, and no git command that moves it`,
+    );
+    assert.equal(stage.env.SOURCE, `\${{ runner.temp }}/claude-code-plugins`);
+    assert.ok(
+      lines.includes('cp -R "$SOURCE/plugins/review" .lane/plugins/review'),
+      `${leg.name}: the plugin is copied from the clone, not the checkout`,
+    );
+    assert.ok(
+      lines.includes("chmod -R a-w .lane/plugins"),
+      `${leg.name}: .lane/plugins is read-only`,
+    );
+    const refusal = lines.indexOf(
+      'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
+    );
+    assert.ok(refusal >= 0, `${leg.name}: a head that holds .lane is refused`);
+    assert.equal(
+      lines[refusal + 2],
+      "exit 1",
+      `${leg.name}: the refusal fails the step`,
+    );
+    assert.ok(
+      refusal < lines.indexOf(clone[0]),
+      `${leg.name}: the refusal runs before the clone`,
+    );
+    const launchers = leg.steps.filter((s) =>
+      String(s.uses ?? "").endsWith("/.github/actions/run-claude-cli"),
+    );
+    assert.equal(launchers.length, 4, `${leg.name}: four launcher steps`);
+    for (const launcher of launchers) {
+      assert.equal(
+        launcher.with["plugin-dirs"],
+        ".lane/plugins/review",
+        `${leg.name} ${launcher.id}: plugin-dirs is the staged plugin`,
+      );
+      for (const input of Object.keys(launcher.with)) {
+        assert.ok(
+          input === "plugin-dirs" || !/plugin|marketplace/iu.test(input),
+          `${leg.name} ${launcher.id}: no other plugin or marketplace input (${input})`,
+        );
+      }
+      assert.ok(
+        !/\.lane|plugins\/review/u.test(launcher.with["add-dirs"] ?? ""),
+        `${leg.name} ${launcher.id}: add-dirs names no other plugin copy`,
+      );
+    }
   }
 });
 

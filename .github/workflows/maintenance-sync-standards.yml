@@ -156,6 +156,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      unreachable-repositories: ${{ steps.attestation.outputs.unreachable-repositories }}
     steps:
       - name: Require App credentials
         env:
@@ -173,10 +175,11 @@ jobs:
         with:
           client-id: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.STANDARDS_SYNC_APP_PRIVATE_KEY }}
-          owner: melodic-software # zizmor: ignore[github-app] attesting the App identity and exact repository access needs an org-wide metadata read
+          owner: melodic-software # zizmor: ignore[github-app] attesting the App identity and its repository access needs an org-wide metadata read
           permission-metadata: read
 
-      - name: Attest App identity and exact repository access
+      - name: Attest App identity and target repository access
+        id: attestation
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
@@ -186,6 +189,7 @@ jobs:
           EXPECTED_INSTALLATION_ID: '144867070'
           EXPECTED_OWNER: melodic-software
           EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          TRUST_ROOT_REPOSITORIES: melodic-software/azure-iac
           GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
         with:
@@ -305,8 +309,8 @@ jobs:
               const seenIds = new Set();
               const snapshot = new Set();
               let totalCount;
-              // The exact total and unique 100-entry non-final pages make this bound exhaustive.
-              const maximumPages = Math.max(1, Math.ceil(expectedSet.size / 100));
+              // The first page's total and unique 100-entry non-final pages make this bound exhaustive.
+              let maximumPages = 1;
               for (let page = 1; page <= maximumPages; page += 1) {
                 const response = await github.request('GET /installation/repositories', {
                   page,
@@ -325,9 +329,7 @@ jobs:
                 }
                 if (totalCount === undefined) {
                   totalCount = data.total_count;
-                  if (totalCount !== expectedSet.size) {
-                    fail(`installation reports ${totalCount} repositories; expected ${expectedSet.size}`);
-                  }
+                  maximumPages = Math.max(1, Math.ceil(totalCount / 100));
                 } else if (data.total_count !== totalCount) {
                   fail(`repository total_count changed on page ${page}`);
                 }
@@ -367,12 +369,24 @@ jobs:
               fail('repository access changed between consecutive observations');
             }
             const actualSet = new Set(secondSnapshot);
-            const missing = [...expectedSet].filter((repository) => !actualSet.has(repository));
-            const excess = [...actualSet].filter((repository) => !expectedSet.has(repository));
-            if (missing.length > 0 || excess.length > 0) {
-              fail(`repository access differs (missing: ${missing.join(', ') || 'none'}; excess: ${excess.join(', ') || 'none'})`);
+            const missing = [...expectedSet].filter((repository) => !actualSet.has(repository)).sort();
+            const excess = secondSnapshot.filter((repository) => !expectedSet.has(repository));
+            // A trust root in reach of this write-capable App is the one over-grant that stops every target.
+            const trustRoots = required('TRUST_ROOT_REPOSITORIES').split(',').map((name) => name.trim());
+            const reachableTrustRoots = excess.filter((repository) => trustRoots.includes(repository));
+            if (reachableTrustRoots.length > 0) {
+              fail(`trust root ${reachableTrustRoots.join(', ')} is selected on installation ${expectedInstallationId}; remove it under Repository access before any sync runs`);
             }
-            core.info(`Attested ${actualSet.size} selected repositories for ${expectedSlug}.`);
+            // A missing target fails only its own sync job; excess access is reported, never blocking.
+            core.setOutput('unreachable-repositories', JSON.stringify(missing));
+            // One annotation per kind: GitHub caps warning annotations per step.
+            if (missing.length > 0) {
+              core.warning(`Standards sync App cannot reach manifest targets ${missing.join(', ')}; their sync jobs will fail.`);
+            }
+            if (excess.length > 0) {
+              core.warning(`Standards sync App over-grant: ${excess.join(', ')} selected on installation ${expectedInstallationId} but not manifest targets. Remove them under Repository access.`);
+            }
+            core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${excess.length} over-granted).`);
 
   sync:
     needs: [plan, attest]
@@ -389,6 +403,21 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
+      - name: Require App access to this target
+        env:
+          TARGET: ${{ matrix.repo }}
+          UNREACHABLE: ${{ needs.attest.outputs.unreachable-repositories }}
+        run: |
+          set -euo pipefail
+          if ! jq --exit-status 'type == "array"' <<< "$UNREACHABLE" > /dev/null; then
+            echo "::error::The attest job reported no unreachable-repositories list."
+            exit 1
+          fi
+          if jq --exit-status --arg target "$TARGET" 'any(.[]; . == $target)' <<< "$UNREACHABLE" > /dev/null; then
+            echo "::error::The melodic-standards-sync App cannot reach $TARGET: select it under Repository access on installation 144867070, then re-run all jobs (a re-run of this job alone reuses the old attestation), or let the next sync carry it."
+            exit 1
+          fi
+
       - name: Require App credentials
         env:
           APP_CLIENT_ID: ${{ secrets.STANDARDS_SYNC_APP_CLIENT_ID }}
@@ -590,13 +619,16 @@ jobs:
           labels: standards-sync
 
       # Arm when the PR was never armed (a PR opened while opted out still gets armed
-      # later) or this run pushed a new head, which expectedHeadOid checks at arm
-      # time. On an unchanged head a reviewer's disarm holds.
+      # later) or this run pushed a new head. On an unchanged head a reviewer's
+      # disarm holds. The arm targets the head GitHub reports for the PR, which can
+      # lag the commit this run just created or sit on a commit another actor
+      # added; the merge itself still waits on the target's required checks.
       - name: Arm auto-merge on the sync PR
         if: steps.cpr.outputs.pull-request-number != '' && matrix.automerge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HEAD_SHA: ${{ steps.cpr.outputs.pull-request-head-sha }}
+          HEAD_RETRY_SECONDS: '5'
           OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
           OWNER: ${{ matrix.repo_owner }}
           PR_NUMBER: ${{ steps.cpr.outputs.pull-request-number }}
@@ -608,23 +640,29 @@ jobs:
             const repo = process.env.REPO;
             const pull_number = Number(process.env.PR_NUMBER);
             const headChanged = ["created", "updated"].includes(process.env.OPERATION);
-            const expectedHeadOid = process.env.HEAD_SHA;
+            const pushedHeadOid = process.env.HEAD_SHA;
+            const retrySeconds = Number(process.env.HEAD_RETRY_SECONDS);
+            const headMismatch = /expected head oid does not match the current head oid/iu;
 
-            const { repository } = await github.graphql(
-              `query($owner: String!, $repo: String!, $number: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $number) {
-                    id
-                    autoMergeRequest { enabledAt }
-                    timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
-                      nodes { __typename }
+            const readPull = async () => {
+              const { repository } = await github.graphql(
+                `query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      id
+                      headRefOid
+                      autoMergeRequest { enabledAt }
+                      timelineItems(first: 1, itemTypes: [AUTO_MERGE_ENABLED_EVENT, AUTO_SQUASH_ENABLED_EVENT, AUTO_REBASE_ENABLED_EVENT]) {
+                        nodes { __typename }
+                      }
                     }
                   }
-                }
-              }`,
-              { owner, repo, number: pull_number },
-            );
-            const pull = repository?.pullRequest;
+                }`,
+                { owner, repo, number: pull_number },
+              );
+              return repository?.pullRequest;
+            };
+            const pull = await readPull();
             if (!pull) {
               core.warning(`Could not read ${owner}/${repo}#${pull_number} to arm auto-merge.`);
               return;
@@ -636,14 +674,32 @@ jobs:
               core.info(`Auto-merge was already armed on ${owner}/${repo}#${pull_number} and its head is unchanged; leaving its current state alone.`);
               return;
             }
-            if (!expectedHeadOid) {
-              core.warning(`No head SHA for ${owner}/${repo}#${pull_number}; not arming auto-merge without a head check.`);
+            if (!pull.headRefOid) {
+              core.warning(`No head oid for ${owner}/${repo}#${pull_number}; not arming auto-merge without a head check.`);
               return;
             }
 
+            const arm = (expectedHeadOid) => {
+              if (pushedHeadOid && expectedHeadOid !== pushedHeadOid) {
+                core.info(`${owner}/${repo}#${pull_number} reports head ${expectedHeadOid}, not the ${pushedHeadOid} this run pushed; arming at the reported head.`);
+              }
+              return github.graphql(
+                `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $pullRequestId
+                    mergeMethod: SQUASH
+                    expectedHeadOid: $expectedHeadOid
+                  }) {
+                    pullRequest { autoMergeRequest { enabledAt } }
+                  }
+                }`,
+                { pullRequestId: pull.id, expectedHeadOid },
+              );
+            };
+
             let disarmed = false;
             try {
-              // Drop an arm made on an earlier head before arming at this run's
+              // Drop an arm made on an earlier head before arming at the current
               // head; if re-arming then fails, the PR is left disarmed.
               if (pull.autoMergeRequest) {
                 await github.graphql(
@@ -656,19 +712,20 @@ jobs:
                 );
                 disarmed = true;
               }
-              await github.graphql(
-                `mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
-                  enablePullRequestAutoMerge(input: {
-                    pullRequestId: $pullRequestId
-                    mergeMethod: SQUASH
-                    expectedHeadOid: $expectedHeadOid
-                  }) {
-                    pullRequest { autoMergeRequest { enabledAt } }
-                  }
-                }`,
-                { pullRequestId: pull.id, expectedHeadOid },
-              );
-              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${expectedHeadOid}.`);
+              let armedHeadOid = pull.headRefOid;
+              try {
+                await arm(armedHeadOid);
+              } catch (error) {
+                if (!headMismatch.test(error.message)) throw error;
+                // GitHub's PR head can trail a commit created a few seconds earlier,
+                // so wait before the one re-read rather than re-reading the stale head.
+                core.info(`Head of ${owner}/${repo}#${pull_number} moved before the arm; re-reading it once.`);
+                await new Promise((resolve) => setTimeout(resolve, retrySeconds * 1000));
+                armedHeadOid = (await readPull())?.headRefOid;
+                if (!armedHeadOid) throw error;
+                await arm(armedHeadOid);
+              }
+              core.info(`Armed auto-merge on ${owner}/${repo}#${pull_number} at ${armedHeadOid}.`);
             } catch (error) {
               // This run disarmed the PR, so a failed re-arm must be visible.
               if (disarmed) {

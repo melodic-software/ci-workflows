@@ -13,7 +13,9 @@ description: >-
   subscription leg that ends in a limit stop (a rejected rate_limit_event
   with its reset), a credit stop, or a 401 or 402 sets handoff `true` too,
   and the caller runs the fallback leg on `fallback-token` as a third job;
-  that leg never hands off. handoff-reason names the stop.
+  that leg never hands off. With `fallback-ready: handoff-only`, a
+  subscription leg hands off on the same stops with no leg after it, so a
+  last leg can end green on a capacity stop. handoff-reason names the stop.
   The leg's CLI environment has every credential and file-command variable
   removed and its one credential set, and the CLI runs with `--restricted`
   and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
@@ -38,7 +40,8 @@ description: >-
   other than NO_PROXY. It writes the outputs report-check-run reads, a JSONL
   execution log (one object for the leg) and, with json-schema-file, the
   result's structured output, each written only after a scan finds no
-  credential in it, and a job summary table of closed tokens. The log holds
+  credential in it, execution-file-clean, the same scan of the execution
+  file, and a job summary table of closed tokens. The log holds
   the leg's token usage and each subscription window's highest utilization,
   reset and last status; pass it to report-lane-outcome's log-file for the
   lane-outcome record. A window at allowed_warning or rejected, or at 0.70
@@ -46,7 +49,7 @@ description: >-
   subscription token the API refused (401 or 402) that hands off to the
   fallback job adds one warning annotation naming the secret, so a green
   run still shows the dead token; that leg's summary row says the fallback
-  job runs instead.
+  job runs instead, or, with `handoff-only`, that no further leg runs.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
@@ -95,8 +98,12 @@ inputs:
     description: >-
       `true` when the caller runs a fallback leg after this one, so a
       subscription leg may hand off to it; pass
-      `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''`. `false` or empty
-      keeps the subscription leg the last. Any other value fails the step.
+      `secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != ''`. `handoff-only` when
+      this subscription leg is the last but the caller still wants handoff
+      and handoff-reason on those stops, to end green on a capacity stop:
+      the outputs match `true`, and no note names a fallback job. `false`
+      or empty keeps the subscription leg the last with no handoff. Any
+      other value fails the step.
     required: false
     default: ""
   model:
@@ -219,7 +226,8 @@ outputs:
       leg in a separate job; `true` when a subscription leg with
       fallback-ready `true` ended in a limit stop, a credit stop, or a 401
       or 402, so the caller may run the fallback leg in a third job (403
-      stops it the same way); `false` otherwise; empty when the step failed
+      stops it the same way), and on the same stops with `handoff-only`,
+      where no leg follows; `false` otherwise; empty when the step failed
       before the leg ran. A 403 (permission_error) does not hand off: a
       Console key is bound to a workspace, or acts across several, and
       carries its identity's workspace role
@@ -243,7 +251,7 @@ outputs:
     description: >-
       Why the leg handed off, a closed token: `credit-stop` or `auth` from a
       key leg; `limit-stop`, `credit-stop` or `auth` from a subscription leg
-      with fallback-ready; empty when handoff is not `true`. The next job
+      with fallback-ready `true` or `handoff-only`; empty when handoff is not `true`. The next job
       passes it as report-lane-outcome's fallback-reason.
     value: ${{ steps.run.outputs.handoff-reason }}
   credential:
@@ -252,10 +260,19 @@ outputs:
   execution-file:
     description: >-
       The leg's CLI messages as a JSON array (the execution_file shape
-      claude-code-action writes). It holds every tool result and model reply
-      and this action never scans it for credentials, so upload it only
-      through upload-lane-transcript, which scans and seals it.
+      claude-code-action writes). It holds every tool result and model reply.
+      The action scans it but keeps it whatever the scan finds, since
+      callers parse it: gate any upload on execution-file-clean == 'true',
+      and upload it only through upload-lane-transcript, which scans and
+      seals it.
     value: ${{ steps.run.outputs.execution-file }}
+  execution-file-clean:
+    description: >-
+      `true` when execution-file was read and a scan found no credential in
+      it (an Anthropic-key shape or the leg's secret value); `false` when it
+      holds one, is missing or cannot be read; empty when the step failed
+      before writing its outputs. Gate on `== 'true'`, so empty stays closed.
+    value: ${{ steps.run.outputs.execution-file-clean }}
   log-file:
     description: JSONL execution log, one object for the leg; empty when the credential scan failed.
     value: ${{ steps.run.outputs.log-file }}
