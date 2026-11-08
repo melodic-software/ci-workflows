@@ -63,7 +63,9 @@
 //     the leg exits. Its stderr and closed-pattern tokens reach the job log,
 //     inside ::stop-commands::; the job summary shows only closed tokens.
 //   - The log file is written only after a scan finds no credential in it.
-//     It alone keeps a CLI-authored error line.
+//     It alone keeps a CLI-authored error line. The execution file is
+//     scanned the same way and kept either way, since callers parse it;
+//     execution-file-clean reports the scan.
 "use strict";
 
 const crypto = require("node:crypto");
@@ -664,6 +666,18 @@ function holdsCredential(text, secretValues) {
   return secretValues.some(
     (value) => value.length >= 8 && text.includes(value),
   );
+}
+
+// True only when the file reads and holds no credential; a missing or
+// unreadable file is not clean.
+function fileClean(file, secretValues) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return false;
+  }
+  return !holdsCredential(text, secretValues);
 }
 
 // Classes a token leg's rejected rate_limit_event overrides: with retries on,
@@ -1335,6 +1349,9 @@ function run(env) {
   if (structuredWritten) fs.writeFileSync(structuredFile, structuredText);
   writeOutputs(env.GITHUB_OUTPUT, {
     ...outcome.outputs,
+    "execution-file-clean": String(
+      fileClean(outcome.outputs["execution-file"], [config.leg.value]),
+    ),
     "log-file": clean ? logFile : "",
     "structured-output-file": structuredWritten ? structuredFile : "",
   });
@@ -1409,6 +1426,7 @@ module.exports = {
   NPM_REGISTRY,
   SIGNING_KEY_FINGERPRINT,
   cliArgs,
+  fileClean,
   handoffReason,
   holdsCredential,
   install,
