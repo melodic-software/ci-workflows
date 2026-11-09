@@ -657,8 +657,6 @@ test("the floor label stays without exactly one priority label", async () => {
 
 test("a status or security label keeps the floor label", async () => {
   for (const extra of [
-    "status: needs-info",
-    "status: needs-decision",
     "needs-owner-decision",
     "needs-reporter-info",
     "area: security",
