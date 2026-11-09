@@ -749,8 +749,8 @@ consumer to audit it.
   `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`. The job summary
   shows only closed tokens; the CLI's own error line stays in the log. Each
   leg stops after `leg-timeout-minutes`, 30 by default, and at once on a
-  `rejected` `rate_limit_event` whose reset falls after the
-  `watchdog-max-wait-ms` cap, which ends as the limit stop above. `tools`,
+  `rejected` `rate_limit_event` whose reset is more than
+  `watchdog-max-wait-ms` away, which ends as the limit stop above. `tools`,
   `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
   the CLI flags of the same names. `plugin-dirs` passes each directory to
   `--plugin-dir` and `--add-dir`, so a plugin's skills can read their own

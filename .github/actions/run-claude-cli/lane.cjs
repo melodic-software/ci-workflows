@@ -80,7 +80,6 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn: spawnAsync, spawnSync } = require("node:child_process");
-const { StringDecoder } = require("node:string_decoder");
 
 const {
   apiErrorFacts,
@@ -888,7 +887,7 @@ function resetPast(line, deadlineMs) {
   if (!line.includes("rate_limit_event")) return null;
   let message;
   try {
-    message = JSON.parse(line);
+    message = JSON.parse(line.toString("utf8"));
   } catch {
     return null;
   }
@@ -922,8 +921,8 @@ function runChild(
       child.kill("SIGINT");
     };
     const timer = timeoutMs > 0 ? setTimeout(stop, timeoutMs, "timeout") : null;
-    const decoder = new StringDecoder("utf8");
-    let partial = "";
+    // The unfinished line's chunks. A 0x0A byte is always a newline in UTF-8.
+    let partial = [];
     // A spawn failure (ENOENT) ends in close with no exit code, as spawnSync's
     // null status did.
     child.on("error", () => {});
@@ -931,15 +930,15 @@ function runChild(
     child.stdin.end(input);
     child.stdout.on("data", (chunk) => {
       const kept = chunk.subarray(0, Math.max(0, maxBytes - bytes));
-      if (kept.length > 0) {
-        chunks.push(kept);
-        bytes += kept.length;
-        const lines = (partial + decoder.write(kept)).split("\n");
-        partial = lines.pop();
-        for (const line of lines) {
-          if (stopped === null && onLine(line)) stop("limit");
-        }
+      chunks.push(kept);
+      bytes += kept.length;
+      let start = 0;
+      for (let end; (end = kept.indexOf(10, start)) !== -1; start = end + 1) {
+        const line = [...partial, kept.subarray(start, end)];
+        partial = [];
+        if (stopped === null && onLine(Buffer.concat(line))) stop("limit");
       }
+      if (start < kept.length) partial.push(kept.subarray(start));
       if (kept.length < chunk.length) stop("overflow");
     });
     child.on("close", (code) => {

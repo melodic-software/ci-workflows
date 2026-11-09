@@ -879,6 +879,30 @@ test("a rejected usage limit that resets past the wait cap stops a subscription 
   assert.equal(records[0].resets, RESET_2030_ISO);
 });
 
+test("a far-reset event split across stdout chunks still stops the leg", async () => {
+  const event = `${JSON.stringify(rejectedThenHang("seven_day", RESET_2030)[1])}\n`;
+  const spawned = [];
+  const spawn = () => {
+    const child = fakeChild();
+    spawned.push(child);
+    process.nextTick(() => {
+      child.write(event.slice(0, 20));
+      setTimeout(() => child.write(event.slice(20)), 10);
+    });
+    setTimeout(() => child.exit(1), 200);
+    return child;
+  };
+  const { outputs } = await runCase({
+    sub: SUCCESS,
+    fallbackReady: true,
+    spawn,
+    now: HOUR_BEFORE,
+  });
+  assert.deepEqual(spawned[0].signals, ["SIGINT"]);
+  assert.equal(outputs["lane-resets"], RESET_2030_ISO);
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+});
+
 test("a real CLI waiting on a reset past the wait cap ends well before its own wait", async () => {
   const started = Date.now();
   const { outputs } = await runCase({
