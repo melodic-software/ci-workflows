@@ -11,7 +11,9 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn: spawnChild, spawnSync } = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const { PassThrough } = require("node:stream");
 const test = require("node:test");
 
 const {
@@ -117,9 +119,45 @@ let caseNumber = 0;
 // Runs what follows `--` when the leg asks for bwrap, so cases with a tree to
 // protect test the mode lock on hosts without bubblewrap.
 function withoutBwrap(command, args, options) {
-  if (command !== "bwrap") return spawnSync(command, args, options);
+  if (command !== "bwrap") return spawnChild(command, args, options);
   const rest = args.slice(args.indexOf("--") + 1);
-  return spawnSync(rest[0], rest.slice(1), options);
+  return spawnChild(rest[0], rest.slice(1), options);
+}
+
+// A child process the test drives: `lines(messages)` writes stream-json lines
+// to its stdout, `exit(code)` closes it, and kill records the signal and
+// closes it as killed. With `stdout` given, it prints that and exits 0 on the
+// next tick.
+function fakeChild({ stdout = null } = {}) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdin.resume();
+  child.stdout = new PassThrough();
+  child.signals = [];
+  let closed = false;
+  const close = (code, signal) => {
+    if (closed) return;
+    closed = true;
+    child.stdout.end();
+    child.stdout.on("end", () => child.emit("close", code, signal));
+    child.stdout.resume();
+  };
+  child.write = (text) => child.stdout.write(text);
+  child.lines = (messages) =>
+    child.write(messages.map((m) => `${JSON.stringify(m)}\n`).join(""));
+  child.exit = (code) => close(code, null);
+  child.kill = (signal) => {
+    child.signals.push(signal);
+    close(null, signal);
+    return true;
+  };
+  if (stdout !== null) {
+    process.nextTick(() => {
+      child.write(stdout);
+      child.exit(0);
+    });
+  }
+  return child;
 }
 
 const bwrapWorks =
@@ -243,7 +281,7 @@ const SESSION_LIMIT = [
 // `fallback`, the message list that leg prints; `fallbackReady` is the
 // fallback-ready input a token leg reads, and `handoffOnly` its
 // `handoff-only` value.
-function runCase({
+async function runCase({
   key = null,
   sub = null,
   fallback = null,
@@ -257,6 +295,8 @@ function runCase({
   extraEnv = {},
   prepare = () => ({}),
   spawn = withoutBwrap,
+  maxStdoutBytes,
+  now,
 }) {
   caseNumber += 1;
   const dir = path.join(root, `case-${caseNumber}`);
@@ -279,7 +319,8 @@ function runCase({
   ]) {
     if (!messages) continue;
     const file = path.join(dir, `${leg}.jsonl`);
-    fs.writeFileSync(file, messages.map((m) => JSON.stringify(m)).join("\n"));
+    // Stream JSON ends every message with a newline.
+    fs.writeFileSync(file, messages.map((m) => `${JSON.stringify(m)}\n`).join(""));
     baseEnv[`FAKE_${leg}`] = file;
     baseEnv[`FAKE_${leg}_EXIT`] = String(messages === SUCCESS ? 0 : exit);
   }
@@ -314,15 +355,15 @@ function runCase({
     workDir: dir,
     runId: "123",
   };
-  const outcome = runLeg(config, { baseEnv, spawn });
+  const outcome = await runLeg(config, { baseEnv, spawn, maxStdoutBytes, now });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
   return { ...outcome, calls: callLines.map((l) => JSON.parse(l)), config };
 }
 
-test("a key-leg credit stop ends the run with lane-class credit-stop and runs no second leg", () => {
-  const { outputs, calls, records } = runCase({ key: CREDIT_STOP });
+test("a key-leg credit stop ends the run with lane-class credit-stop and runs no second leg", async () => {
+  const { outputs, calls, records } = await runCase({ key: CREDIT_STOP });
   assert.deepEqual(
     calls.map((c) => [c.leg, c.seen]),
     [["KEY", ["ANTHROPIC_API_KEY"]]],
@@ -336,16 +377,16 @@ test("a key-leg credit stop ends the run with lane-class credit-stop and runs no
   );
 });
 
-test("a tier spend cap is a credit stop too, with its reset", () => {
-  const { outputs, calls, records } = runCase({ key: TIER_CAP });
+test("a tier spend cap is a credit stop too, with its reset", async () => {
+  const { outputs, calls, records } = await runCase({ key: TIER_CAP });
   assert.equal(calls.length, 1);
   assert.equal(records[0].class, "credit-stop");
   assert.equal(outputs["lane-class"], "credit-stop");
   assert.equal(outputs["lane-resets"], "2026-09-01T00:00:00Z");
 });
 
-test("a credit-stop-shaped failure on the subscription leg is never credit-stop", () => {
-  const { outputs, calls } = runCase({ sub: CREDIT_STOP });
+test("a credit-stop-shaped failure on the subscription leg is never credit-stop", async () => {
+  const { outputs, calls } = await runCase({ sub: CREDIT_STOP });
   assert.deepEqual(
     calls.map((c) => [c.leg, c.seen]),
     [["SUB", ["CLAUDE_CODE_OAUTH_TOKEN"]]],
@@ -355,8 +396,8 @@ test("a credit-stop-shaped failure on the subscription leg is never credit-stop"
   assert.equal(outputs.credential, TOKEN_NAME);
 });
 
-test("a rejected key hands off to the subscription job and keeps class auth", () => {
-  const { outputs, calls, records } = runCase({ key: AUTH });
+test("a rejected key hands off to the subscription job and keeps class auth", async () => {
+  const { outputs, calls, records } = await runCase({ key: AUTH });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["KEY"],
@@ -397,17 +438,17 @@ const PERMISSION_TEXT =
   '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
   `"request_id":"${REQUEST_ID}"}`;
 
-test("a key refused with 401 or 402 hands off and keeps class auth", () => {
+test("a key refused with 401 or 402 hands off and keeps class auth", async () => {
   for (const status of [401, 402]) {
-    const { outputs, records } = runCase({ key: authLeg({ status }) });
+    const { outputs, records } = await runCase({ key: authLeg({ status }) });
     assert.equal(outputs["lane-class"], "auth", String(status));
     assert.equal(outputs.handoff, "true", String(status));
     assert.equal(records[0].next, "subscription", String(status));
   }
 });
 
-test("a 403 does not hand off and records its error type, code and request id", () => {
-  const { outputs, records } = runCase({
+test("a 403 does not hand off and records its error type, code and request id", async () => {
+  const { outputs, records } = await runCase({
     key: authLeg({ status: 403, text: PERMISSION_TEXT }),
   });
   assert.equal(outputs["lane-class"], "auth");
@@ -425,9 +466,9 @@ test("a 403 does not hand off and records its error type, code and request id", 
   );
 });
 
-test("a 403 with credit-stop text and SDK error is not a credit stop and does not hand off", () => {
+test("a 403 with credit-stop text and SDK error is not a credit stop and does not hand off", async () => {
   for (const error of ["billing_error", "invalid_request"]) {
-    const { outputs, records } = runCase({
+    const { outputs, records } = await runCase({
       key: [
         {
           type: "assistant",
@@ -454,8 +495,8 @@ test("a 403 with credit-stop text and SDK error is not a credit stop and does no
   }
 });
 
-test("a 403 with model output records no error facts from its text", () => {
-  const { records } = runCase({
+test("a 403 with model output records no error facts from its text", async () => {
+  const { records } = await runCase({
     key: authLeg({ status: 403, text: PERMISSION_TEXT, outputTokens: 5 }),
   });
   assert.deepEqual(
@@ -464,8 +505,8 @@ test("a 403 with model output records no error facts from its text", () => {
   );
 });
 
-test("a 403 whose errors[] text names authentication_error still does not hand off", () => {
-  const { outputs } = runCase({
+test("a 403 whose errors[] text names authentication_error still does not hand off", async () => {
+  const { outputs } = await runCase({
     key: authLeg({
       status: 403,
       errors: ['{"type":"error","error":{"type":"authentication_error"}}'],
@@ -475,8 +516,8 @@ test("a 403 whose errors[] text names authentication_error still does not hand o
   assert.equal(outputs.handoff, "false");
 });
 
-test("a 401 whose errors[] text names another type still hands off by its status", () => {
-  const { outputs } = runCase({
+test("a 401 whose errors[] text names another type still hands off by its status", async () => {
+  const { outputs } = await runCase({
     key: authLeg({
       status: 401,
       errors: ['{"type":"error","error":{"type":"permission_error"}}'],
@@ -486,8 +527,8 @@ test("a 401 whose errors[] text names another type still hands off by its status
   assert.equal(outputs.handoff, "true");
 });
 
-test("permission_error in errors[] text alone, with no numeric status, does not hand off", () => {
-  const { outputs, records } = runCase({
+test("permission_error in errors[] text alone, with no numeric status, does not hand off", async () => {
+  const { outputs, records } = await runCase({
     key: authLeg({
       errors: [
         'model text: {"type":"error","error":{"type":"permission_error"}}',
@@ -499,30 +540,30 @@ test("permission_error in errors[] text alone, with no numeric status, does not 
   assert.equal(records[0].next, null);
 });
 
-test("a rejected subscription token, the last leg, hands off nothing", () => {
-  const { outputs, records } = runCase({ sub: AUTH });
+test("a rejected subscription token, the last leg, hands off nothing", async () => {
+  const { outputs, records } = await runCase({ sub: AUTH });
   assert.equal(outputs["lane-class"], "auth");
   assert.equal(outputs.handoff, "false");
   assert.equal(records[0].next, null);
 });
 
-test("a key leg hands off on no other failure class", () => {
+test("a key leg hands off on no other failure class", async () => {
   for (const [name, key, extra] of [
     ["max-turns", MAX_TURNS, {}],
     ["rate-limit", SESSION_LIMIT, {}],
     ["timeout", SUCCESS, { keySleep: true, legTimeoutMs: 300 }],
   ]) {
-    const { outputs, records } = runCase({ key, ...extra });
+    const { outputs, records } = await runCase({ key, ...extra });
     assert.equal(outputs["lane-class"], name, name);
     assert.equal(outputs.handoff, "false", name);
     assert.equal(records[0].next, null, name);
   }
 });
 
-test("a key leg's handoff names its reason: credit-stop or auth", () => {
-  assert.equal(runCase({ key: CREDIT_STOP }).outputs["handoff-reason"], "credit-stop");
-  assert.equal(runCase({ key: AUTH }).outputs["handoff-reason"], "auth");
-  assert.equal(runCase({ key: SESSION_LIMIT }).outputs["handoff-reason"], "");
+test("a key leg's handoff names its reason: credit-stop or auth", async () => {
+  assert.equal((await runCase({ key: CREDIT_STOP })).outputs["handoff-reason"], "credit-stop");
+  assert.equal((await runCase({ key: AUTH })).outputs["handoff-reason"], "auth");
+  assert.equal((await runCase({ key: SESSION_LIMIT })).outputs["handoff-reason"], "");
 });
 
 // A 429 with no rejected rate_limit_event: a throttle, not a usage limit.
@@ -535,14 +576,14 @@ const WARNED_THROTTLE = [
   ...THROTTLE,
 ];
 
-test("with a fallback ready, a subscription leg hands off on a limit stop, a credit stop or a 401 or 402", () => {
+test("with a fallback ready, a subscription leg hands off on a limit stop, a credit stop or a 401 or 402", async () => {
   for (const [name, sub, reason, laneClass] of [
     ["limit stop", SESSION_LIMIT, "limit-stop", "rate-limit"],
     ["credit stop", CREDIT_STOP, "credit-stop", "other"],
     ["401", authLeg({ status: 401 }), "auth", "auth"],
     ["402", authLeg({ status: 402 }), "auth", "auth"],
   ]) {
-    const { outputs, records } = runCase({ sub, fallbackReady: true });
+    const { outputs, records } = await runCase({ sub, fallbackReady: true });
     assert.equal(outputs.handoff, "true", name);
     assert.equal(outputs["handoff-reason"], reason, name);
     assert.equal(outputs["lane-class"], laneClass, name);
@@ -551,7 +592,7 @@ test("with a fallback ready, a subscription leg hands off on a limit stop, a cre
   }
 });
 
-test("with a fallback ready, a subscription leg hands off on no other stop", () => {
+test("with a fallback ready, a subscription leg hands off on no other stop", async () => {
   for (const [name, sub, extra] of [
     ["403", authLeg({ status: 403, text: PERMISSION_TEXT }), {}],
     ["throttle", THROTTLE, {}],
@@ -559,56 +600,56 @@ test("with a fallback ready, a subscription leg hands off on no other stop", () 
     ["max-turns", MAX_TURNS, {}],
     ["success", SUCCESS, {}],
   ]) {
-    const { outputs, records } = runCase({ sub, fallbackReady: true, ...extra });
+    const { outputs, records } = await runCase({ sub, fallbackReady: true, ...extra });
     assert.equal(outputs.handoff, "false", name);
     assert.equal(outputs["handoff-reason"], "", name);
     assert.equal(records[0].next, null, name);
   }
 });
 
-test("a key leg hands off only to the subscription job, fallback ready or not", () => {
+test("a key leg hands off only to the subscription job, fallback ready or not", async () => {
   for (const [name, key, reason] of [
     ["limit stop", SESSION_LIMIT, ""],
     ["credit stop", CREDIT_STOP, "credit-stop"],
     ["401", AUTH, "auth"],
   ]) {
-    const { outputs, records } = runCase({ key, fallbackReady: true });
+    const { outputs, records } = await runCase({ key, fallbackReady: true });
     assert.equal(outputs["handoff-reason"], reason, name);
     assert.equal(records[0].next, reason === "" ? null : "subscription", name);
   }
 });
 
-test("with handoff-only, a last subscription leg hands off on the same stops and names no next leg", () => {
+test("with handoff-only, a last subscription leg hands off on the same stops and names no next leg", async () => {
   for (const [name, sub, reason, laneClass] of [
     ["limit stop", SESSION_LIMIT, "limit-stop", "rate-limit"],
     ["credit stop", CREDIT_STOP, "credit-stop", "other"],
     ["401", authLeg({ status: 401 }), "auth", "auth"],
     ["402", authLeg({ status: 402 }), "auth", "auth"],
   ]) {
-    const { outputs, records } = runCase({ sub, fallbackReady: true, handoffOnly: true });
+    const { outputs, records } = await runCase({ sub, fallbackReady: true, handoffOnly: true });
     assert.equal(outputs.handoff, "true", name);
     assert.equal(outputs["handoff-reason"], reason, name);
     assert.equal(outputs["lane-class"], laneClass, name);
     assert.equal(records[0].next, null, name);
   }
-  const permission = runCase({
+  const permission = await runCase({
     sub: authLeg({ status: 403, text: PERMISSION_TEXT }),
     fallbackReady: true,
     handoffOnly: true,
   });
   assert.equal(permission.outputs.handoff, "false", "403");
-  const key = runCase({ key: CREDIT_STOP, fallbackReady: true, handoffOnly: true });
+  const key = await runCase({ key: CREDIT_STOP, fallbackReady: true, handoffOnly: true });
   assert.equal(key.outputs["handoff-reason"], "credit-stop", "key leg");
   assert.equal(key.records[0].next, "subscription", "key leg");
 });
 
-test("with no fallback ready, a subscription leg stops as before", () => {
+test("with no fallback ready, a subscription leg stops as before", async () => {
   for (const [name, sub, laneClass] of [
     ["limit stop", SESSION_LIMIT, "rate-limit"],
     ["credit stop", CREDIT_STOP, "other"],
     ["401", AUTH, "auth"],
   ]) {
-    const { outputs, records } = runCase({ sub });
+    const { outputs, records } = await runCase({ sub });
     assert.equal(outputs.handoff, "false", name);
     assert.equal(outputs["handoff-reason"], "", name);
     assert.equal(outputs["lane-class"], laneClass, name);
@@ -616,9 +657,9 @@ test("with no fallback ready, a subscription leg stops as before", () => {
   }
 });
 
-test("the fallback leg runs on the fallback secret and never hands off", () => {
+test("the fallback leg runs on the fallback secret and never hands off", async () => {
   for (const fallback of [SESSION_LIMIT, AUTH, CREDIT_STOP]) {
-    const { outputs, records, calls } = runCase({ fallback, fallbackReady: true });
+    const { outputs, records, calls } = await runCase({ fallback, fallbackReady: true });
     assert.deepEqual(calls.map((c) => c.seen), [["CLAUDE_CODE_OAUTH_TOKEN"]]);
     assert.equal(outputs.handoff, "false");
     assert.equal(outputs["handoff-reason"], "");
@@ -628,14 +669,14 @@ test("the fallback leg runs on the fallback secret and never hands off", () => {
       ["fallback", FALLBACK_NAME, null],
     );
   }
-  assert.equal(runCase({ fallback: SUCCESS }).outputs["lane-class"], "");
+  assert.equal((await runCase({ fallback: SUCCESS })).outputs["lane-class"], "");
 });
 
-test("max-turns and timeout on the key leg end the run with their class", () => {
-  const maxTurns = runCase({ key: MAX_TURNS });
+test("max-turns and timeout on the key leg end the run with their class", async () => {
+  const maxTurns = await runCase({ key: MAX_TURNS });
   assert.equal(maxTurns.calls.length, 1);
   assert.equal(maxTurns.outputs["lane-class"], "max-turns");
-  const timedOut = runCase({
+  const timedOut = await runCase({
     key: SUCCESS,
     keySleep: true,
     legTimeoutMs: 300,
@@ -644,8 +685,8 @@ test("max-turns and timeout on the key leg end the run with their class", () => 
   assert.equal(timedOut.records.length, 1);
 });
 
-test("a key-leg success writes the outputs from that leg", () => {
-  const { outputs, calls } = runCase({ key: SUCCESS });
+test("a key-leg success writes the outputs from that leg", async () => {
+  const { outputs, calls } = await runCase({ key: SUCCESS });
   assert.deepEqual(
     calls.map((c) => c.leg),
     ["KEY"],
@@ -666,8 +707,8 @@ test("a key-leg success writes the outputs from that leg", () => {
   assert.equal(messages.at(-1).type, "result");
 });
 
-test("a subscription limit stop is rate-limit with the rejected window's reset", () => {
-  const { outputs } = runCase({ sub: SESSION_LIMIT });
+test("a subscription limit stop is rate-limit with the rejected window's reset", async () => {
+  const { outputs } = await runCase({ sub: SESSION_LIMIT });
   assert.equal(outputs["lane-class"], "rate-limit");
   // resetsAt 1767225600 is 2026-01-01T00:00:00Z.
   assert.equal(outputs["lane-resets"], "2026-01-01T00:00:00Z");
@@ -686,12 +727,12 @@ function rejectedThenHang(rateLimitType, resetsAt) {
   ];
 }
 
-test("a subscription leg that times out after a rejected window is a limit stop and hands off", () => {
+test("a subscription leg that times out after a rejected window is a limit stop and hands off", async () => {
   for (const [window, resetsAt, iso] of [
     ["seven_day", 1767830400, "2026-01-08T00:00:00Z"],
     ["five_hour", 1767225600, "2026-01-01T00:00:00Z"],
   ]) {
-    const { outputs, records } = runCase({
+    const { outputs, records } = await runCase({
       sub: rejectedThenHang(window, resetsAt),
       fallbackReady: true,
       hang: true,
@@ -705,12 +746,12 @@ test("a subscription leg that times out after a rejected window is a limit stop 
   }
 });
 
-test("a subscription leg that times out with no rejected window stays timeout and does not hand off", () => {
+test("a subscription leg that times out with no rejected window stays timeout and does not hand off", async () => {
   for (const [name, sub] of [
     ["no event", [{ type: "system", subtype: "init" }]],
     ["warning only", WARNED_THROTTLE.filter((m) => m.type !== "result")],
   ]) {
-    const { outputs, records } = runCase({
+    const { outputs, records } = await runCase({
       sub,
       fallbackReady: true,
       hang: true,
@@ -723,7 +764,7 @@ test("a subscription leg that times out with no rejected window stays timeout an
   }
 });
 
-test("a subscription leg that times out after a rejection that no longer holds stays timeout and does not hand off", () => {
+test("a subscription leg that times out after a rejection that no longer holds stays timeout and does not hand off", async () => {
   const assistant = {
     type: "assistant",
     message: { content: [{ type: "text", text: "Still working." }] },
@@ -746,7 +787,7 @@ test("a subscription leg that times out after a rejection that no longer holds s
       [...rejectedThenHang("seven_day_opus", 1767830400), assistant],
     ],
   ]) {
-    const { outputs, records } = runCase({
+    const { outputs, records } = await runCase({
       sub,
       fallbackReady: true,
       hang: true,
@@ -759,8 +800,8 @@ test("a subscription leg that times out after a rejection that no longer holds s
   }
 });
 
-test("a subscription leg that fails unnamed after a rejected window is a limit stop and hands off", () => {
-  const { outputs, records } = runCase({
+test("a subscription leg that fails unnamed after a rejected window is a limit stop and hands off", async () => {
+  const { outputs, records } = await runCase({
     sub: rejectedThenHang("seven_day", 1767830400),
     fallbackReady: true,
   });
@@ -771,8 +812,8 @@ test("a subscription leg that fails unnamed after a rejected window is a limit s
   assert.equal(records[0].next, "fallback");
 });
 
-test("the fallback leg that times out after a rejected window is a limit stop that hands off nothing", () => {
-  const { outputs, records } = runCase({
+test("the fallback leg that times out after a rejected window is a limit stop that hands off nothing", async () => {
+  const { outputs, records } = await runCase({
     fallback: rejectedThenHang("seven_day", 1767830400),
     fallbackReady: true,
     hang: true,
@@ -785,8 +826,8 @@ test("the fallback leg that times out after a rejected window is a limit stop th
   assert.equal(records[0].next, null);
 });
 
-test("a key leg that times out after a rejected window keeps class timeout", () => {
-  const { outputs } = runCase({
+test("a key leg that times out after a rejected window keeps class timeout", async () => {
+  const { outputs } = await runCase({
     key: rejectedThenHang("seven_day", 1767830400),
     fallbackReady: true,
     hang: true,
@@ -796,8 +837,180 @@ test("a key leg that times out after a rejected window keeps class timeout", () 
   assert.equal(outputs.handoff, "false");
 });
 
-test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", () => {
-  const { calls } = runCase({ key: SUCCESS });
+// A CLI that prints `messages` and then waits for a usage-limit reset: it
+// exits with `exitCode` after 200 ms unless the leg stops it first.
+// `onSpawn` runs as the leg starts, as a CLI writing a step file would.
+function waitingCli(messages, { exitCode = 1, onSpawn = () => {} } = {}) {
+  const spawned = [];
+  const spawn = () => {
+    const child = fakeChild();
+    spawned.push(child);
+    onSpawn();
+    process.nextTick(() => child.lines(messages));
+    setTimeout(() => child.exit(exitCode), 200);
+    return child;
+  };
+  return { spawn, spawned };
+}
+
+// 2030-01-01T00:00:00Z, the reset the far-reset cases wait for.
+const RESET_2030 = 1893456000;
+const RESET_2030_ISO = "2030-01-01T00:00:00Z";
+// With the default 1800000 ms (30 minute) wait cap: an hour before the reset
+// is past the cap, 20 minutes before is inside it, 30 minutes is the edge.
+const HOUR_BEFORE = () => new Date("2029-12-31T23:00:00Z");
+const TWENTY_MINUTES_BEFORE = () => new Date("2029-12-31T23:40:00Z");
+const CAP_BEFORE = () => new Date("2029-12-31T23:30:00Z");
+
+test("a rejected usage limit that resets past the wait cap stops a subscription leg at once and hands off as a limit stop", async () => {
+  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+  const { outputs, records } = await runCase({
+    sub: SUCCESS,
+    fallbackReady: true,
+    spawn: cli.spawn,
+    now: HOUR_BEFORE,
+  });
+  assert.deepEqual(cli.spawned[0].signals, ["SIGINT"], "the leg is stopped with SIGINT");
+  assert.equal(outputs["lane-class"], "rate-limit");
+  assert.equal(outputs["lane-resets"], RESET_2030_ISO);
+  assert.equal(outputs.handoff, "true");
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+  assert.equal(records[0].next, "fallback");
+  assert.equal(records[0].resets, RESET_2030_ISO);
+});
+
+test("a real CLI waiting on a reset past the wait cap ends well before its own wait", async () => {
+  const started = Date.now();
+  const { outputs } = await runCase({
+    sub: rejectedThenHang("seven_day", RESET_2030),
+    fallbackReady: true,
+    hang: true,
+    now: HOUR_BEFORE,
+  });
+  // The fake CLI waits 5 seconds after printing before it exits on its own.
+  assert.ok(Date.now() - started < 4000, `ended after ${Date.now() - started} ms`);
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+});
+
+test("a key leg stopped on a reset past the wait cap is a rate-limit stop that does not hand off", async () => {
+  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+  const { outputs, records } = await runCase({
+    key: SUCCESS,
+    fallbackReady: true,
+    spawn: cli.spawn,
+    now: HOUR_BEFORE,
+  });
+  assert.deepEqual(cli.spawned[0].signals, ["SIGINT"]);
+  assert.equal(outputs["lane-class"], "rate-limit");
+  assert.equal(outputs["lane-resets"], RESET_2030_ISO);
+  assert.equal(outputs.handoff, "false");
+  assert.equal(outputs["handoff-reason"], "");
+  assert.equal(records[0].next, null);
+});
+
+test("a rejected usage limit that resets inside the wait cap, or at it, does not stop the leg", async () => {
+  for (const [name, now] of [
+    ["20 minutes before the reset", TWENTY_MINUTES_BEFORE],
+    ["exactly the cap before the reset", CAP_BEFORE],
+  ]) {
+    const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+    const { outputs, records } = await runCase({
+      sub: SUCCESS,
+      fallbackReady: true,
+      spawn: cli.spawn,
+      now,
+    });
+    assert.deepEqual(cli.spawned[0].signals, [], name);
+    assert.equal(records[0].exit_code, 1, name);
+    // As before this change: an unnamed failure under a rejection in force.
+    assert.equal(outputs["lane-class"], "rate-limit", name);
+    assert.equal(outputs["handoff-reason"], "limit-stop", name);
+  }
+});
+
+test("a usage-limit event that is not rejected does not stop the leg, however far its reset", async () => {
+  for (const status of ["allowed", "allowed_warning"]) {
+    const cli = waitingCli(
+      [
+        { type: "system", subtype: "init" },
+        {
+          type: "rate_limit_event",
+          rate_limit_info: { status, resetsAt: RESET_2030, rateLimitType: "seven_day" },
+        },
+        result({}),
+      ],
+      { exitCode: 0 },
+    );
+    const { outputs } = await runCase({
+      sub: SUCCESS,
+      fallbackReady: true,
+      spawn: cli.spawn,
+      now: HOUR_BEFORE,
+    });
+    assert.deepEqual(cli.spawned[0].signals, [], status);
+    assert.equal(outputs["lane-class"], "", status);
+    assert.equal(outputs.handoff, "false", status);
+  }
+});
+
+test("a 529 overload the CLI retries does not stop the leg early", async () => {
+  const retry = {
+    type: "system",
+    subtype: "api_retry",
+    error_status: 529,
+    retry_delay_ms: 30000,
+  };
+  const cli = waitingCli([
+    { type: "system", subtype: "init" },
+    retry,
+    retry,
+    result({
+      is_error: true,
+      num_turns: 0,
+      result: "API Error: 529 Overloaded",
+      api_error_status: 529,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+    }),
+  ]);
+  const { outputs } = await runCase({
+    sub: SUCCESS,
+    fallbackReady: true,
+    spawn: cli.spawn,
+    now: HOUR_BEFORE,
+  });
+  assert.deepEqual(cli.spawned[0].signals, []);
+  assert.equal(outputs["lane-class"], "overloaded");
+  assert.equal(outputs.handoff, "false");
+});
+
+test("a leg stopped on a far reset still has its step files put back", async () => {
+  let output;
+  const original = "cli-version=2.1.302\n";
+  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030), {
+    onSpawn: () => {
+      fs.chmodSync(output, 0o644);
+      fs.appendFileSync(output, "lane-class=credit-stop\n");
+    },
+  });
+  const { outputs } = await runCase({
+    sub: SUCCESS,
+    fallbackReady: true,
+    spawn: cli.spawn,
+    now: HOUR_BEFORE,
+    prepare: (dir) => {
+      output = path.join(dir, "output");
+      fs.writeFileSync(output, original);
+      return { GITHUB_OUTPUT: output };
+    },
+  });
+  assert.deepEqual(cli.spawned[0].signals, ["SIGINT"]);
+  assert.equal(fs.readFileSync(output, "utf8"), original);
+  assert.equal(outputs["handoff-reason"], "limit-stop");
+});
+
+test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", async () => {
+  const { calls } = await runCase({ key: SUCCESS });
   const [call] = calls;
   assert.equal(call.scrub, "1");
   assert.equal(call.watchdog, "1");
@@ -832,7 +1045,7 @@ test("each leg gets the scrub, a bounded watchdog, the flags and the preamble", 
   assert.equal(call.stdin, "You run unattended.\n\nFix the failing check.\n");
 });
 
-test("legEnv removes every inherited credential and sets exactly one", () => {
+test("legEnv removes every inherited credential and sets exactly one", async () => {
   const base = Object.fromEntries(
     CREDENTIAL_VARIABLES.map((n) => [n, "inherited"]),
   );
@@ -864,7 +1077,7 @@ test("legEnv removes every inherited credential and sets exactly one", () => {
   assert.equal("ANTHROPIC_API_KEY" in fallback, false);
 });
 
-test("legEnv removes every workflow file-command variable", () => {
+test("legEnv removes every workflow file-command variable", async () => {
   const base = Object.fromEntries(
     FILE_COMMAND_VARIABLES.map((n) => [n, `/runner/${n}`]),
   );
@@ -877,14 +1090,14 @@ test("legEnv removes every workflow file-command variable", () => {
   );
 });
 
-test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHUB_PATH is cut off", () => {
+test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHUB_PATH is cut off", async () => {
   const dir = path.join(root, "file-commands");
   fs.mkdirSync(dir);
   const envFile = path.join(dir, "env");
   const pathFile = path.join(dir, "path");
   fs.writeFileSync(envFile, "EARLIER=1\n");
   fs.writeFileSync(pathFile, "");
-  const { calls } = runCase({
+  const { calls } = await runCase({
     key: SUCCESS,
     extraEnv: {
       GITHUB_ENV: envFile,
@@ -903,7 +1116,7 @@ test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHU
   assert.equal(fs.readFileSync(pathFile, "utf8"), "");
 });
 
-test("what a leg appends to GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE is cut off", () => {
+test("what a leg appends to GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE is cut off", async () => {
   const dir = path.join(root, "step-files");
   fs.mkdirSync(dir);
   const files = {
@@ -914,7 +1127,7 @@ test("what a leg appends to GITHUB_OUTPUT, GITHUB_STEP_SUMMARY or GITHUB_STATE i
   fs.writeFileSync(files.GITHUB_OUTPUT, "cli-version=2.1.302\n");
   fs.writeFileSync(files.GITHUB_STEP_SUMMARY, "### earlier step\n");
   fs.writeFileSync(files.GITHUB_STATE, "");
-  runCase({
+  await runCase({
     sub: SUCCESS,
     extraEnv: { ...files, FAKE_APPEND: Object.values(files).join(":") },
   });
@@ -940,10 +1153,10 @@ function writableTree(dir) {
   return file;
 }
 
-test("the leg finds the CLI install tree read-only, and its modes come back after", asNonRoot, () => {
+test("the leg finds the CLI install tree read-only, and its modes come back after", asNonRoot, async () => {
   let installed;
   let added;
-  const { calls } = runCase({
+  const { calls } = await runCase({
     sub: SUCCESS,
     prepare: (dir) => {
       installed = writableTree(path.join(dir, "cli"));
@@ -961,9 +1174,9 @@ test("the leg finds the CLI install tree read-only, and its modes come back afte
   assert.equal(fs.statSync(path.dirname(installed)).mode & 0o200, 0o200);
 });
 
-test("_work/_actions beside RUNNER_WORKSPACE is read-only during the leg and writable after", asNonRoot, () => {
+test("_work/_actions beside RUNNER_WORKSPACE is read-only during the leg and writable after", asNonRoot, async () => {
   let action;
-  const { calls } = runCase({
+  const { calls } = await runCase({
     key: SUCCESS,
     prepare: (dir) => {
       const work = path.join(dir, "_work");
@@ -980,19 +1193,17 @@ test("_work/_actions beside RUNNER_WORKSPACE is read-only during the leg and wri
 function recordingSpawn(spawned) {
   return (command, args) => {
     spawned.push([command, args]);
-    return {
-      status: 0,
-      signal: null,
-      stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
-    };
+    return fakeChild({
+      stdout: SUCCESS.map((m) => JSON.stringify(m)).join("\n"),
+    });
   };
 }
 
-test("with the install and action trees present, the leg runs the CLI under bwrap that binds both read-only after the root", () => {
+test("with the install and action trees present, the leg runs the CLI under bwrap that binds both read-only after the root", async () => {
   let cli;
   let actions;
   const spawned = [];
-  const { config } = runCase({
+  const { config } = await runCase({
     key: CREDIT_STOP,
     prepare: (dir) => {
       cli = path.join(dir, "cli");
@@ -1024,24 +1235,24 @@ test("with the install and action trees present, the leg runs the CLI under bwra
   assert.deepEqual(args.slice(args.indexOf("--") + 2), cliArgs(config));
 });
 
-test("with neither tree present, the leg runs the CLI directly", () => {
+test("with neither tree present, the leg runs the CLI directly", async () => {
   const spawned = [];
-  const { config } = runCase({
+  const { config } = await runCase({
     key: SUCCESS,
     spawn: recordingSpawn(spawned),
   });
   assert.deepEqual(spawned, [[fakeCli, cliArgs(config)]]);
 });
 
-test("under bwrap a leg cannot put the write bits back on the install tree", withBwrap, () => {
+test("under bwrap a leg cannot put the write bits back on the install tree", withBwrap, async () => {
   let installed;
-  const { calls } = runCase({
+  const { calls } = await runCase({
     key: SUCCESS,
     prepare: (dir) => {
       installed = writableTree(path.join(dir, "cli"));
       return { FAKE_CHMOD: installed, FAKE_WRITE: installed };
     },
-    spawn: spawnSync,
+    spawn: spawnChild,
   });
   assert.deepEqual(calls[0].chmods, ["EROFS"]);
   assert.notEqual(calls[0].writes[0], "written");
@@ -1049,9 +1260,9 @@ test("under bwrap a leg cannot put the write bits back on the install tree", wit
   assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
 });
 
-test("under bwrap a leg cannot put the write bits back on _work/_actions", withBwrap, () => {
+test("under bwrap a leg cannot put the write bits back on _work/_actions", withBwrap, async () => {
   let action;
-  const { calls } = runCase({
+  const { calls } = await runCase({
     key: SUCCESS,
     prepare: (dir) => {
       const work = path.join(dir, "_work");
@@ -1063,7 +1274,7 @@ test("under bwrap a leg cannot put the write bits back on _work/_actions", withB
         FAKE_WRITE: action,
       };
     },
-    spawn: spawnSync,
+    spawn: spawnChild,
   });
   assert.deepEqual(calls[0].chmods, ["EROFS"]);
   assert.notEqual(calls[0].writes[0], "written");
@@ -1071,9 +1282,9 @@ test("under bwrap a leg cannot put the write bits back on _work/_actions", withB
   assert.equal(fs.statSync(action).mode & 0o777, 0o755);
 });
 
-test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
+test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, async () => {
   let survived;
-  const { outputs } = runCase({
+  const { outputs } = await runCase({
     key: SUCCESS,
     keySleep: true,
     legTimeoutMs: 300,
@@ -1082,7 +1293,7 @@ test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
       survived = path.join(dir, "survived");
       return { FAKE_SURVIVED: survived };
     },
-    spawn: spawnSync,
+    spawn: spawnChild,
   });
   assert.equal(outputs["lane-class"], "timeout");
   // The fake CLI sleeps 5 seconds before it writes the marker.
@@ -1090,9 +1301,9 @@ test("a CLI under bwrap does not outlive a timed-out leg", withBwrap, () => {
   assert.equal(fs.existsSync(survived), false);
 });
 
-test("the install tree is writable again when a leg throws", asNonRoot, () => {
+test("the install tree is writable again when a leg throws", asNonRoot, async () => {
   let installed;
-  assert.throws(() =>
+  await assert.rejects(() =>
     runCase({
       key: SUCCESS,
       prepare: (dir) => {
@@ -1107,12 +1318,12 @@ test("the install tree is writable again when a leg throws", asNonRoot, () => {
   assert.equal(fs.statSync(installed).mode & 0o777, 0o755);
 });
 
-test("a failed mode restore still cuts off what a leg appended to the step files", () => {
+test("a failed mode restore still cuts off what a leg appended to the step files", async () => {
   const chmodSync = fs.chmodSync;
   let cli;
   let output;
   try {
-    assert.throws(() =>
+    await assert.rejects(() =>
       runCase({
         key: SUCCESS,
         prepare: (dir) => {
@@ -1129,11 +1340,9 @@ test("a failed mode restore still cuts off what a leg appended to the step files
           fs.chmodSync = () => {
             throw Object.assign(new Error("EIO: i/o error, chmod"), { code: "EIO" });
           };
-          return {
-            status: 0,
-            signal: null,
-            stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
-          };
+          return fakeChild({
+            stdout: SUCCESS.map((m) => JSON.stringify(m)).join("\n"),
+          });
         },
       }),
     /EIO/u);
@@ -1146,12 +1355,12 @@ test("a failed mode restore still cuts off what a leg appended to the step files
   }
 });
 
-test("a same-size rewrite of a step file is put back byte for byte", () => {
+test("a same-size rewrite of a step file is put back byte for byte", async () => {
   let output;
   const original = "cli-version=2.1.302\n";
   const forged = "lane-class=credit-s\n";
   assert.equal(forged.length, original.length);
-  runCase({
+  await runCase({
     key: SUCCESS,
     prepare: (dir) => {
       output = path.join(dir, "output");
@@ -1161,17 +1370,15 @@ test("a same-size rewrite of a step file is put back byte for byte", () => {
     spawn: () => {
       fs.chmodSync(output, 0o644);
       fs.writeFileSync(output, forged);
-      return {
-        status: 0,
-        signal: null,
-        stdout: Buffer.from(SUCCESS.map((m) => JSON.stringify(m)).join("\n")),
-      };
+      return fakeChild({
+        stdout: SUCCESS.map((m) => JSON.stringify(m)).join("\n"),
+      });
     },
   });
   assert.equal(fs.readFileSync(output, "utf8"), original);
 });
 
-test("a process the leg leaves behind cannot add a lane-class after the launcher writes its own", withBwrap, () => {
+test("a process the leg leaves behind cannot add a lane-class after the launcher writes its own", withBwrap, async () => {
   const dir = path.join(root, "run-straggler");
   const env = runEnv(dir, {});
   fs.writeFileSync(env.GITHUB_OUTPUT, "");
@@ -1179,7 +1386,7 @@ test("a process the leg leaves behind cannot add a lane-class after the launcher
   env.FAKE_KEY_EXIT = "0";
   env.FAKE_STRAGGLE = env.GITHUB_OUTPUT;
   env.FAKE_STRAGGLE_DONE = path.join(dir, "straggler-done");
-  run(env);
+  await run(env);
   // The straggler waits 1.5 seconds after the leg starts, then tries.
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
   assert.equal(fs.readFileSync(env.FAKE_STRAGGLE_DONE, "utf8"), "EROFS");
@@ -1191,39 +1398,42 @@ test("a process the leg leaves behind cannot add a lane-class after the launcher
   assert.equal(lines.at(-1), "structured-output-file=");
 });
 
-test("stdout is captured in memory and a maxBuffer overflow is class other", () => {
+test("stdout is captured in memory and an overflow past the byte cap stops the leg as class other", async () => {
   const seen = [];
+  let child;
   const spawn = (_command, _args, options) => {
     seen.push(options);
-    const overflow = new Error("spawnSync ENOBUFS");
-    overflow.code = "ENOBUFS";
-    return {
-      status: null,
-      signal: "SIGINT",
-      error: overflow,
-      stdout: Buffer.from(`${JSON.stringify({ type: "system" })}\n`),
-    };
+    child = fakeChild();
+    process.nextTick(() => {
+      child.lines([{ type: "system" }]);
+      child.write("x".repeat(100));
+    });
+    return child;
   };
-  const { records, outputs, calls } = runCase({
+  const { records, outputs, calls, config } = await runCase({
     key: CREDIT_STOP,
     spawn,
+    maxStdoutBytes: 64,
   });
   assert.equal(calls.length, 0);
   assert.equal(seen.length, 1);
   assert.deepEqual(seen[0].stdio, ["pipe", "pipe", "inherit"]);
-  assert.equal(seen[0].maxBuffer, MAX_LEG_STDOUT_BYTES);
-  assert.equal(seen[0].killSignal, "SIGINT");
+  assert.deepEqual(child.signals, ["SIGINT"]);
   assert.equal(outputs["lane-class"], "other");
   assert.equal(records[0].class, "other");
   assert.equal(records[0].next, null);
-  assert.match(records[0].message, /stdout passed \d+ bytes/u);
+  assert.equal(records[0].message, "CLI stdout passed 64 bytes; the leg was stopped");
+  assert.equal(
+    fs.statSync(path.join(config.workDir, "leg-1.jsonl")).size,
+    64,
+  );
   assert.equal(
     fs.readFileSync(outputs["execution-file"], "utf8"),
     '[{"type":"system"}]',
   );
 });
 
-test("the log has one object for the leg with the documented fields and no credential or model text", () => {
+test("the log has one object for the leg with the documented fields and no credential or model text", async () => {
   const denied = result({
     permission_denials: [
       { tool_name: "Bash", tool_use_id: "a", tool_input: {} },
@@ -1236,8 +1446,8 @@ test("the log has one object for the leg with the documented fields and no crede
       "claude-haiku-5-5": { costUSD: 0.0033, inputTokens: 2, outputTokens: 4 },
     },
   });
-  const { records } = runCase({ sub: [denied] });
-  const [stopped] = runCase({ key: CREDIT_STOP }).records;
+  const { records } = await runCase({ sub: [denied] });
+  const [stopped] = (await runCase({ key: CREDIT_STOP })).records;
   assert.equal(records.length, 1);
   assert.deepEqual(Object.keys(records[0]), [
     "run_id",
@@ -1287,13 +1497,13 @@ test("the log has one object for the leg with the documented fields and no crede
   assert.equal(text.includes("model text"), false);
 });
 
-test("holdsCredential finds a secret value or a key-shaped string", () => {
+test("holdsCredential finds a secret value or a key-shaped string", async () => {
   assert.equal(holdsCredential(`x ${KEY} y`, [KEY]), true);
   assert.equal(holdsCredential("sk-ant-api03-abcdefghijkl", []), true);
   assert.equal(holdsCredential("FIXCI_CLAUDE_API_KEY", [KEY]), false);
 });
 
-test("cli-version latest resolves from npm view; exact versions pass; others fail", () => {
+test("cli-version latest resolves from npm view; exact versions pass; others fail", async () => {
   assert.equal(
     resolveCliVersion("latest", () => "2.1.302\n"),
     "2.1.302",
@@ -1322,7 +1532,7 @@ test("cli-version latest resolves from npm view; exact versions pass; others fai
   );
 });
 
-test("the action's cli-version default resolves the newest release from npm view", () => {
+test("the action's cli-version default resolves the newest release from npm view", async () => {
   const { parseWorkflow } = require("../../scripts/workflow-yaml.cjs");
   const action = parseWorkflow(
     fs.readFileSync(path.join(__dirname, "action.yml"), "utf8"),
@@ -1357,7 +1567,7 @@ function configEnv(overrides = {}) {
   };
 }
 
-test("readConfig takes exactly one credential, named after the role, never from input", () => {
+test("readConfig takes exactly one credential, named after the role, never from input", async () => {
   const key = readConfig(
     configEnv({
       LANE_ROLE: "issue-lane",
@@ -1396,7 +1606,7 @@ test("readConfig takes exactly one credential, named after the role, never from 
   );
 });
 
-test("readConfig takes the fallback token under its fixed name, one credential of three, and a closed fallback-ready", () => {
+test("readConfig takes the fallback token under its fixed name, one credential of three, and a closed fallback-ready", async () => {
   const fallback = readConfig(
     configEnv({ LANE_ROLE: "issue-lane", LANE_API_KEY: "", LANE_FALLBACK_TOKEN: FALLBACK_TOKEN }),
   );
@@ -1428,7 +1638,7 @@ test("readConfig takes the fallback token under its fixed name, one credential o
   }
 });
 
-test("readConfig refuses bypass and bad values", () => {
+test("readConfig refuses bypass and bad values", async () => {
   assert.throws(
     () => readConfig(configEnv({ LANE_PERMISSION_MODE: "bypassPermissions" })),
     /permission-mode/u,
@@ -1462,7 +1672,7 @@ test("readConfig refuses bypass and bad values", () => {
   );
 });
 
-test("an empty effort leaves --effort out; an invalid one still fails", () => {
+test("an empty effort leaves --effort out; an invalid one still fails", async () => {
   const config = readConfig(configEnv({ LANE_EFFORT: "" }));
   assert.equal(config.effort, "");
   assert.equal(cliArgs(config).includes("--effort"), false);
@@ -1474,7 +1684,7 @@ test("an empty effort leaves --effort out; an invalid one still fails", () => {
   );
 });
 
-test("the sandbox settings pass by default; sandbox false omits them; other values fail", () => {
+test("the sandbox settings pass by default; sandbox false omits them; other values fail", async () => {
   const settings = (args) =>
     args.flatMap((arg, i) => (arg === "--settings" ? [args[i + 1]] : []));
   const expected = [
@@ -1508,7 +1718,7 @@ test("the sandbox settings pass by default; sandbox false omits them; other valu
   }
 });
 
-test("the sandbox input defaults to true and reaches both the isolation and run steps", () => {
+test("the sandbox input defaults to true and reaches both the isolation and run steps", async () => {
   const cli = readAction("run-claude-cli");
   assert.equal(cli.inputs.sandbox.default, "true");
   for (const id of ["isolation", "run"]) {
@@ -1517,7 +1727,7 @@ test("the sandbox input defaults to true and reaches both the isolation and run 
   }
 });
 
-test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, resolved in the workspace", () => {
+test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, resolved in the workspace", async () => {
   const workspace = path.join(root, "workspace");
   for (const dir of ["plugins/review", "plugins/tidy", "docs"]) {
     fs.mkdirSync(path.join(workspace, dir), { recursive: true });
@@ -1545,7 +1755,7 @@ test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, res
   assert.equal(none.includes("--add-dir"), false);
 });
 
-test("plugin-dirs and add-dirs refuse paths outside the workspace", () => {
+test("plugin-dirs and add-dirs refuse paths outside the workspace", async () => {
   const workspace = path.join(root, "workspace-refusals");
   fs.mkdirSync(path.join(workspace, "plugin"), { recursive: true });
   fs.writeFileSync(path.join(workspace, "file.md"), "");
@@ -1605,12 +1815,12 @@ function readOutputs(file) {
   );
 }
 
-test("run writes the outputs, the log and the summary, and fails on a lane class", () => {
+test("run writes the outputs, the log and the summary, and fails on a lane class", async () => {
   const dir = path.join(root, "run");
   const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SESSION_LIMIT);
   env.FAKE_SUB_EXIT = "1";
-  assert.throws(
+  await assert.rejects(
     () => run(env),
     /intake ended class=rate-limit on AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN/u,
   );
@@ -1635,7 +1845,7 @@ test("run writes the outputs, the log and the summary, and fails on a lane class
   assert.equal(summaryText.includes("session limit"), false);
 });
 
-test("fileClean is true only for a readable file with no credential", () => {
+test("fileClean is true only for a readable file with no credential", async () => {
   const dir = path.join(root, "file-clean");
   fs.mkdirSync(dir);
   const write = (name, text) => {
@@ -1653,7 +1863,7 @@ test("fileClean is true only for a readable file with no credential", () => {
   assert.equal(fileClean(path.join(dir, "missing.json"), [TOKEN]), false, "missing file");
 });
 
-test("run writes execution-file-clean from a scan of the execution file", () => {
+test("run writes execution-file-clean from a scan of the execution file", async () => {
   for (const [name, messages, expected] of [
     ["clean", SESSION_LIMIT, "true"],
     [
@@ -1669,21 +1879,21 @@ test("run writes execution-file-clean from a scan of the execution file", () => 
     const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
     env.FAKE_SUB = legFile(dir, "sub.jsonl", messages);
     env.FAKE_SUB_EXIT = "1";
-    assert.throws(() => run(env), /class=rate-limit/u, name);
+    await assert.rejects(() => run(env), /class=rate-limit/u, name);
     const outputs = readOutputs(env.GITHUB_OUTPUT);
     assert.equal(outputs["execution-file-clean"], expected, name);
     assert.ok(fs.existsSync(outputs["execution-file"]), `${name}: the file is kept`);
   }
 });
 
-test("run on a key-leg credit stop sets lane-class credit-stop and starts no subscription leg", () => {
+test("run on a key-leg credit stop sets lane-class credit-stop and starts no subscription leg", async () => {
   const dir = path.join(root, "run-credit-stop");
   const env = runEnv(dir, {});
   env.FAKE_KEY = legFile(dir, "key.jsonl", CREDIT_STOP);
   env.FAKE_KEY_EXIT = "1";
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
   env.FAKE_SUB_EXIT = "0";
-  assert.throws(
+  await assert.rejects(
     () => run(env),
     /intake ended class=credit-stop on AUTOMATIONS_CLAUDE_API_KEY/u,
   );
@@ -1703,12 +1913,12 @@ test("run on a key-leg credit stop sets lane-class credit-stop and starts no sub
   assert.equal(readOutputs(env.GITHUB_OUTPUT).handoff, "true");
 });
 
-test("run on a rejected key sets handoff and a summary row that names the dead key", () => {
+test("run on a rejected key sets handoff and a summary row that names the dead key", async () => {
   const dir = path.join(root, "run-auth");
   const env = runEnv(dir, {});
   env.FAKE_KEY = legFile(dir, "key.jsonl", AUTH);
   env.FAKE_KEY_EXIT = "1";
-  assert.throws(
+  await assert.rejects(
     () => run(env),
     /intake ended class=auth on AUTOMATIONS_CLAUDE_API_KEY/u,
   );
@@ -1728,7 +1938,7 @@ test("run on a rejected key sets handoff and a summary row that names the dead k
   assert.deepEqual([record.class, record.next], ["auth", "subscription"]);
 });
 
-test("run on a 403 key stops with no handoff and names the error in the log, summary and record", () => {
+test("run on a 403 key stops with no handoff and names the error in the log, summary and record", async () => {
   const dir = path.join(root, "run-permission");
   const env = runEnv(dir, {});
   env.FAKE_KEY = legFile(
@@ -1738,7 +1948,7 @@ test("run on a 403 key stops with no handoff and names the error in the log, sum
   );
   env.FAKE_KEY_EXIT = "1";
   const facts = `api_error_status=403 error_type=permission_error error_code=workspace_access_denied request_id=${REQUEST_ID}`;
-  assert.throws(
+  await assert.rejects(
     () => run(env),
     (error) =>
       error.message ===
@@ -1773,7 +1983,7 @@ function structuredRun(name, messages, exit, overrides = {}) {
 
 const FINDINGS = { findings: 2, summary: "Two findings.", comments: [] };
 
-test("a successful leg with json-schema-file writes the structured output to its own file", () => {
+test("a successful leg with json-schema-file writes the structured output to its own file", async () => {
   const env = structuredRun(
     "run-structured",
     [
@@ -1782,7 +1992,7 @@ test("a successful leg with json-schema-file writes the structured output to its
     ],
     0,
   );
-  run(env);
+  await run(env);
   const outputs = readOutputs(env.GITHUB_OUTPUT);
   assert.deepEqual(
     JSON.parse(fs.readFileSync(outputs["structured-output-file"], "utf8")),
@@ -1791,7 +2001,7 @@ test("a successful leg with json-schema-file writes the structured output to its
   assert.notEqual(outputs["log-file"], "");
 });
 
-test("no structured-output-file without json-schema-file, on a failed leg, or with no object", () => {
+test("no structured-output-file without json-schema-file, on a failed leg, or with no object", async () => {
   const maxTurns = result({
     subtype: "error_max_turns",
     is_error: true,
@@ -1814,7 +2024,7 @@ test("no structured-output-file without json-schema-file, on a failed leg, or wi
   ]) {
     const env = structuredRun(name, messages, exit, overrides);
     try {
-      run(env);
+      await run(env);
     } catch (error) {
       assert.equal(name, "run-structured-max-turns", error.message);
     }
@@ -1828,7 +2038,7 @@ test("no structured-output-file without json-schema-file, on a failed leg, or wi
   }
 });
 
-test("a structured output holding the credential or a key shape is not written and fails the step", () => {
+test("a structured output holding the credential or a key shape is not written and fails the step", async () => {
   for (const planted of [KEY, "sk-ant-api03-abcdefghijkl"]) {
     const env = structuredRun(
       `run-structured-leak-${planted.length}`,
@@ -1839,7 +2049,7 @@ test("a structured output holding the credential or a key shape is not written a
       ],
       0,
     );
-    assert.throws(
+    await assert.rejects(
       () => run(env),
       /the structured output held a credential and was not written/u,
     );
@@ -1853,17 +2063,17 @@ test("a structured output holding the credential or a key shape is not written a
   }
 });
 
-test("run refuses both credentials before any leg starts", () => {
+test("run refuses both credentials before any leg starts", async () => {
   const dir = path.join(root, "run-two-credentials");
   const env = runEnv(dir, { LANE_SUBSCRIPTION_TOKEN: TOKEN });
   env.FAKE_KEY = legFile(dir, "key.jsonl", SUCCESS);
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
-  assert.throws(() => run(env), /2 credentials/u);
+  await assert.rejects(() => run(env), /2 credentials/u);
   assert.equal(fs.existsSync(env.FAKE_CALLS), false);
   assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
 });
 
-test("the summary shows a closed token per class and never a record's message", () => {
+test("the summary shows a closed token per class and never a record's message", async () => {
   const record = (failureClass) => ({
     leg: 1,
     secret: KEY_NAME,
@@ -1899,7 +2109,7 @@ test("the summary shows a closed token per class and never a record's message", 
   assert.doesNotMatch(table, /spend limit/iu);
 });
 
-test("a handoff to the fallback job says the fallback job runs instead, whatever the class", () => {
+test("a handoff to the fallback job says the fallback job runs instead, whatever the class", async () => {
   const record = (failureClass, next) => ({
     leg: 1,
     secret: TOKEN_NAME,
@@ -1929,7 +2139,7 @@ test("a handoff to the fallback job says the fallback job runs instead, whatever
   );
 });
 
-test("a handoff with no further leg says so and names no fallback job", () => {
+test("a handoff with no further leg says so and names no fallback job", async () => {
   const record = (failureClass) => ({
     leg: 1,
     secret: TOKEN_NAME,
@@ -1950,7 +2160,7 @@ test("a handoff with no further leg says so and names no fallback job", () => {
   }
 });
 
-test("run on a refused last subscription leg with handoff-only warns once and names no fallback job", () => {
+test("run on a refused last subscription leg with handoff-only warns once and names no fallback job", async () => {
   const dir = path.join(root, "run-handoff-only-auth");
   const env = runEnv(dir, {
     LANE_API_KEY: "",
@@ -1959,7 +2169,7 @@ test("run on a refused last subscription leg with handoff-only warns once and na
   });
   env.FAKE_SUB = legFile(dir, "sub.jsonl", AUTH);
   env.FAKE_SUB_EXIT = "1";
-  const lines = captureStdout(() => run(env));
+  const lines = await captureStdout(() => run(env));
   assert.deepEqual(
     lines.filter((l) => l.includes("run-claude-cli credential")),
     [
@@ -1976,7 +2186,7 @@ test("run on a refused last subscription leg with handoff-only warns once and na
   assert.doesNotMatch(summary, /fallback/u);
 });
 
-test("run on a refused subscription token with a fallback ready warns the owner once, after the stop-commands block", () => {
+test("run on a refused subscription token with a fallback ready warns the owner once, after the stop-commands block", async () => {
   const dir = path.join(root, "run-fallback-auth");
   const env = runEnv(dir, {
     LANE_API_KEY: "",
@@ -1985,7 +2195,7 @@ test("run on a refused subscription token with a fallback ready warns the owner 
   });
   env.FAKE_SUB = legFile(dir, "sub.jsonl", AUTH);
   env.FAKE_SUB_EXIT = "1";
-  const lines = captureStdout(() => run(env));
+  const lines = await captureStdout(() => run(env));
   const opened = lines.findIndex((l) => l.startsWith("::stop-commands::"));
   const closed = lines.indexOf(`::${lines[opened].slice("::stop-commands::".length)}::`);
   const warnings = lines
@@ -2005,7 +2215,7 @@ test("run on a refused subscription token with a fallback ready warns the owner 
   );
 });
 
-test("no refused-credential warning without an auth handoff to the fallback job", () => {
+test("no refused-credential warning without an auth handoff to the fallback job", async () => {
   for (const [name, overrides, leg, messages] of [
     ["key auth", {}, "KEY", AUTH],
     ["no fallback", { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN }, "SUB", AUTH],
@@ -2020,16 +2230,16 @@ test("no refused-credential warning without an auth handoff to the fallback job"
     const env = runEnv(dir, overrides);
     env[`FAKE_${leg}`] = legFile(dir, "leg.jsonl", messages);
     env[`FAKE_${leg}_EXIT`] = "1";
-    const lines = captureStdout(() => run(env));
+    const lines = await captureStdout(() => run(env));
     assert.equal(lines.some((l) => l.includes("run-claude-cli credential")), false, name);
   }
 });
 
-test("run refuses a loader, TLS or proxy variable before any leg", () => {
+test("run refuses a loader, TLS or proxy variable before any leg", async () => {
   const dir = path.join(root, "run-unsafe");
   fs.mkdirSync(dir);
   const calls = path.join(dir, "calls.jsonl");
-  assert.throws(
+  await assert.rejects(
     () =>
       run({
         ...configEnv({ LANE_WORK_DIR: dir }),
@@ -2049,7 +2259,7 @@ const PINNED = {
   permissions: { disableBypassPermissionsMode: "disable" },
 };
 
-test("verifyManagedSettings needs a root-owned, pinned, non-writable file", () => {
+test("verifyManagedSettings needs a root-owned, pinned, non-writable file", async () => {
   const file = path.join(root, "managed-settings.json");
   fs.writeFileSync(file, JSON.stringify(PINNED));
   const asRoot = (mode) => () => ({ uid: 0, mode });
@@ -2127,7 +2337,7 @@ function applyVerdict(settings, loopbackBaseUrl = "") {
   );
 }
 
-test("apply-claude-managed-settings writes settings verifyManagedSettings accepts by default", () => {
+test("apply-claude-managed-settings writes settings verifyManagedSettings accepts by default", async () => {
   const action = readAction("apply-claude-managed-settings");
   const file = path.join(root, "default-managed-settings.json");
   fs.writeFileSync(file, action.inputs.settings.default);
@@ -2172,7 +2382,7 @@ const NOT_LOOPBACK = [
   "not a url",
 ];
 
-test("verifyManagedSettings keeps the public API pin unless loopback-base-url opts in", () => {
+test("verifyManagedSettings keeps the public API pin unless loopback-base-url opts in", async () => {
   const file = path.join(root, "loopback-settings.json");
   const stat = () => ({ uid: 0, mode: 0o100644 });
   for (const url of [LOOPBACK, LOOPBACK_V6]) {
@@ -2201,7 +2411,7 @@ test("verifyManagedSettings keeps the public API pin unless loopback-base-url op
   );
 });
 
-test("verifyManagedSettings refuses a loopback-base-url that is not exactly http://127.0.0.1:<port> or http://[::1]:<port>", () => {
+test("verifyManagedSettings refuses a loopback-base-url that is not exactly http://127.0.0.1:<port> or http://[::1]:<port>", async () => {
   const file = path.join(root, "not-loopback-settings.json");
   const stat = () => ({ uid: 0, mode: 0o100644 });
   for (const url of NOT_LOOPBACK) {
@@ -2218,7 +2428,7 @@ test("verifyManagedSettings refuses a loopback-base-url that is not exactly http
   }
 });
 
-test("verifyIsolation checks the managed settings against loopback-base-url from its environment", () => {
+test("verifyIsolation checks the managed settings against loopback-base-url from its environment", async () => {
   const file = path.join(root, "isolation-loopback-settings.json");
   fs.writeFileSync(file, JSON.stringify(atLoopback(LOOPBACK)));
   const options = {
@@ -2236,7 +2446,7 @@ test("verifyIsolation checks the managed settings against loopback-base-url from
   );
 });
 
-test("readConfig takes loopback-base-url only on an api-key leg", () => {
+test("readConfig takes loopback-base-url only on an api-key leg", async () => {
   assert.equal(readConfig(configEnv()).baseUrl, "https://api.anthropic.com");
   for (const url of [LOOPBACK, LOOPBACK_V6]) {
     assert.equal(
@@ -2274,7 +2484,7 @@ test("readConfig takes loopback-base-url only on an api-key leg", () => {
   }
 });
 
-test("run refuses loopback-base-url on a subscription leg before any leg starts", () => {
+test("run refuses loopback-base-url on a subscription leg before any leg starts", async () => {
   const dir = path.join(root, "run-loopback-subscription");
   const env = runEnv(dir, {
     LANE_API_KEY: "",
@@ -2282,7 +2492,7 @@ test("run refuses loopback-base-url on a subscription leg before any leg starts"
     LANE_LOOPBACK_BASE_URL: LOOPBACK,
   });
   env.FAKE_SUB = legFile(dir, "sub.jsonl", SUCCESS);
-  assert.throws(
+  await assert.rejects(
     () => run(env),
     /loopback-base-url is allowed only on an api-key leg/u,
   );
@@ -2290,7 +2500,7 @@ test("run refuses loopback-base-url on a subscription leg before any leg starts"
   assert.equal(fs.existsSync(env.GITHUB_OUTPUT), false);
 });
 
-test("both actions take loopback-base-url, empty by default, and pass it to the check", () => {
+test("both actions take loopback-base-url, empty by default, and pass it to the check", async () => {
   const apply = readAction("apply-claude-managed-settings");
   assert.equal(apply.inputs["loopback-base-url"].default, "");
   assert.equal(
@@ -2309,7 +2519,7 @@ test("both actions take loopback-base-url, empty by default, and pass it to the 
   }
 });
 
-test("apply-claude-managed-settings takes a loopback base URL only through loopback-base-url", () => {
+test("apply-claude-managed-settings takes a loopback base URL only through loopback-base-url", async () => {
   for (const url of [LOOPBACK, LOOPBACK_V6]) {
     assert.notEqual(applyVerdict(atLoopback(url)).status, 0);
     assert.equal(applyVerdict(atLoopback(url), url).status, 0);
@@ -2326,7 +2536,7 @@ test("apply-claude-managed-settings takes a loopback base URL only through loopb
   }
 });
 
-test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and empty values aside", () => {
+test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and empty values aside", async () => {
   for (const name of [
     "NODE_OPTIONS",
     "LD_PRELOAD",
@@ -2360,7 +2570,7 @@ test("verifyEnvironment refuses loader, TLS and proxy variables, NO_PROXY and em
   );
 });
 
-test("verifyIsolation probes a PID namespace and refuses an unsafe environment", () => {
+test("verifyIsolation probes a PID namespace and refuses an unsafe environment", async () => {
   const file = path.join(root, "probe-settings.json");
   fs.writeFileSync(file, JSON.stringify(PINNED));
   const stat = () => ({ uid: 0, mode: 0o100644 });
@@ -2422,7 +2632,7 @@ test("verifyIsolation probes a PID namespace and refuses an unsafe environment",
   );
 });
 
-test("verifyIsolation fails closed on a missing socat unless the sandbox is off", () => {
+test("verifyIsolation fails closed on a missing socat unless the sandbox is off", async () => {
   const file = path.join(root, "socat-settings.json");
   fs.writeFileSync(file, JSON.stringify(PINNED));
   const options = {
@@ -2475,7 +2685,7 @@ test("verifyIsolation fails closed on a missing socat unless the sandbox is off"
   );
 });
 
-test("verifyIsolation refuses a writable docker socket", () => {
+test("verifyIsolation refuses a writable docker socket", async () => {
   const file = path.join(root, "isolation-settings.json");
   fs.writeFileSync(file, JSON.stringify(PINNED));
   // sudo fails, bubblewrap answers.
@@ -2608,7 +2818,7 @@ function installWorld(options = {}) {
   };
 }
 
-test("install verifies both packages and the signed binary, then writes the outputs", () => {
+test("install verifies both packages and the signed binary, then writes the outputs", async () => {
   const world = installWorld({ input: "latest" });
   world.run();
   const npm = world.calls.filter((c) => c.command === "npm");
@@ -2661,7 +2871,7 @@ test("install verifies both packages and the signed binary, then writes the outp
   assert.ok(out.includes(`cli-path=${cliPath}\n`));
 });
 
-test("install with an exact cli-version installs that version and asks npm view nothing", () => {
+test("install with an exact cli-version installs that version and asks npm view nothing", async () => {
   const world = installWorld({ input: "2.1.305" });
   world.run();
   const npm = world.calls.filter((c) => c.command === "npm");
@@ -2809,8 +3019,8 @@ const WARNED = [
   }),
 ];
 
-test("the log records each window's max utilization, reset and last status, and the leg's tokens", () => {
-  const [record] = runCase({ sub: WARNED }).records;
+test("the log records each window's max utilization, reset and last status, and the leg's tokens", async () => {
+  const [record] = (await runCase({ sub: WARNED })).records;
   assert.deepEqual(record.rate_limits, {
     five_hour: { utilization: 0.82, resets_at: "2026-01-01T00:00:00Z", status: "allowed_warning" },
     seven_day: { utilization: 0.3, resets_at: "2026-01-08T00:00:00Z", status: "allowed" },
@@ -2821,10 +3031,10 @@ test("the log records each window's max utilization, reset and last status, and 
     cache_read_input_tokens: 2_500_000,
     cache_creation_input_tokens: 400,
   });
-  assert.deepEqual(runCase({ key: SUCCESS }).records[0].rate_limits, {});
+  assert.deepEqual((await runCase({ key: SUCCESS })).records[0].rate_limits, {});
 });
 
-test("usageWarning names the secret and every window at a warning or at 0.70 or more", () => {
+test("usageWarning names the secret and every window at a warning or at 0.70 or more", async () => {
   const record = (rateLimits) => ({ secret: TOKEN_NAME, rate_limits: rateLimits });
   const at = "2026-01-01T00:00:00Z";
   assert.equal(
@@ -2848,15 +3058,18 @@ test("usageWarning names the secret and every window at a warning or at 0.70 or 
   assert.equal(usageWarning(record({})), null);
 });
 
-function captureStdout(action) {
+async function captureStdout(action) {
   const written = [];
   const write = process.stdout.write;
-  process.stdout.write = (chunk) => {
-    written.push(String(chunk));
+  // The test runner's own event stream (a Buffer) still reaches stdout while
+  // the action awaits the leg.
+  process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return write.call(process.stdout, chunk, ...rest);
+    written.push(chunk);
     return true;
   };
   try {
-    action();
+    await action();
   } catch {
     // A lane class throws; the lines before it are what is checked.
   } finally {
@@ -2865,7 +3078,7 @@ function captureStdout(action) {
   return written.join("").split("\n");
 }
 
-test("run writes one usage warning after the stop-commands block ends, on a stop too", () => {
+test("run writes one usage warning after the stop-commands block ends, on a stop too", async () => {
   for (const [name, messages, exit] of [
     ["run-warned", WARNED, "0"],
     ["run-warned-stop", [limitEvent("allowed_warning", "five_hour", 0.9), ...SESSION_LIMIT], "1"],
@@ -2874,7 +3087,7 @@ test("run writes one usage warning after the stop-commands block ends, on a stop
     const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
     env.FAKE_SUB = legFile(dir, "sub.jsonl", messages);
     env.FAKE_SUB_EXIT = exit;
-    const lines = captureStdout(() => run(env));
+    const lines = await captureStdout(() => run(env));
     const opened = lines.findIndex((l) => l.startsWith("::stop-commands::"));
     const token = lines[opened].slice("::stop-commands::".length);
     const closed = lines.indexOf(`::${token}::`);
@@ -2886,7 +3099,7 @@ test("run writes one usage warning after the stop-commands block ends, on a stop
   }
 });
 
-test("a rejected window below 0.70 still gets the warning line", () => {
+test("a rejected window below 0.70 still gets the warning line", async () => {
   assert.equal(
     usageWarning({
       secret: TOKEN_NAME,

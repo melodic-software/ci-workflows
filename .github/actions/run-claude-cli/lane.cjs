@@ -21,7 +21,8 @@
 //     fresh runner, gated on this one's handoff output being `true`. A 403
 //     stops the run with its error type, error_code and request_id.
 //   - A subscription leg hands off only when fallback-ready is `true`: on a
-//     limit stop (a rejected rate_limit_event with its reset), a credit stop
+//     limit stop (a rejected rate_limit_event with its reset; a reset past
+//     the watchdog wait cap stops the leg at once), a credit stop
 //     (classify.cjs isCreditStop) or a 401 or 402. The caller then runs the
 //     fallback leg, on FALLBACK_SECRET, as a third job; that leg is the last
 //     and never hands off. handoff-reason names the stop. fallback-ready
@@ -65,8 +66,9 @@
 //     api-key leg (managed-settings.cjs, readConfig).
 //   - Secret names are derived from the role, or are FALLBACK_SECRET, and
 //     never taken from input.
-//   - The CLI's stdout is captured in memory and written to files only after
-//     the leg exits. Its stderr and closed-pattern tokens reach the job log,
+//   - The CLI's stdout is captured in memory, read line by line only for a
+//     rejected rate_limit_event, and written to files only after the leg
+//     exits. Its stderr and closed-pattern tokens reach the job log,
 //     inside ::stop-commands::; the job summary shows only closed tokens.
 //   - The log file is written only after a scan finds no credential in it.
 //     It alone keeps a CLI-authored error line. The execution file is
@@ -77,13 +79,15 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn: spawnAsync, spawnSync } = require("node:child_process");
+const { StringDecoder } = require("node:string_decoder");
 
 const {
   apiErrorFacts,
   classifyExecutionFile,
   creditStopResetsAt,
   isCreditStop,
+  limitStopFrom,
   rateLimitWindows,
   readMessages,
   readRunRecord,
@@ -750,9 +754,20 @@ function rejectionInForce(messages) {
 // What the finished leg means for the run: success or a stop with a class.
 // Only the key leg can end in a credit stop. A token leg that timed out or
 // failed unnamed while a rejection was still in force is a limit stop
-// (rate-limit with the rejected window's reset).
-function judgeLeg({ leg, executionFile, exitCode, timedOut, maxTurns }) {
+// (rate-limit with the rejected window's reset). A leg stopped on a reset
+// past the wait cap (`limitResets`) is a limit stop with that reset.
+function judgeLeg({
+  leg,
+  executionFile,
+  exitCode,
+  timedOut,
+  maxTurns,
+  limitResets = null,
+}) {
   const messages = readMessages(executionFile) ?? [];
+  if (limitResets !== null) {
+    return { failureClass: "rate-limit", resets: limitResets, messages };
+  }
   const result = messages.findLast((message) => message?.type === "result");
   if (!timedOut && exitCode === 0 && result && result.is_error === false) {
     return { failureClass: "", resets: null, messages };
@@ -836,8 +851,9 @@ function lockTrees(dirs, modes) {
 
 // The command the leg runs. With trees to protect, bwrap binds each one
 // read-only over a view of the whole filesystem, so the leg cannot restore the
-// write bits lockTrees removed. --die-with-parent kills the CLI when a timeout
-// or an overflow kills bwrap, which forwards no signal.
+// write bits lockTrees removed. --die-with-parent kills the CLI when the leg's
+// stop (a timeout, an overflow or a limit stop) kills bwrap, which forwards no
+// signal.
 function legCommand(config, readOnly) {
   if (readOnly.length === 0) return [config.cliPath, cliArgs(config)];
   return [
@@ -865,12 +881,85 @@ function restoreModes(modes) {
   }
 }
 
-function runLeg(
+// The reset of a rejected rate_limit_event stdout line when it falls after
+// `deadlineMs`, else null. The CLI would wait out its whole watchdog cap on
+// such a limit and still fail.
+function resetPast(line, deadlineMs) {
+  if (!line.includes("rate_limit_event")) return null;
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const { resetsAt } = limitStopFrom([message]);
+  return resetsAt !== null && Date.parse(resetsAt) > deadlineMs
+    ? resetsAt
+    : null;
+}
+
+// Runs the leg's command with the prompt on stdin and stderr inherited, and
+// resolves once it has exited and closed stdout. Stdout is kept up to
+// `maxBytes` and each complete line goes to `onLine`, which returns true to
+// stop the leg. The timeout, an overflow and onLine share one stop: SIGINT,
+// once, with the first reason kept.
+function runChild(
+  spawn,
+  [command, args],
+  { env, input, timeoutMs, maxBytes, onLine },
+) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      env,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    const chunks = [];
+    let bytes = 0;
+    let stopped = null;
+    const stop = (reason) => {
+      if (stopped !== null) return;
+      stopped = reason;
+      child.kill("SIGINT");
+    };
+    const timer = timeoutMs > 0 ? setTimeout(stop, timeoutMs, "timeout") : null;
+    const decoder = new StringDecoder("utf8");
+    let partial = "";
+    // A spawn failure (ENOENT) ends in close with no exit code, as spawnSync's
+    // null status did.
+    child.on("error", () => {});
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
+    child.stdout.on("data", (chunk) => {
+      const kept = chunk.subarray(0, Math.max(0, maxBytes - bytes));
+      if (kept.length > 0) {
+        chunks.push(kept);
+        bytes += kept.length;
+        const lines = (partial + decoder.write(kept)).split("\n");
+        partial = lines.pop();
+        for (const line of lines) {
+          if (stopped === null && onLine(line)) stop("limit");
+        }
+      }
+      if (kept.length < chunk.length) stop("overflow");
+    });
+    child.on("close", (code) => {
+      if (timer !== null) clearTimeout(timer);
+      resolve({
+        exitCode: Number.isInteger(code) && code >= 0 ? code : null,
+        stdout: Buffer.concat(chunks),
+        stopped,
+      });
+    });
+  });
+}
+
+async function runLeg(
   config,
   {
     baseEnv = process.env,
-    spawn = spawnSync,
+    spawn = spawnAsync,
     now = () => new Date(),
+    maxStdoutBytes = MAX_LEG_STDOUT_BYTES,
   } = {},
 ) {
   const prompt = promptText(config);
@@ -889,27 +978,31 @@ function runLeg(
     );
     lockTrees(readOnly, modes);
     const startedAt = now().toISOString();
-    const child = spawn(...legCommand(config, readOnly), {
-      env: legEnv(baseEnv, leg, config),
-      input: prompt,
-      stdio: ["pipe", "pipe", "inherit"],
-      maxBuffer: MAX_LEG_STDOUT_BYTES,
-      timeout: config.legTimeoutMs || undefined,
-      killSignal: "SIGINT",
-    });
+    const waitCapMs = Number(config.watchdogMaxWaitMs);
+    let limitResets = null;
+    const { exitCode, stdout, stopped } = await runChild(
+      spawn,
+      legCommand(config, readOnly),
+      {
+        env: legEnv(baseEnv, leg, config),
+        input: prompt,
+        timeoutMs: config.legTimeoutMs,
+        maxBytes: maxStdoutBytes,
+        onLine: (line) => {
+          limitResets = resetPast(line, now().getTime() + waitCapMs);
+          return limitResets !== null;
+        },
+      },
+    );
     const endedAt = now().toISOString();
-    const timedOut = child.error?.code === "ETIMEDOUT";
-    const overflowed = child.error?.code === "ENOBUFS";
-    const exitCode = typeof child.status === "number" ? child.status : null;
-    const stdout = child.stdout ?? Buffer.alloc(0);
     fs.writeFileSync(path.join(config.workDir, "leg-1.jsonl"), stdout);
     fs.writeFileSync(
       executionFile,
       JSON.stringify(linesToMessages(stdout.toString("utf8"))),
     );
     let message = null;
-    if (overflowed) {
-      message = `CLI stdout passed ${MAX_LEG_STDOUT_BYTES} bytes; the leg was stopped`;
+    if (stopped === "overflow") {
+      message = `CLI stdout passed ${maxStdoutBytes} bytes; the leg was stopped`;
       judged = {
         failureClass: "other",
         resets: null,
@@ -917,12 +1010,18 @@ function runLeg(
       };
       process.stderr.write(`run-claude-cli: ${message}\n`);
     } else {
+      if (stopped === "limit") {
+        process.stderr.write(
+          `run-claude-cli: the usage limit resets at ${limitResets}, past the ${waitCapMs} ms wait cap; the leg was stopped\n`,
+        );
+      }
       judged = judgeLeg({
         leg,
         executionFile,
         exitCode,
-        timedOut,
+        timedOut: stopped === "timeout",
         maxTurns: config.maxTurns,
+        limitResets: stopped === "limit" ? limitResets : null,
       });
     }
     // The same message classify.cjs reads its status from.
@@ -1385,14 +1484,14 @@ function structuredOutputText(config, laneClass, executionFile) {
     : null;
 }
 
-function run(env) {
+async function run(env) {
   verifyEnvironment(env);
   const config = readConfig(env);
   const token = crypto.randomBytes(16).toString("hex");
   process.stdout.write(`::stop-commands::${token}\n`);
   let outcome;
   try {
-    outcome = runLeg(config, { baseEnv: env });
+    outcome = await runLeg(config, { baseEnv: env });
   } finally {
     process.stdout.write(`::${token}::\n`);
   }
@@ -1462,18 +1561,18 @@ function run(env) {
 }
 
 if (require.main === module) {
-  try {
+  (async () => {
     const command = process.argv[2];
     if (command === "verify-isolation") {
       verifyIsolation({ managedSettings: process.env.LANE_MANAGED_SETTINGS });
     } else if (command === "install") {
       install(process.env);
     } else if (command === "run") {
-      run(process.env);
+      await run(process.env);
     } else {
       throw new LaneError(`unknown command ${JSON.stringify(command)}`);
     }
-  } catch (error) {
+  })().catch((error) => {
     const message =
       error instanceof LaneError
         ? error.message
@@ -1481,7 +1580,7 @@ if (require.main === module) {
     if (!(error instanceof LaneError)) console.error(error);
     process.stdout.write(`::error title=run-claude-cli::${message}\n`);
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = {
