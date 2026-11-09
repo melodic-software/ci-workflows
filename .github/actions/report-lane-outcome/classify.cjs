@@ -823,6 +823,7 @@ module.exports = {
   SECRET_NAME_PATTERN,
   LANE_ID_PATTERN,
   laneReport,
+  limitStopFrom,
   MAX_MODELS,
   RATE_LIMIT_WINDOWS,
   rateLimitWindows,
