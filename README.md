@@ -1421,9 +1421,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   falls back to the label.
   `priority:` is exclusive: a field value or label last set by a person in
   `allowed-author-ids` stands over the pick, any other is replaced by it,
-  and two picks apply neither. An escalated usable triage also posts the run's
-  `Proposed work class:` in its note, which only
-  `work-class: untrusted-provenance` can fill. The lane never applies a
+  and two picks apply neither. The lane never applies a
   `work-class:` label, `provenance: untrusted` or `agent-ready`. After any other run the lane adds the floor if it
   is missing, so the result does not depend on whether
   `intake-label-needs-triage` ran first. It runs through

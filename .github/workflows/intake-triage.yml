@@ -96,23 +96,21 @@ name: Intake Triage
 #     job's checks.
 #   - The model returns JSON only. An extract step with no model reduces the
 #     run to the job outputs: the result subtype, the error flag and the
-#     denial count, and the structured fields (labels, type, proposed class,
-#     comment, needs_human) checked against the job's allowlist and enums.
+#     denial count, and the structured fields (labels, type, comment,
+#     needs_human) checked against the job's allowlist and enums.
 #   - Only the claude-intake-triage-apply job writes, and it runs no model.
 #     It takes the fallback job's outputs when that job ran, else the
 #     subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
 #     the event or the issue-number input, never from a job output, and
-#     rebuilds the allowlist, Issue Types and work classes itself. It keeps
+#     rebuilds the allowlist and Issue Types itself. It keeps
 #     labels that are in the caller's allowlist AND exist in the repository
 #     (addLabels would otherwise create an unknown label), breaks @mentions
 #     in the comment, and withholds a comment that looks like it carries a
 #     credential.
-#   - The model may name one of the repository's enabled Issue Types and
-#     propose `work-class: untrusted-provenance`, the one work class not
-#     retired, when the repository carries that label. The lane never applies
-#     a work class, `provenance: untrusted` or `agent-ready`. A triage is
-#     usable when the run was clean, had no permission denial, and named a
-#     type; then the apply job sets the type and reads it back. When the type
+#   - The model may name one of the repository's enabled Issue Types. The
+#     lane never applies a work class, `provenance: untrusted` or
+#     `agent-ready`. A triage is usable when the run was clean, had no
+#     permission denial, and named a type; then the apply job sets the type and reads it back. When the type
 #     took, it removes `floor-label` if the run escalated or picked exactly
 #     one `priority:` label and no `status:`, `needs-owner-decision`,
 #     `needs-reporter-info` or `area: security` label. Otherwise it adds
@@ -131,12 +129,7 @@ name: Intake Triage
 #   - Any permission denial, a max-turns stop, unusable output, a
 #     credential-like comment or `needs_human: true` escalates: the run's
 #     labels and text are dropped, and only the escalation label and a fixed
-#     note are applied, plus an unconfirmed class suggestion when the triage
-#     was usable. A rerun edits the lane's earlier comment.
-#   - Every run that ran writes the lane comment with
-#     `Proposed work class: <class>` (or `none`) as its second line, right
-#     after the marker; an escalated run records `none` there. The apply job
-#     writes that line, never the model, so a rule evaluator can read it.
+#     note are applied. A rerun edits the lane's earlier comment.
 #   - Only the `issues` event is accepted, and only its `opened` action
 #     starts a run, and only when the sender is the issue's author: a person
 #     whose user id is in allowed-author-ids, or a bot whose sender id is in
@@ -966,22 +959,10 @@ jobs:
               schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
               schema.required.push("type");
             }
-            // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
-            if (classes.length > 0) {
-              schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
-              schema.required.push("proposed_class");
-            }
-            const typeInstruction = [
+            const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-              classes.length > 0
-                ? `   - proposed_class: the work class you propose for a maintainer to confirm, one of ${classes.join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-            ]
-              .filter(Boolean)
-              .join("\n");
+                : "";
             const prompt = `REPO: ${env.REPOSITORY}
             ISSUE NUMBER: ${env.ISSUE_NUMBER}
 
@@ -1020,7 +1001,6 @@ jobs:
             fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
-            core.setOutput("classes", JSON.stringify(classes));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
             core.setOutput("schema-file", schemaFile);
@@ -1158,7 +1138,6 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
-          CLASSES: ${{ steps.compose.outputs.classes }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
         with:
           script: |
@@ -1184,7 +1163,6 @@ jobs:
             // --json-schema puts the validated result in the result message.
             const allowed = new Set(JSON.parse(env.ALLOWED || "[]"));
             const types = JSON.parse(env.TYPES || "{}");
-            const classes = new Set(JSON.parse(env.CLASSES || "[]"));
             const raw = result.structured_output;
             const rejected = [];
             let triage = null;
@@ -1198,7 +1176,6 @@ jobs:
               triage = {
                 labels,
                 type: typeof raw.type === "string" && Object.hasOwn(types, raw.type) ? raw.type : "",
-                proposed_class: typeof raw.proposed_class === "string" && classes.has(raw.proposed_class) ? raw.proposed_class : "",
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
@@ -1793,22 +1770,10 @@ jobs:
               schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
               schema.required.push("type");
             }
-            // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
-            if (classes.length > 0) {
-              schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
-              schema.required.push("proposed_class");
-            }
-            const typeInstruction = [
+            const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-              classes.length > 0
-                ? `   - proposed_class: the work class you propose for a maintainer to confirm, one of ${classes.join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-            ]
-              .filter(Boolean)
-              .join("\n");
+                : "";
             const prompt = `REPO: ${env.REPOSITORY}
             ISSUE NUMBER: ${env.ISSUE_NUMBER}
 
@@ -1847,7 +1812,6 @@ jobs:
             fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
-            core.setOutput("classes", JSON.stringify(classes));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
             core.setOutput("schema-file", schemaFile);
@@ -1953,7 +1917,6 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
-          CLASSES: ${{ steps.compose.outputs.classes }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
         with:
           script: |
@@ -1979,7 +1942,6 @@ jobs:
             // --json-schema puts the validated result in the result message.
             const allowed = new Set(JSON.parse(env.ALLOWED || "[]"));
             const types = JSON.parse(env.TYPES || "{}");
-            const classes = new Set(JSON.parse(env.CLASSES || "[]"));
             const raw = result.structured_output;
             const rejected = [];
             let triage = null;
@@ -1993,7 +1955,6 @@ jobs:
               triage = {
                 labels,
                 type: typeof raw.type === "string" && Object.hasOwn(types, raw.type) ? raw.type : "",
-                proposed_class: typeof raw.proposed_class === "string" && classes.has(raw.proposed_class) ? raw.proposed_class : "",
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
@@ -2587,22 +2548,10 @@ jobs:
               schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
               schema.required.push("type");
             }
-            // Work classes are only proposed to a maintainer, never applied.
-            const classes = [...live].filter((label) => label === "work-class: untrusted-provenance");
-            if (classes.length > 0) {
-              schema.properties.proposed_class = { type: "string", enum: [...classes, "none"] };
-              schema.required.push("proposed_class");
-            }
-            const typeInstruction = [
+            const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-              classes.length > 0
-                ? `   - proposed_class: the work class you propose for a maintainer to confirm, one of ${classes.join(", ")}, as the repository's conventions define them; none when unsure.`
-                : "",
-            ]
-              .filter(Boolean)
-              .join("\n");
+                : "";
             const prompt = `REPO: ${env.REPOSITORY}
             ISSUE NUMBER: ${env.ISSUE_NUMBER}
 
@@ -2641,7 +2590,6 @@ jobs:
             fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
-            core.setOutput("classes", JSON.stringify(classes));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
             core.setOutput("schema-file", schemaFile);
@@ -2747,7 +2695,6 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
-          CLASSES: ${{ steps.compose.outputs.classes }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
         with:
           script: |
@@ -2773,7 +2720,6 @@ jobs:
             // --json-schema puts the validated result in the result message.
             const allowed = new Set(JSON.parse(env.ALLOWED || "[]"));
             const types = JSON.parse(env.TYPES || "{}");
-            const classes = new Set(JSON.parse(env.CLASSES || "[]"));
             const raw = result.structured_output;
             const rejected = [];
             let triage = null;
@@ -2787,7 +2733,6 @@ jobs:
               triage = {
                 labels,
                 type: typeof raw.type === "string" && Object.hasOwn(types, raw.type) ? raw.type : "",
-                proposed_class: typeof raw.proposed_class === "string" && classes.has(raw.proposed_class) ? raw.proposed_class : "",
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
@@ -2857,7 +2802,7 @@ jobs:
   # the subscription job's, else the claude job's, so a credit stop applies exactly once, and takes
   # every value through env. It trusts none of them: it resolves the issue
   # from the event or the issue-number input, and rebuilds the label
-  # allowlist, Issue Types and work classes from the repository itself. Like
+  # allowlist and Issue Types from the repository itself. Like
   # the subscription job it runs on a fixed GitHub-hosted label, a fresh VM,
   # rather than the caller's runner, which could keep state between jobs.
   apply:
@@ -2983,7 +2928,7 @@ jobs:
             }
             const issue_number = issue.number;
 
-            // The allowlist, floor, Issue Types and work classes, rebuilt
+            // The allowlist, floor and Issue Types, rebuilt
             // from the repository the way the compose step builds them.
             const live = new Set(
               (await github.paginate(github.rest.issues.listLabelsForRepo, { ...context.repo, per_page: 100 })).map((label) => label.name),
@@ -3021,7 +2966,6 @@ jobs:
             } catch (error) {
               core.warning(`Issue Types unreadable, so the lane sets none: ${error.message}`);
             }
-            const classes = new Set([...live].filter((label) => label === "work-class: untrusted-provenance"));
 
             const escalate = [];
             const denialText = pick("DENIALS");
@@ -3065,37 +3009,26 @@ jobs:
             }
 
             // A usable triage is a clean run with no permission denial whose
-            // output names one of the repository's Issue Types. Only the type
-            // and the proposed class, both checked against enums, survive an
-            // escalation.
+            // output names one of the repository's Issue Types. Only the type,
+            // checked against its enum, survives an escalation.
             const wanted = typeof output?.type === "string" ? output.type : "";
             const clean = subtype === "success" && pick("ERROR") !== "true";
             const usable = clean && denials === 0 && Boolean(output) && Object.hasOwn(types, wanted);
-            const proposed = usable && typeof output.proposed_class === "string" && classes.has(output.proposed_class) ? output.proposed_class : "";
 
             // An escalated run is not trusted: none of its labels or free text
             // is applied, only the escalation label and a fixed note. Its
-            // enum-checked type and proposed class survive when usable.
+            // enum-checked type survives when usable.
             const escalated = escalate.length > 0;
-            const BASIS = "Basis: automated intake triage; a maintainer confirms or changes it.";
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
               comment = "Thanks for the report. Automated triage handed this issue to a maintainer.";
-              if (proposed) comment += `\n\nUnconfirmed model suggestion: ${proposed}\n${BASIS}`;
             }
-
-            // Every comment records the proposed class on its second line.
-            // This script writes that line, so model text never sits where a
-            // reader takes the proposal from, and an escalated run records
-            // none there: its class may have been steered by the issue text.
-            const proposal = proposed && !escalated ? `Proposed work class: ${proposed}\n${BASIS}` : "Proposed work class: none";
 
             // The comment goes first, so a failed label write leaves an
             // explanation rather than an unexplained label, and a rerun edits
             // the lane's earlier comment instead of adding another. Every run
-            // that ran writes it, so a rerun always replaces an earlier
-            // proposal line.
+            // that ran writes it, so a rerun always replaces the earlier text.
             const MARKER = "<!-- claude-lane intake-triage -->";
             // The floor reads the model's priority picks, before the
             // exclusive groups below settle which label the issue keeps.
@@ -3157,7 +3090,7 @@ jobs:
             let priorityPick = "";
             let priorityLost = false;
             try {
-              const body = [MARKER + "\n" + proposal, comment, "<sub>Automated triage. A maintainer reviews it.</sub>"].filter(Boolean).join("\n\n");
+              const body = [MARKER, comment, "<sub>Automated triage. A maintainer reviews it.</sub>"].filter(Boolean).join("\n\n");
               const earlier = (
                 await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number, per_page: 100 })
               ).find((c) => c.user?.login === "github-actions[bot]" && c.body?.startsWith(MARKER));
@@ -3325,7 +3258,6 @@ jobs:
               `- Labels replaced: ${replaced.join(", ") || "none"}`,
               `- Priority: ${exclusive.join("; ") || "as applied"}`,
               `- Issue Type: ${typeSet || "not set"} (requested: ${Object.hasOwn(types, wanted) ? wanted : "none"})`,
-              `- Proposed work class: ${proposed || "none"}`,
               `- Floor label: ${floorCleared ? "removed" : floorAdded ? "added" : "unchanged"}`,
               `- Escalation: ${escalate.join("; ") || "none"}`,
               "- Comment posted: yes",
