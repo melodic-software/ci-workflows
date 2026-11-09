@@ -194,8 +194,6 @@ on:
           priority: high
           priority: medium
           priority: low
-          status: needs-info
-          status: needs-decision
           needs-reporter-info
           needs-owner-decision
           question
