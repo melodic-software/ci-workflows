@@ -23,7 +23,6 @@ const {
   CREDENTIAL_VARIABLES,
   FILE_COMMAND_VARIABLES,
   LaneError,
-  MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
   SANDBOX_SETTINGS,
   SIGNING_KEY_FINGERPRINT,
@@ -853,6 +852,22 @@ function waitingCli(messages, { exitCode = 1, onSpawn = () => {} } = {}) {
   return { spawn, spawned };
 }
 
+// The CLI's retry line while it waits out a 429, as the limited leg of
+// claude-code-plugins run 42542709459 printed every 30 s.
+const RETRY_429 = {
+  type: "system",
+  subtype: "api_retry",
+  attempt: 1,
+  retry_delay_ms: 1800000,
+  error_status: 429,
+  error: "rate_limit",
+};
+
+// A CLI waiting out a rejected window: the rejection, then a 429 retry.
+function waitingOn(rateLimitType, resetsAt) {
+  return [...rejectedThenHang(rateLimitType, resetsAt), RETRY_429];
+}
+
 // 2030-01-01T00:00:00Z, the reset the far-reset cases wait for.
 const RESET_2030 = 1893456000;
 const RESET_2030_ISO = "2030-01-01T00:00:00Z";
@@ -863,7 +878,7 @@ const TWENTY_MINUTES_BEFORE = () => new Date("2029-12-31T23:40:00Z");
 const CAP_BEFORE = () => new Date("2029-12-31T23:30:00Z");
 
 test("a rejected usage limit that resets past the wait cap stops a subscription leg at once and hands off as a limit stop", async () => {
-  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+  const cli = waitingCli(waitingOn("seven_day", RESET_2030));
   const { outputs, records } = await runCase({
     sub: SUCCESS,
     fallbackReady: true,
@@ -880,7 +895,7 @@ test("a rejected usage limit that resets past the wait cap stops a subscription 
 });
 
 test("a far-reset event split across stdout chunks still stops the leg", async () => {
-  const event = `${JSON.stringify(rejectedThenHang("seven_day", RESET_2030)[1])}\n`;
+  const event = `${JSON.stringify(rejectedThenHang("seven_day", RESET_2030)[1])}\n${JSON.stringify(RETRY_429)}\n`;
   const spawned = [];
   const spawn = () => {
     const child = fakeChild();
@@ -906,7 +921,7 @@ test("a far-reset event split across stdout chunks still stops the leg", async (
 test("a real CLI waiting on a reset past the wait cap ends well before its own wait", async () => {
   const started = Date.now();
   const { outputs } = await runCase({
-    sub: rejectedThenHang("seven_day", RESET_2030),
+    sub: waitingOn("seven_day", RESET_2030),
     fallbackReady: true,
     hang: true,
     now: HOUR_BEFORE,
@@ -917,7 +932,7 @@ test("a real CLI waiting on a reset past the wait cap ends well before its own w
 });
 
 test("a key leg stopped on a reset past the wait cap is a rate-limit stop that does not hand off", async () => {
-  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+  const cli = waitingCli(waitingOn("seven_day", RESET_2030));
   const { outputs, records } = await runCase({
     key: SUCCESS,
     fallbackReady: true,
@@ -937,7 +952,7 @@ test("a rejected usage limit that resets inside the wait cap, or at it, does not
     ["20 minutes before the reset", TWENTY_MINUTES_BEFORE],
     ["exactly the cap before the reset", CAP_BEFORE],
   ]) {
-    const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030));
+    const cli = waitingCli(waitingOn("seven_day", RESET_2030));
     const { outputs, records } = await runCase({
       sub: SUCCESS,
       fallbackReady: true,
@@ -1008,10 +1023,42 @@ test("a 529 overload the CLI retries does not stop the leg early", async () => {
   assert.equal(outputs.handoff, "false");
 });
 
+test("a far-reset rejection the CLI works past, or that no 429 retry follows, does not stop the leg", async () => {
+  const assistant = {
+    type: "assistant",
+    message: { content: [{ type: "text", text: "Still working." }] },
+  };
+  const rejected = rejectedThenHang("seven_day_opus", RESET_2030);
+  for (const [name, messages] of [
+    ["assistant output, then success", [...rejected, assistant, result({})]],
+    ["assistant output, then a 429 retry", [...rejected, assistant, RETRY_429, result({})]],
+    ["no retry, then success", [...rejected, result({})]],
+    ["a later allowed event, then a 429 retry", [
+      ...rejected,
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { status: "allowed", resetsAt: RESET_2030, rateLimitType: "seven_day" },
+      },
+      RETRY_429,
+      result({}),
+    ]],
+  ]) {
+    const cli = waitingCli(messages, { exitCode: 0 });
+    const { outputs } = await runCase({
+      sub: SUCCESS,
+      fallbackReady: true,
+      spawn: cli.spawn,
+      now: HOUR_BEFORE,
+    });
+    assert.deepEqual(cli.spawned[0].signals, [], name);
+    assert.equal(outputs["handoff-reason"], "", name);
+  }
+});
+
 test("a leg stopped on a far reset still has its step files put back", async () => {
   let output;
   const original = "cli-version=2.1.302\n";
-  const cli = waitingCli(rejectedThenHang("seven_day", RESET_2030), {
+  const cli = waitingCli(waitingOn("seven_day", RESET_2030), {
     onSpawn: () => {
       fs.chmodSync(output, 0o644);
       fs.appendFileSync(output, "lane-class=credit-stop\n");

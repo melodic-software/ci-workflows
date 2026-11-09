@@ -21,8 +21,9 @@
 //     fresh runner, gated on this one's handoff output being `true`. A 403
 //     stops the run with its error type, error_code and request_id.
 //   - A subscription leg hands off only when fallback-ready is `true`: on a
-//     limit stop (a rejected rate_limit_event with its reset; a reset past
-//     the watchdog wait cap stops the leg at once), a credit stop
+//     limit stop (a rejected rate_limit_event with its reset; a CLI that
+//     starts waiting out a reset past the watchdog wait cap is stopped at
+//     once), a credit stop
 //     (classify.cjs isCreditStop) or a 401 or 402. The caller then runs the
 //     fallback leg, on FALLBACK_SECRET, as a third job; that leg is the last
 //     and never hands off. handoff-reason names the stop. fallback-ready
@@ -880,21 +881,38 @@ function restoreModes(modes) {
   }
 }
 
-// The reset of a rejected rate_limit_event stdout line when it falls after
-// `deadlineMs`, else null. The CLI would wait out its whole watchdog cap on
-// such a limit and still fail.
-function resetPast(line, deadlineMs) {
-  if (!line.includes("rate_limit_event")) return null;
-  let message;
-  try {
-    message = JSON.parse(line.toString("utf8"));
-  } catch {
+// A stdout line watcher that returns the reset once the CLI is waiting out a
+// limit it cannot outlast: a rejected rate_limit_event resetting after
+// `deadlineMs()`, then a 429 `api_retry` with no assistant or user message
+// between (rejectionInForce's rule). A rejection the CLI works past, or one a
+// later event replaces, never stops the leg. Null for every other line.
+function limitWatch(deadlineMs) {
+  let pending = null;
+  return (line) => {
+    let message;
+    try {
+      message = JSON.parse(line.toString("utf8"));
+    } catch {
+      return null;
+    }
+    const type = message?.type;
+    if (type === "assistant" || type === "user") pending = null;
+    else if (type === "rate_limit_event") {
+      const { resetsAt } = limitStopFrom([message]);
+      pending =
+        resetsAt !== null && Date.parse(resetsAt) > deadlineMs()
+          ? resetsAt
+          : null;
+    } else if (
+      pending !== null &&
+      type === "system" &&
+      message.subtype === "api_retry" &&
+      message.error_status === 429
+    ) {
+      return pending;
+    }
     return null;
-  }
-  const { resetsAt } = limitStopFrom([message]);
-  return resetsAt !== null && Date.parse(resetsAt) > deadlineMs
-    ? resetsAt
-    : null;
+  };
 }
 
 // Runs the leg's command with the prompt on stdin and stderr inherited, and
@@ -979,6 +997,7 @@ async function runLeg(
     const startedAt = now().toISOString();
     const waitCapMs = Number(config.watchdogMaxWaitMs);
     let limitResets = null;
+    const watch = limitWatch(() => now().getTime() + waitCapMs);
     const { exitCode, stdout, stopped } = await runChild(
       spawn,
       legCommand(config, readOnly),
@@ -988,7 +1007,7 @@ async function runLeg(
         timeoutMs: config.legTimeoutMs,
         maxBytes: maxStdoutBytes,
         onLine: (line) => {
-          limitResets = resetPast(line, now().getTime() + waitCapMs);
+          limitResets = watch(line);
           return limitResets !== null;
         },
       },
