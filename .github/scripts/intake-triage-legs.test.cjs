@@ -122,8 +122,10 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
   assert.equal(fallback["runs-on"], "ubuntu-24.04");
   assert.deepEqual(fallback.needs, ["claude", "subscription"]);
   // The subscription job's outputs, as its last step leaves them.
-  const starts = (outputs) =>
-    Boolean(evaluate(fallback.if, { needs: { subscription: { outputs } } }));
+  const starts = (outputs, result = "success") =>
+    Boolean(
+      evaluate(fallback.if, { needs: { subscription: { result, outputs } } }),
+    );
   const ready = { fallbackSet: "true" };
   const limit = { handoff: "true", "handoff-reason": "limit-stop" };
   assert.equal(starts(handedOn("subscription", ready, limit)), true);
@@ -146,10 +148,14 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
   );
   assert.equal(starts({}), false);
   // The next-leg step is the job's last, with no if:, so it names a leg
-  // only when the job succeeded.
+  // only when the job succeeded; the if checks that result itself, since a
+  // claude job the key-credit gate skipped leaves success() false.
   assert.equal(subscription.steps.at(-2).id, "next");
   assert.equal(subscription.steps.at(-2).if, undefined);
-  assert.doesNotMatch(fallback.if, /always\(\)|failure\(\)|cancelled\(\)/u);
+  const handed = handedOn("subscription", ready, limit);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(starts(handed, result), false, result);
+  }
   for (const step of fallback.steps) {
     assert.doesNotMatch(
       step.uses ?? "",
@@ -195,7 +201,7 @@ test("the fallback job repeats the subscription job's steps but for the credenti
       "subscription",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "subscription-token",
-      `\${{ needs.claude.outputs.next-reason }}`,
+      `\${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
     ),
   );
   for (const key of [
@@ -284,14 +290,20 @@ test("every model job's leg uploads its sealed transcript under a job id unique 
 
 test("the subscription job runs on a fixed GitHub-hosted label, after the claude job", () => {
   assert.equal(subscription["runs-on"], "ubuntu-24.04");
-  assert.equal(subscription.needs, "claude");
+  assert.deepEqual(subscription.needs, ["check-key-credit", "claude"]);
   assert.equal(subscription.name, "claude-intake-triage-subscription");
 });
 
 test("the subscription job starts only on an exact handoff or an empty key", () => {
-  // The claude job's outputs, as its last step leaves them.
-  const starts = (outputs) =>
-    Boolean(evaluate(subscription.if, { needs: { claude: { outputs } } }));
+  // The claude job's outputs, as its last step leaves them, after a gate
+  // job that ran the key.
+  const gateRan = { result: "success", outputs: select.start({ skipKey: false }) };
+  const starts = (outputs, result = "success") =>
+    Boolean(
+      evaluate(subscription.if, {
+        needs: { "check-key-credit": gateRan, claude: { result, outputs } },
+      }),
+    );
   for (const why of ["credit-stop", "auth"]) {
     assert.equal(
       starts(handedOn("key", {}, { handoff: "true", "handoff-reason": why })),
@@ -318,9 +330,12 @@ test("the subscription job starts only on an exact handoff or an empty key", () 
   }
   assert.equal(claude.steps.at(-2).id, "next");
   assert.equal(claude.steps.at(-2).if, undefined);
-  // A failed or cancelled claude job never starts it: the if has no status
-  // function, so success() applies.
-  assert.doesNotMatch(subscription.if, /always\(\)|failure\(\)|cancelled\(\)/u);
+  // A failed or cancelled claude job never starts it, even with a handoff
+  // in its outputs.
+  const auth = handedOn("key", {}, { handoff: "true", "handoff-reason": "auth" });
+  for (const result of ["failure", "cancelled"]) {
+    assert.equal(starts(auth, result), false, result);
+  }
 });
 
 test("the subscription job downloads nothing from the claude job and never writes its outputs into a script", () => {
@@ -366,7 +381,7 @@ test("the subscription job repeats the claude job's steps but for the credential
             assert.equal(
               copy.with.reason,
               // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
-              "${{ needs.claude.outputs.next-reason }}",
+              "${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}",
             );
           }
           for (const name of ["leg", "credential-set", "selected", "reason"]) {
@@ -407,9 +422,9 @@ test("the subscription job repeats the claude job's steps but for the credential
     "${{ steps.credential.outputs.key-skipped }}",
   );
   assert.deepEqual(claude.needs, "check-key-credit");
-  // A failed or skipped gate job still runs the key leg: the if opens with
+  // A failed gate job still runs the key leg: the if opens with
   // !cancelled(), so it carries no implicit success() of its needs.
-  assert.match(claude.if, /^\$\{\{ !cancelled\(\) && \(/);
+  assert.match(claude.if, /^\$\{\{ !cancelled\(\) && /u);
   // The hardening runs before the checkout in both jobs.
   const order = subscription.steps.map((step) => step.name);
   assert.ok(
@@ -872,17 +887,12 @@ test("exactly one job, with no model, writes the triage", () => {
 });
 
 // The key-credit gate (claude-code-plugins#13586): a job with no secret reads
-// the key's credit history; the claude job treats a credit-stopped key as
-// absent, so the subscription job triages with reason credit-stop, and the
-// key leg uploads the marker after its own credit stop.
+// the key's credit history; a credit-stopped key skips the claude job, so
+// the subscription job triages with reason credit-stop, and the key leg
+// uploads the marker after its own credit stop.
 test("a credit-stopped key hands the triage to the subscription job before any key call", () => {
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(
-    gate.if,
-    undefined,
-    "it runs for every event, so the claude job's skip stays the author gate's",
-  );
   const read = gate.steps.find((step) => step.id === "gate");
   assert.equal(read.uses, "$/.github/actions/select-model-credential");
   assert.equal(read.with.leg, "start");
@@ -890,7 +900,61 @@ test("a credit-stopped key hands the triage to the subscription job before any k
   assert.equal(read.with["probe-minutes"], "0");
   assert.equal(read["continue-on-error"], true);
   assert.equal(gate.outputs["next-leg"], `\${{ steps.gate.outputs.next-leg }}`);
-  // The claude job runs whatever the gate chose and reads its choice.
+  assert.equal(
+    gate.outputs["next-reason"],
+    `\${{ steps.gate.outputs.next-reason }}`,
+  );
+  // The gate's choice, as its job leaves it: subscription skips the claude
+  // job, key or a failed gate job (empty next-leg) runs it, and an author
+  // gate that turned the run away (gate job skipped) runs neither leg.
+  const held = {
+    result: "success",
+    outputs: select.start({ skipKey: true }),
+  };
+  const keyRuns = (gateJob) =>
+    Boolean(evaluate(claude.if, { needs: { "check-key-credit": gateJob } }));
+  assert.equal(keyRuns(held), false);
+  assert.equal(
+    keyRuns({ result: "success", outputs: select.start({ skipKey: false }) }),
+    true,
+  );
+  assert.equal(keyRuns({ result: "failure", outputs: {} }), true);
+  assert.equal(keyRuns({ result: "skipped", outputs: {} }), false);
+  const subscriptionRuns = (gateJob, claudeJob) =>
+    Boolean(
+      evaluate(subscription.if, {
+        needs: { "check-key-credit": gateJob, claude: claudeJob },
+      }),
+    );
+  assert.equal(subscriptionRuns(held, { result: "skipped", outputs: {} }), true);
+  assert.equal(
+    subscriptionRuns({ result: "skipped", outputs: {} }, { result: "skipped" }),
+    false,
+  );
+  assert.equal(
+    decide("subscription", {
+      credentialSet: "true",
+      reason: held.outputs["next-reason"],
+    }).outputs["fallback-reason"],
+    "credit-stop",
+  );
+  // Apply and status run once either leg ran, so a held key still applies
+  // and reports the subscription job's triage.
+  for (const name of ["apply", "status"]) {
+    const runs = (claudeResult, subscriptionResult) =>
+      Boolean(
+        evaluate(workflow.jobs[name].if, {
+          needs: {
+            claude: { result: claudeResult },
+            subscription: { result: subscriptionResult },
+          },
+        }),
+      );
+    assert.equal(runs("skipped", "success"), true, name);
+    assert.equal(runs("success", "skipped"), true, name);
+    assert.equal(runs("skipped", "skipped"), false, name);
+  }
+  // The claude job still reads the gate's choice in its credential step.
   const credential = claude.steps.find((step) => step.id === "credential");
   assert.equal(
     credential.with.selected,

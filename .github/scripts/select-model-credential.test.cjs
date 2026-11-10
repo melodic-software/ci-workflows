@@ -765,49 +765,76 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
       const start =
         gate === "failed" ? {} : select.start({ skipKey: gate === "skip" });
       const old = intakeOldKey(skipKey, keySet);
-      const decided = select.leg({
-        leg: "key",
-        role: "automations",
-        credentialSet: String(keySet),
-        fallbackSet: String(fbSet),
-        selected:
-          evaluate(credential(claude).selected, {
-            needs: { "check-key-credit": { outputs: start } },
-          }) ?? "",
-      }).outputs;
-      assert.equal(
-        decided.present,
-        old.present,
-        `key present ${gate} ${keySet}`,
+      const gateJob = {
+        result: gate === "failed" ? "failure" : "success",
+        outputs: start,
+      };
+      // The old claude job ran in every state; the new one is skipped when
+      // the gate holds the key off, and the subscription job reads the gate.
+      const keyRuns = Boolean(
+        evaluate(claude.if, { needs: { "check-key-credit": gateJob } }),
       );
-      assert.equal(
-        decided["key-skipped"] === "true",
-        old["key-skipped"] === "true",
-      );
-      const runs =
-        decided.present === "true"
-          ? launches("key", fbSet)
-          : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
-      for (const launched of runs) {
+      assert.equal(keyRuns, gate !== "skip", `key runs ${gate}`);
+      const keyOutcomes = [];
+      if (!keyRuns) {
+        keyOutcomes.push({
+          launched: { "lane-class": "", handoff: "", "handoff-reason": "" },
+          result: "skipped",
+          new: {},
+        });
+      } else {
+        const decided = select.leg({
+          leg: "key",
+          role: "automations",
+          credentialSet: String(keySet),
+          fallbackSet: String(fbSet),
+          selected:
+            evaluate(credential(claude).selected, {
+              needs: { "check-key-credit": gateJob },
+            }) ?? "",
+        }).outputs;
+        assert.equal(
+          decided.present,
+          old.present,
+          `key present ${gate} ${keySet}`,
+        );
+        assert.equal(
+          decided["key-skipped"] === "true",
+          old["key-skipped"] === "true",
+        );
+        const runs =
+          decided.present === "true"
+            ? launches("key", fbSet)
+            : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
+        for (const launched of runs) {
+          keyOutcomes.push({
+            launched,
+            result: "success",
+            new: select.next({
+              state: decided.state,
+              handoff: launched.handoff,
+              handoffReason: launched["handoff-reason"],
+            }),
+          });
+        }
+      }
+      for (const { launched, result, new: newOut } of keyOutcomes) {
         const oldOut = {
           ...launched,
           "credential-present": old.present,
           "key-skipped": old["key-skipped"],
           "fallback-ready": String(fbSet),
         };
-        const newOut = select.next({
-          state: decided.state,
-          handoff: launched.handoff,
-          handoffReason: launched["handoff-reason"],
-        });
+        const newNeeds = {
+          "check-key-credit": gateJob,
+          claude: { result, outputs: newOut },
+        };
         const oldSub = Boolean(
           evaluate(INTAKE_OLD.subStarts, {
             needs: { claude: { outputs: oldOut } },
           }),
         );
-        const newSub = Boolean(
-          evaluate(sub.if, { needs: { claude: { outputs: newOut } } }),
-        );
+        const newSub = Boolean(evaluate(sub.if, { needs: newNeeds }));
         assert.equal(
           newSub,
           oldSub,
@@ -822,9 +849,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
           role: "automations",
           credentialSet: String(subSet),
           fallbackSet: String(fbSet),
-          reason: evaluate(credential(sub).reason, {
-            needs: { claude: { outputs: newOut } },
-          }),
+          reason: evaluate(credential(sub).reason, { needs: newNeeds }),
         }).outputs;
         assert.equal(
           subDecided["fallback-reason"],
@@ -856,7 +881,9 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
           );
           const newFb = Boolean(
             evaluate(fb.if, {
-              needs: { subscription: { outputs: newSubOut } },
+              needs: {
+                subscription: { result: "success", outputs: newSubOut },
+              },
             }),
           );
           assert.equal(

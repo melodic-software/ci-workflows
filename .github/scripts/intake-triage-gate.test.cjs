@@ -21,10 +21,12 @@ const workflow = parseWorkflow(
   ),
 );
 const job = workflow.jobs.claude;
+// The gate is the first job's if; every later job needs that job.
+const gateJob = workflow.jobs["check-key-credit"];
 
 const gate = (github, ids = "", authorIds = "", issueNumber = "") =>
   Boolean(
-    evaluate(job.if, {
+    evaluate(gateJob.if, {
       github,
       inputs: {
         "allowed-bot-sender-ids": ids,
@@ -260,9 +262,38 @@ test("the issue comes from the API by a validated number", () => {
 test("a gated-out opened issue runs the skipped job, which may apply a label", () => {
   const skipped = workflow.jobs.skipped;
   assert.equal(skipped.name, "claude-intake-triage-skipped");
-  assert.equal(skipped.needs, "claude");
-  // Only the claude job's own if can skip it, so skipped means gated out.
-  assert.match(skipped.if, /always\(\) && needs\.claude\.result == 'skipped'/u);
+  assert.equal(skipped.needs, "check-key-credit");
+  assert.equal(gateJob.needs, undefined);
+  // Only the gate job's own if can skip it, so skipped means gated out.
+  const runs = (result, github) =>
+    Boolean(
+      evaluate(skipped.if, {
+        github,
+        needs: { "check-key-credit": { result } },
+      }),
+    );
+  const opened = issueEvent("stranger", "NONE", { id: 9, login: "stranger" });
+  assert.equal(runs("skipped", opened), true);
+  for (const result of ["success", "failure"]) {
+    assert.equal(runs(result, opened), false, result);
+  }
+  // A key the key-credit gate held off is no gated-out issue: the gate job
+  // ran, so the skipped job does not.
+  assert.equal(
+    Boolean(
+      evaluate(skipped.if, {
+        github: opened,
+        needs: {
+          "check-key-credit": {
+            result: "success",
+            outputs: { "next-leg": "subscription" },
+          },
+          claude: { result: "skipped" },
+        },
+      }),
+    ),
+    false,
+  );
   assert.match(
     skipped.if,
     /github\.event_name == 'issues' && github\.event\.action == 'opened'/u,
