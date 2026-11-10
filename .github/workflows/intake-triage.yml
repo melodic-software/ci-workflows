@@ -154,7 +154,7 @@ name: Intake Triage
 # warning.
 #
 # RERUNS: rerunning only the claude-subscription job runs the triage on the
-# subscription again without the claude job's author gate running again. It
+# subscription again without the check-key-credit job's author gate running again. It
 # reuses that run's gate result and outputs, and a rerun needs write access
 # to the repository, so this is accepted. The apply job writes only what the
 # legs' outputs in that run hold, so a rerun of it alone reapplies the same
@@ -162,13 +162,14 @@ name: Intake Triage
 #
 # `claude-intake-triage` triages on the API key; after it hands off (a credit
 # stop, or the key refused with API status 401 or 402) or with no
-# key, `claude-intake-triage-subscription` triages on the subscription token
-# instead; after that job hands off, `claude-intake-triage-fallback` triages
+# key, or in its place when `claude-intake-triage-key-credit` finds the key's
+# last credit stop inside the window, `claude-intake-triage-subscription`
+# triages on the subscription token instead; after that job hands off, `claude-intake-triage-fallback` triages
 # on the fallback token. `claude-intake-triage-apply` applies the triage of
 # the job that triaged, and `claude-intake-triage-status` reads them all and goes red
 # when the triage or its write failed. Never make that check required.
 # `claude-intake-triage-skipped` runs only when the author gate skipped the
-# claude job.
+# key-credit job, and with it every leg.
 
 on:
   workflow_call:
@@ -351,62 +352,20 @@ jobs:
   # The key-credit gate, before the key leg: one artifact-list call for the
   # marker the claude job uploads after a credit stop (check-key-credit
   # gate.cjs). No secret, no model, no checkout; every failure runs the key.
-  # It runs for every event, so the claude job's own skip stays the author
-  # gate's alone. Probing is off.
+  # Probing is off. Its if is the author gate, the lane's only one: every
+  # later job needs this one, so a skip here is the gate turning the run
+  # away, and the skipped job below says so. A run spends the subscription,
+  # so it starts only when the sender opened the issue and is its author: a
+  # person whose user id is in allowed-author-ids, or a bot whose sender id
+  # is in allowed-bot-sender-ids (the review lanes' rule). Any other action
+  # (edited, labeled, reopened) never starts a run, so a listed actor acting
+  # on someone else's issue cannot. A workflow_dispatch run starts when its
+  # actor's id is listed the same way. Any other event passes so the leg
+  # job's first step can reject it loudly.
   check-key-credit:
     name: claude-intake-triage-key-credit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: read
-    cache-mode: none
-    outputs:
-      next-leg: ${{ steps.gate.outputs.next-leg }}
-      marker: ${{ steps.gate.outputs.marker }}
-    steps:
-      - name: Read the key's credit history
-        id: gate
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: $/.github/actions/select-model-credential
-        with:
-          leg: start
-          key-job: claude-intake-triage
-          window-hours: ${{ inputs.key-credit-window-hours }}
-          reset-at: ${{ inputs.key-credit-reset-at }}
-          probe-minutes: "0"
-
-      # The job token's api-budget notice, from the readings the gate's
-      # request left. It spends no request.
-      - name: Log the API budget
-        if: always()
-        continue-on-error: true
-        timeout-minutes: 1
-        uses: $/.github/actions/report-api-budget
-        with:
-          tokens: github-token
-
-  claude:
-    name: claude-intake-triage
-    needs: check-key-credit
-    runs-on: ${{ inputs.runner }}
-    # The triage step (12 minutes, CLI install included) leaves four minutes
-    # for runner isolation, checkout and the github-script steps, and three
-    # for the transcript upload.
-    timeout-minutes: 19
-    # Author gate: a run spends the subscription, so it starts only when the
-    # sender opened the issue and is its author: a person whose user id is in
-    # allowed-author-ids, or a bot whose sender id is in
-    # allowed-bot-sender-ids (the review lanes' rule). Any other action
-    # (edited, labeled, reopened) never starts a run, so a listed actor
-    # acting on someone else's issue cannot. Other issues wait for a person,
-    # and the skipped job below says so. A workflow_dispatch run starts when
-    # its actor's id is listed the same way. Any other event passes so the
-    # first step can reject it loudly. !cancelled() runs the key leg when the
-    # check-key-credit job itself fails: every gate failure runs the key, and
-    # the credential step reads a skip from the gate's output.
     if: >-
-      ${{ !cancelled() && ((github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
+      ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
           || (github.event_name == 'workflow_dispatch'
               && inputs.issue-number != ''
               && github.actor_id
@@ -441,7 +400,55 @@ jobs:
                       && !endsWith(inputs.allowed-bot-sender-ids, ',')
                       && !contains(inputs.allowed-bot-sender-ids, ',,')
                       && contains(format(',{0},', inputs.allowed-bot-sender-ids),
-                                  format(',{0},', github.event.sender.id)))))) }}
+                                  format(',{0},', github.event.sender.id))))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    cache-mode: none
+    outputs:
+      next-leg: ${{ steps.gate.outputs.next-leg }}
+      next-reason: ${{ steps.gate.outputs.next-reason }}
+      marker: ${{ steps.gate.outputs.marker }}
+    steps:
+      - name: Read the key's credit history
+        id: gate
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/select-model-credential
+        with:
+          leg: start
+          key-job: claude-intake-triage
+          window-hours: ${{ inputs.key-credit-window-hours }}
+          reset-at: ${{ inputs.key-credit-reset-at }}
+          probe-minutes: "0"
+
+      # The job token's api-budget notice, from the readings the gate's
+      # request left. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
+  claude:
+    name: claude-intake-triage
+    needs: check-key-credit
+    runs-on: ${{ inputs.runner }}
+    # The triage step (12 minutes, CLI install included) leaves four minutes
+    # for runner isolation, checkout and the github-script steps, and three
+    # for the transcript upload.
+    timeout-minutes: 19
+    # After the author gate (check-key-credit's if): skipped when that gate
+    # turned the run away or the key-credit gate named the subscription leg
+    # first, so a key in its credit backoff starts no key job. !cancelled()
+    # runs the key leg when the check-key-credit job itself fails: its
+    # next-leg is then empty, and every gate failure runs the key.
+    if: >-
+      ${{ !cancelled() && needs.check-key-credit.result != 'skipped'
+          && needs.check-key-credit.outputs.next-leg != 'subscription' }}
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1244,14 +1251,19 @@ jobs:
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
   # hardening runs again before the checkout. It reads two outputs of the
-  # claude job, select-model-credential's next-leg, compared to a fixed
-  # string here, and next-reason, which that action checks against a closed
-  # list; neither reaches a run: script. It does not use
+  # claude job that succeeded, or of the check-key-credit job when that
+  # gate skipped the claude job: select-model-credential's next-leg,
+  # compared to a fixed string here, and next-reason, which that action
+  # checks against a closed list; neither reaches a run: script. A failed
+  # or cancelled claude job never starts it. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
   subscription:
     name: claude-intake-triage-subscription
-    needs: claude
-    if: needs.claude.outputs.next-leg == 'subscription'
+    needs: [check-key-credit, claude]
+    if: >-
+      ${{ !cancelled()
+          && ((needs.claude.result == 'success' && needs.claude.outputs.next-leg == 'subscription')
+              || (needs.claude.result == 'skipped' && needs.check-key-credit.outputs.next-leg == 'subscription')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
@@ -1831,7 +1843,7 @@ jobs:
           role: ${{ inputs.role }}
           credential-set: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          reason: ${{ needs.claude.outputs.next-reason }}
+          reason: ${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
@@ -2025,11 +2037,15 @@ jobs:
   # repeat the subscription job's but for the credential and the fallback
   # reason (a test holds them equal). It reads the subscription job's
   # next-leg and next-reason the same way. It is the last leg and never
-  # hands off.
+  # hands off. The subscription job's result is checked here rather than
+  # left to success(): a claude job the key-credit gate skipped would skip
+  # this one too.
   fallback:
     name: claude-intake-triage-fallback
     needs: [claude, subscription]
-    if: needs.subscription.outputs.next-leg == 'fallback'
+    if: >-
+      ${{ !cancelled() && needs.subscription.result == 'success'
+          && needs.subscription.outputs.next-leg == 'fallback' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     # The model's job reads and never writes: the token can read the issue
@@ -2805,10 +2821,12 @@ jobs:
   # allowlist and Issue Types from the repository itself. Like
   # the subscription job it runs on a fixed GitHub-hosted label, a fresh VM,
   # rather than the caller's runner, which could keep state between jobs.
+  # It runs once a leg ran: the claude job, or the subscription job when the
+  # key-credit gate skipped the claude job.
   apply:
     name: claude-intake-triage-apply
     needs: [claude, subscription, fallback]
-    if: always() && needs.claude.result != 'skipped'
+    if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -3285,7 +3303,7 @@ jobs:
   status:
     name: claude-intake-triage-status
     needs: [claude, subscription, fallback, apply]
-    if: always() && needs.claude.result != 'skipped'
+    if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions: {}
@@ -3368,13 +3386,13 @@ jobs:
           echo "::error title=claude-intake-triage failed::failure-class=${class:-no-outcome} job=$job$credential_token; read the job log."
           exit 1
 
-  # The claude job's if is the author gate, so on an opened issue or a
-  # dispatch it is skipped exactly when the gate turned the run away.
+  # The check-key-credit job's if is the author gate, so on an opened issue
+  # or a dispatch it is skipped exactly when the gate turned the run away.
   skipped:
     name: claude-intake-triage-skipped
-    needs: claude
+    needs: check-key-credit
     if: >-
-      ${{ always() && needs.claude.result == 'skipped'
+      ${{ always() && needs.check-key-credit.result == 'skipped'
           && ((github.event_name == 'issues' && github.event.action == 'opened')
               || github.event_name == 'workflow_dispatch') }}
     runs-on: ${{ inputs.runner }}
