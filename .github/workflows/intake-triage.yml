@@ -163,8 +163,8 @@ name: Intake Triage
 # `claude-intake-triage` triages on the API key; after it hands off (a credit
 # stop, or the key refused with API status 401 or 402) or with no
 # key, or in its place when `claude-intake-triage-key-credit` finds the key's
-# last credit stop inside the window, `claude-intake-triage-subscription` triages on the subscription token
-# instead; after that job hands off, `claude-intake-triage-fallback` triages
+# last credit stop inside the window, `claude-intake-triage-subscription`
+# triages on the subscription token instead; after that job hands off, `claude-intake-triage-fallback` triages
 # on the fallback token. `claude-intake-triage-apply` applies the triage of
 # the job that triaged, and `claude-intake-triage-status` reads them all and goes red
 # when the triage or its write failed. Never make that check required.
