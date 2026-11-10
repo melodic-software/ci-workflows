@@ -297,7 +297,10 @@ test("the subscription job runs on a fixed GitHub-hosted label, after the claude
 test("the subscription job starts only on an exact handoff or an empty key", () => {
   // The claude job's outputs, as its last step leaves them, after a gate
   // job that ran the key.
-  const gateRan = { result: "success", outputs: select.start({ skipKey: false }) };
+  const gateRan = {
+    result: "success",
+    outputs: select.start({ skipKey: false }),
+  };
   const starts = (outputs, result = "success") =>
     Boolean(
       evaluate(subscription.if, {
@@ -332,7 +335,11 @@ test("the subscription job starts only on an exact handoff or an empty key", () 
   assert.equal(claude.steps.at(-2).if, undefined);
   // A failed or cancelled claude job never starts it, even with a handoff
   // in its outputs.
-  const auth = handedOn("key", {}, { handoff: "true", "handoff-reason": "auth" });
+  const auth = handedOn(
+    "key",
+    {},
+    { handoff: "true", "handoff-reason": "auth" },
+  );
   for (const result of ["failure", "cancelled"]) {
     assert.equal(starts(auth, result), false, result);
   }
@@ -926,7 +933,10 @@ test("a credit-stopped key hands the triage to the subscription job before any k
         needs: { "check-key-credit": gateJob, claude: claudeJob },
       }),
     );
-  assert.equal(subscriptionRuns(held, { result: "skipped", outputs: {} }), true);
+  assert.equal(
+    subscriptionRuns(held, { result: "skipped", outputs: {} }),
+    true,
+  );
   assert.equal(
     subscriptionRuns({ result: "skipped", outputs: {} }, { result: "skipped" }),
     false,
