@@ -1,0 +1,33 @@
+name: Install Subprocess Isolation
+description: >-
+  For a Claude lane that runs with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 on Linux:
+  installs bubblewrap and socat from the image's package lists, refreshing
+  them only when that install fails (three tries, dpkg repaired between tries,
+  every apt-get and dpkg call and backoff inside one budget), lifts the AppArmor user-namespace
+  restriction on GitHub-hosted runners, and fails closed without either tool.
+  With remove-sudo, it then makes the docker socket root-only and drops the
+  runner user's sudoers entry. No Actions cache: actions/cache unpacks with
+  tar -P while sudo still works, so whoever writes an entry could write any
+  runner-owned file. Give the calling step a timeout-minutes at least 10 s
+  above the budget, and its job room for both.
+
+inputs:
+  budget-seconds:
+    description: Seconds every apt-get call shares.
+    required: false
+    default: "540"
+  remove-sudo:
+    description: "`true` to remove sudo and docker access after the install."
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap and socat
+      shell: bash
+      env:
+        BUDGET_SECONDS: ${{ inputs.budget-seconds }}
+        REMOVE_SUDO: ${{ inputs.remove-sudo }}
+        RUNNER_HOSTING: ${{ runner.environment }}
+      run: bash "$GITHUB_ACTION_PATH/install.sh"
