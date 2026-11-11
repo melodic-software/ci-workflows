@@ -41,3 +41,26 @@ updates:
       github-actions:
         patterns:
           - '*'
+
+  # The check-dependabot-policy action's runtime (ajv, yaml), installed from its
+  # own lockfile in each caller's job. Cooldown per the standards
+  # dependabot-policy change classes; majors fall through to their own group.
+  - package-ecosystem: npm
+    directory: /.github/actions/check-dependabot-policy
+    labels: ["dependencies"]
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
+    groups:
+      check-dependabot-policy:
+        patterns:
+          - '*'
+        update-types: [minor, patch]
+      check-dependabot-policy-major:
+        patterns:
+          - '*'

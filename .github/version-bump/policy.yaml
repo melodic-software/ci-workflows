@@ -9,7 +9,8 @@
 #
 # Every tool is capped at its current major (line: major, or minor for Python): a bump reaches
 # every caller of this repository's reusable workflows at @main as soon as it merges, so a major
-# is a person's change. The run reports the newest release outside the line.
+# is a person's change. Below 1.0 the line also keeps the minor number. The run reports the
+# newest release outside the line.
 
 # The npm registry's signing key, from https://registry.npmjs.org/-/npm/v1/keys (the key with no
 # expiry).

@@ -16,7 +16,7 @@ const {
   POLICY_PATH,
   gateFailure,
   parseCommitMetadata,
-  resolvePublisherAllowlist,
+  resolvePolicyInputs,
 } = require("./gate.cjs");
 
 // The synced policy in the checked-out default branch: { text }, with text
@@ -149,15 +149,16 @@ async function queueOne({ github, app, repo, core, pr, inputs, policyFailure, ap
 async function runQueue({ github, app, context, core, env }) {
   const repo = context.repo;
   const policy = readWorkspacePolicy(env.GITHUB_WORKSPACE);
-  const resolved = policy.failure
-    ? { failure: policy.failure }
-    : resolvePublisherAllowlist(env.PUBLISHER_ALLOWLIST, policy.text);
-  const policyFailure = resolved.failure ?? "";
-  const inputs = {
-    publisherAllowlist: resolved.allowlist,
+  const callerInputs = {
+    publisherAllowlist: env.PUBLISHER_ALLOWLIST,
     packageAutoMerge: env.PACKAGE_AUTO_MERGE,
     reviewOnly: env.REVIEW_ONLY_DEPENDENCIES,
   };
+  const resolved = policy.failure
+    ? { failure: policy.failure }
+    : resolvePolicyInputs(callerInputs, policy.text, `${repo.owner}/${repo.repo}`);
+  const policyFailure = resolved.failure ?? "";
+  const inputs = resolved.inputs ?? callerInputs;
   const counts = { queued: 0, skipped: 0, failed: 0 };
   let pulls;
   try {

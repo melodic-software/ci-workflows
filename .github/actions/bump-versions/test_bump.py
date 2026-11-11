@@ -47,6 +47,19 @@ class VersionClassTest(unittest.TestCase):
         self.assertEqual(bump.change_class("2026.9.12", "2026.10.24"), "minor")
         self.assertEqual(bump.change_class("2026.12.3", "2027.1.0"), "major")
 
+    def test_below_one_a_minor_move_is_major(self) -> None:
+        # The Dependabot gate's breaksBelowOne rule: 0.24 -> 0.25 breaks, 0.24.2 -> 0.24.3 not.
+        self.assertEqual(bump.change_class("0.24.2", "0.25.0"), "major")
+        self.assertEqual(bump.change_class("0.24.2", "0.24.3"), "patch")
+        self.assertEqual(bump.change_class("0.38.2", "1.0.0"), "major")
+        self.assertEqual(bump.cooldown_days(POLICY, THIRD, "0.38.2", "0.39.0"), 7)
+
+    def test_line_major_below_one_keeps_the_minor(self) -> None:
+        self.assertFalse(bump.in_line((0, 24, 2), (0, 25, 0), "major"))
+        self.assertTrue(bump.in_line((0, 24, 2), (0, 24, 3), "major"))
+        self.assertTrue(bump.in_line((1, 4, 0), (1, 5, 0), "major"))
+        self.assertFalse(bump.in_line((1, 4, 0), (2, 0, 0), "major"))
+
     def test_cooldown_by_class_and_override(self) -> None:
         self.assertEqual(bump.cooldown_days(POLICY, THIRD, "1.0.0", "1.0.1"), 3)
         self.assertEqual(bump.cooldown_days(POLICY, THIRD, "1.0.0", "2.0.0"), 7)
@@ -214,6 +227,27 @@ class PublishGuardTest(unittest.TestCase):
         self.assertEqual(bump.tag_cooldown(rows), 7)
         self.assertEqual(bump.tag_cooldown(rows[:1]), 3)
         self.assertEqual(bump.tag_cooldown(rows[2:]), 0)
+
+    def test_bump_with_a_major_row_is_left_for_review(self) -> None:
+        rows = [
+            {"current": "1.4.0", "target": "1.5.0"},
+            {"current": "0.24.2", "target": "0.25.0"},
+        ]
+        self.assertTrue(bump.has_major(rows))
+        self.assertFalse(bump.has_major(rows[:1]))
+        self.assertTrue(bump.has_major([{"current": "2.9.0", "target": "3.0.0"}]))
+        row = {"pr": 9, "tagCooldown": 0, "hasMajor": True}
+        with (
+            mock.patch.object(bump, "run") as run,
+            mock.patch.object(bump, "run_raw") as run_raw,
+        ):
+            bump.arm_auto_merge(
+                row, "o/r", {"date": dt.datetime.now(dt.UTC).isoformat()}
+            )
+        run.assert_not_called()
+        self.assertIn("--disable-auto", run_raw.call_args.args[0])
+        self.assertFalse(row["autoMerge"])
+        self.assertEqual(row["detail"], "a major release waits for review")
 
     def test_release_source_arms_at_once(self) -> None:
         row = {"pr": 9, "tagCooldown": 0}
@@ -892,6 +926,12 @@ class OwnPolicyPinsTest(unittest.TestCase):
 
     def test_cooldowns_come_from_the_synced_org_policy(self) -> None:
         self.assertNotIn("cooldownDays", self.policy)
+
+    def test_every_tool_sets_a_line(self) -> None:
+        # A merged bump reaches every @main caller, so no tool may cross a major unattended.
+        for name, tool in self.policy["tools"].items():
+            with self.subTest(tool=name):
+                self.assertIn(tool.get("line"), {"major", "minor"})
 
     def test_every_version_and_field_pin_is_on_one_line(self) -> None:
         for name, tool in self.policy["tools"].items():

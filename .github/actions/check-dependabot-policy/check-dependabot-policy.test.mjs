@@ -137,17 +137,10 @@ test("multiple conformant entries including the directories plural form pass", a
   assert.deepEqual(await auditRepository({ root }), []);
 });
 
-test("a longer default cooldown than the patch class is flagged", async () => {
+test("a longer default cooldown than the patch class passes", async () => {
   const entry = CONFORMANT.replace("default-days: 3", "default-days: 14");
   const root = await repository({ dependabotYaml: dependabot(entry) });
-  assert.deepEqual(await auditRepository({ root }), [
-    {
-      rule: "cooldown-default-not-patch-class",
-      file: ".github/dependabot.yml",
-      entry: "npm:/",
-      message: "cooldown.default-days must be 3 (the patch class), found 14",
-    },
-  ]);
+  assert.deepEqual(await auditRepository({ root }), []);
 });
 
 test("a missing dependabot.yml is flagged", async () => {
@@ -177,9 +170,6 @@ test("a missing cooldown is flagged", async () => {
   const root = await repository({ dependabotYaml: dependabot(entry) });
   assert.deepEqual(rules(await auditRepository({ root })), [
     "npm:/:cooldown-below-minimum",
-    "npm:/:cooldown-default-not-patch-class",
-    "npm:/:cooldown-exclude-not-fast-track",
-    "npm:/:cooldown-major-not-major-class",
   ]);
 });
 
@@ -188,7 +178,6 @@ test("a cooldown below the floor is flagged", async () => {
   const root = await repository({ dependabotYaml: dependabot(entry) });
   assert.deepEqual(rules(await auditRepository({ root })), [
     "npm:/:cooldown-below-minimum",
-    "npm:/:cooldown-default-not-patch-class",
   ]);
 });
 
@@ -198,7 +187,7 @@ test("a match-all cooldown exclude bypasses the soak and is flagged", async () =
   );
   const root = await repository({ dependabotYaml: dependabot(entry) });
   assert.deepEqual(rules(await auditRepository({ root })), [
-    "npm:/:cooldown-exclude-not-fast-track",
+    "npm:/:cooldown-exclude-outside-fast-track",
     "npm:/:cooldown-soak-bypassed",
   ]);
 });
@@ -650,6 +639,7 @@ test("a malformed cooldown class or fast-track block fails closed", async () => 
     ],
     ["own that is not a publisher glob", (policy) => (policy.fastTrack.own = ["melodic-software"])],
     ["schema version 1", (policy) => (policy.schemaVersion = 1)],
+    ["schema version that is not an integer", (policy) => (policy.schemaVersion = "3")],
   ];
   for (const [name, mutate] of cases) {
     const policy = minimalPolicy();
@@ -782,74 +772,76 @@ test("an ecosystem with no fast track passes with no exclude", async () => {
   assert.deepEqual(await auditRepository({ root }), []);
 });
 
-test("a default cooldown other than the patch class is flagged", async () => {
-  const entry = CONFORMANT.replace("default-days: 3", "default-days: 5");
-  const root = await repository({ dependabotYaml: dependabot(entry) });
+test("a later schema version, a new fast-track ecosystem and a new top-level key still audit", async () => {
+  const policy = minimalPolicy();
+  policy.schemaVersion = 3;
+  policy.fastTrack.pip = ["some-package"];
+  policy.futureSetting = { enabled: true };
+  assert.deepEqual(await auditWithPolicy(policy), []);
+});
+
+test("a major cooldown above the major class, or none at all, passes", async () => {
+  for (const entry of [
+    CONFORMANT.replace("semver-major-days: 7", "semver-major-days: 14"),
+    CONFORMANT.replace("      semver-major-days: 7\n", ""),
+  ]) {
+    const root = await repository({ dependabotYaml: dependabot(entry) });
+    assert.deepEqual(await auditRepository({ root }), []);
+  }
+});
+
+test("a major cooldown below the major class is flagged", async () => {
+  const root = await repository({
+    dependabotYaml: dependabot(CONFORMANT.replace("semver-major-days: 7", "semver-major-days: 5")),
+  });
   assert.deepEqual(await auditRepository({ root }), [
     {
-      rule: "cooldown-default-not-patch-class",
+      rule: "cooldown-major-below-major-class",
       file: ".github/dependabot.yml",
       entry: "npm:/",
-      message: "cooldown.default-days must be 3 (the patch class), found 5",
+      message: "cooldown.semver-major-days must be >= 7 (the major class), found 5",
     },
   ]);
 });
 
-test("a missing or wrong major cooldown is flagged", async () => {
-  const missing = await repository({
-    dependabotYaml: dependabot(CONFORMANT.replace("      semver-major-days: 7\n", "")),
-  });
-  assert.deepEqual(await auditRepository({ root: missing }), [
-    {
-      rule: "cooldown-major-not-major-class",
-      file: ".github/dependabot.yml",
-      entry: "npm:/",
-      message: "cooldown.semver-major-days must be 7 (the major class), found null",
-    },
-  ]);
-  const wrong = await repository({
-    dependabotYaml: dependabot(CONFORMANT.replace("semver-major-days: 7", "semver-major-days: 14")),
-  });
-  assert.deepEqual(await auditRepository({ root: wrong }), [
-    {
-      rule: "cooldown-major-not-major-class",
-      file: ".github/dependabot.yml",
-      entry: "npm:/",
-      message: "cooldown.semver-major-days must be 7 (the major class), found 14",
-    },
-  ]);
+test("an exclude that is a subset of the ecosystem's fast track passes", async () => {
+  for (const entry of [
+    CONFORMANT.replace(/      exclude:\n        - "@anthropic-ai\/claude-code"\n/u, ""),
+    GITHUB_ACTIONS_ENTRY.replace('        - "melodic-software/*"\n', ""),
+  ]) {
+    const root = await repository({ dependabotYaml: dependabot(entry) });
+    assert.deepEqual(await auditRepository({ root }), []);
+  }
 });
 
-test("an exclude that differs from the ecosystem's fast track names missing and extra", async () => {
+test("an exclude naming anything outside the ecosystem's fast track is flagged", async () => {
   const npm = await repository({
     dependabotYaml: dependabot(
       CONFORMANT.replace(
         '        - "@anthropic-ai/claude-code"\n',
-        '        - "melodic-software/*"\n',
+        '        - "@anthropic-ai/claude-code"\n        - "melodic-software/*"\n',
       ),
     ),
   });
   assert.deepEqual(await auditRepository({ root: npm }), [
     {
-      rule: "cooldown-exclude-not-fast-track",
+      rule: "cooldown-exclude-outside-fast-track",
       file: ".github/dependabot.yml",
       entry: "npm:/",
       message:
-        'cooldown.exclude must equal the npm fast track; missing ["@anthropic-ai/claude-code"], extra ["melodic-software/*"]',
+        'cooldown.exclude may list only the npm fast track ["@anthropic-ai/claude-code"]; outside it: ["melodic-software/*"]',
     },
   ]);
   const actions = await repository({
-    dependabotYaml: dependabot(
-      GITHUB_ACTIONS_ENTRY.replace('        - "melodic-software/*"\n', ""),
-    ),
+    dependabotYaml: dependabot(GITHUB_ACTIONS_ENTRY.replace('"anthropics/*"', '"actions/*"')),
   });
   assert.deepEqual(await auditRepository({ root: actions }), [
     {
-      rule: "cooldown-exclude-not-fast-track",
+      rule: "cooldown-exclude-outside-fast-track",
       file: ".github/dependabot.yml",
       entry: "github-actions:/",
       message:
-        'cooldown.exclude must equal the github-actions fast track; missing ["melodic-software/*"], extra []',
+        'cooldown.exclude may list only the github-actions fast track ["anthropics/*","melodic-software/*"]; outside it: ["actions/*"]',
     },
   ]);
 });

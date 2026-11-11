@@ -43,7 +43,10 @@ name: PR Automerge Dependabot
 #     `.github/standards/dependabot-policy/policy.json`, the allowlist is the
 #     copy's `tier: auto` publishers plus its `fastTrack` `github-actions` and
 #     `own` globs. With no synced copy, or a caller list other than the
-#     default, the input is the allowlist. A copy that cannot be read or
+#     default, the input is the allowlist. A synced copy also narrows, at any
+#     input: its `autoMerge.ecosystems` bound the ecosystems armed and its
+#     `autoMerge.reviewOnly` entries for this repository are never armed.
+#     A copy that cannot be read or
 #     parsed, or an input that is not a JSON array of non-empty strings, arms
 #     nothing;
 #   - no package dependency name is in the caller's `review-only-dependencies`

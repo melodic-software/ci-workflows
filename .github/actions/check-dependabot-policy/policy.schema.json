@@ -3,7 +3,6 @@
   "$id": "https://standards.melodic.software/dependabot-policy/policy.schema.json",
   "title": "Dependabot policy",
   "type": "object",
-  "additionalProperties": false,
   "required": [
     "schemaVersion",
     "scheduleInterval",
@@ -22,7 +21,7 @@
     }
   },
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "type": "integer", "minimum": 2 },
     "scheduleInterval": { "enum": ["daily", "weekly", "monthly"] },
     "cooldownMinimumDays": { "type": "integer", "minimum": 1 },
     "cooldownDays": {
@@ -38,7 +37,6 @@
     },
     "fastTrack": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["reviewed", "basis", "npm", "github-actions", "own"],
       "properties": {
         "reviewed": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
@@ -59,7 +57,6 @@
     "requireGroups": { "type": "boolean" },
     "autoMerge": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["ecosystems", "publishers", "reviewOnly", "excludeSemverMajor", "requiredCheck"],
       "properties": {
         "ecosystems": {

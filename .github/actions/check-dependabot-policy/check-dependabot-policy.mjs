@@ -64,9 +64,8 @@ const WAIVE_BY_RULE = {
   "schedule-not-standard": "schedule",
   "cooldown-below-minimum": "cooldown",
   "cooldown-soak-bypassed": "cooldown",
-  "cooldown-default-not-patch-class": "cooldown",
-  "cooldown-major-not-major-class": "cooldown",
-  "cooldown-exclude-not-fast-track": "cooldown",
+  "cooldown-major-below-major-class": "cooldown",
+  "cooldown-exclude-outside-fast-track": "cooldown",
   "groups-missing": "groups",
 };
 
@@ -162,48 +161,40 @@ function fastTrackList(policy, name) {
   return Array.isArray(value) ? value : [];
 }
 
+// The cooldown floor (cooldown-below-minimum) already holds default-days at or
+// above the patch class, since the policy requires the two to be equal. These
+// add the major class and the fast track, the only names an exclude may hold
+// (THREAT-MODEL.md, fast-track row).
 function cooldownClassFindings(file, key, entry, policy) {
   const findings = [];
   const cooldown = entry.cooldown;
-  const defaultDays = cooldown?.["default-days"];
-  if (defaultDays !== policy.cooldownDays.patch) {
-    findings.push(
-      finding(
-        "cooldown-default-not-patch-class",
-        file,
-        key,
-        `cooldown.default-days must be ${policy.cooldownDays.patch} (the patch class), found ${JSON.stringify(defaultDays ?? null)}`,
-      ),
-    );
-  }
   const majorDays = cooldown?.["semver-major-days"];
-  if (majorDays !== policy.cooldownDays.major) {
+  if (typeof majorDays === "number" && majorDays < policy.cooldownDays.major) {
     findings.push(
       finding(
-        "cooldown-major-not-major-class",
+        "cooldown-major-below-major-class",
         file,
         key,
-        `cooldown.semver-major-days must be ${policy.cooldownDays.major} (the major class), found ${JSON.stringify(majorDays ?? null)}`,
+        `cooldown.semver-major-days must be >= ${policy.cooldownDays.major} (the major class), found ${majorDays}`,
       ),
     );
   }
   const ecosystem = entry["package-ecosystem"];
-  const expected = new Set(fastTrackList(policy, ecosystem));
+  const allowed = new Set(fastTrackList(policy, ecosystem));
   if (ecosystem === "github-actions") {
     for (const pattern of fastTrackList(policy, "own")) {
-      expected.add(pattern);
+      allowed.add(pattern);
     }
   }
-  const actual = new Set(Array.isArray(cooldown?.exclude) ? cooldown.exclude : []);
-  const missing = [...expected].filter((pattern) => !actual.has(pattern)).sort();
-  const extra = [...actual].filter((pattern) => !expected.has(pattern)).sort();
-  if (missing.length > 0 || extra.length > 0) {
+  const exclude = Array.isArray(cooldown?.exclude) ? cooldown.exclude : [];
+  const outside = [...new Set(exclude)].filter((pattern) => !allowed.has(pattern)).sort();
+  if (outside.length > 0) {
     findings.push(
       finding(
-        "cooldown-exclude-not-fast-track",
+        "cooldown-exclude-outside-fast-track",
         file,
         key,
-        `cooldown.exclude must equal the ${ecosystem} fast track; missing ${JSON.stringify(missing)}, extra ${JSON.stringify(extra)}`,
+        `cooldown.exclude may list only the ${ecosystem} fast track ${JSON.stringify([...allowed].sort())}; outside it: ${JSON.stringify(outside)}`,
       ),
     );
   }

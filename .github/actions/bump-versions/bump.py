@@ -96,7 +96,8 @@ def change_class(current: str, candidate: str) -> str:
     cur, new = parse_version(current), parse_version(candidate)
     if cur is None or new is None:
         raise BumpError(f"cannot classify {current} -> {candidate}")
-    if cur[0] != new[0]:
+    # Below 1.0 a minor move is the breaking one, as Dependabot's gate treats it.
+    if cur[0] != new[0] or (cur[0] == 0 and cur[1:2] != new[1:2]):
         return "major"
     if cur[1:2] != new[1:2]:
         return "minor"
@@ -117,8 +118,13 @@ def cooldown_days(
 def in_line(
     current: tuple[int, ...], candidate: tuple[int, ...], line: str | None
 ) -> bool:
-    """line major keeps the first number, minor the first two; None allows any release."""
+    """line major keeps the first number, minor the first two; None allows any release.
+
+    Below 1.0 the minor number is the breaking one, so line major keeps it too.
+    """
     width = {"major": 1, "minor": 2}.get(line or "", 0)
+    if line == "major" and current[:1] == (0,):
+        width = 2
     return candidate[:width] == current[:width]
 
 
@@ -1525,13 +1531,24 @@ def tag_cooldown(rows: list[dict[str, Any]]) -> int:
     )
 
 
+def has_major(rows: list[dict[str, Any]]) -> bool:
+    """Whether any row moves to a release of class major, a 0.x minor move included."""
+    return any(change_class(r["current"], r["target"]) == "major" for r in rows)
+
+
 def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None:
     """Arm auto-merge, except while a tag source in the bump is still inside its cooldown.
 
     A tag's commit date (and the module proxy's .info Time for a git-sourced module) is set
     by whoever made the commit, so for those sources the cooldown also runs from the bot's
-    own commit, whose date GitHub sets.
+    own commit, whose date GitHub sets. A bump holding a major move is never armed: the org
+    update policy sends majors to review, so its pull request waits for a person.
     """
+    if bump.get("hasMajor"):
+        run_raw(["gh", "pr", "merge", str(bump["pr"]), "-R", repo, "--disable-auto"])
+        bump["autoMerge"] = False
+        bump["detail"] = "a major release waits for review"
+        return
     wait = int(bump.get("tagCooldown", 0))
     if wait:
         age = dt.datetime.now(dt.UTC) - parse_date(tip["date"])
@@ -1562,6 +1579,7 @@ def publish_bump(
     branch = bump["branch"]
     title = pr_title(bump, rows)
     bump["tagCooldown"] = tag_cooldown(rows)
+    bump["hasMajor"] = has_major(rows)
     prs = own_prs(branch, repo, app_slug)
     tip = branch_tip(repo, branch, f"{app_slug}[bot]")
     marker = TARGETS_MARKER.search(prs[0].get("body") or "") if prs else None

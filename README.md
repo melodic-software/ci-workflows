@@ -153,7 +153,10 @@ consumer to audit it.
   copy the `dependabot-policy` input names (default
   `.github/standards/dependabot-policy/policy.json`). A policy file that still
   sets `cooldownDays` keeps its own values; with neither, `prepare` fails rather
-  than assume a cooldown. `command: prepare` resolves
+  than assume a cooldown. Below 1.0 a minor move is class `major` (as the
+  Dependabot gate treats it), and `line: major` then keeps the minor number. A
+  bump holding any major move opens its pull request without auto-merge, so a
+  person reviews it. `command: prepare` resolves
   and verifies under the caller's read-only token and sets `prepared-count`; when that
   is above zero the caller mints an App token and calls `command: publish`, which
   commits through the API so GitHub signs it, opens or updates each pull request on
@@ -171,15 +174,20 @@ consumer to audit it.
   `.github/standards/dependabot-policy/policy.json`, and fails closed (exit 2)
   when that copy is absent. It runs the standards `dependabot-policy` analyzer's
   rules (schedule, cooldown floor, groups, open-pull-request cap, disabling
-  ignores, the `.github/dependabot-policy.json` exceptions) plus three that
-  analyzer does not: `cooldown.default-days` equals the `patch` class,
-  `cooldown.semver-major-days` equals the `major` class, and `cooldown.exclude`
-  equals the policy's `fastTrack` list for the entry's ecosystem (plus
-  `fastTrack.own` for `github-actions`). An exception that waives `cooldown`
-  waives all three. The policy schemas are copies of standards'; the runtime
-  (ajv, yaml) installs from the action's own lockfile, pinned as standards
-  pins it. A consumer adds it as a step of a lane its `ci-status` aggregates;
-  no repository enables it yet.
+  ignores, the `.github/dependabot-policy.json` exceptions) plus two that
+  analyzer does not: `cooldown.semver-major-days`, when set, is at least the
+  `major` class, and every `cooldown.exclude` entry is in the policy's
+  `fastTrack` list for the entry's ecosystem (plus `fastTrack.own` for
+  `github-actions`; a subset passes). `default-days` is held at or above the
+  `patch` class by the existing floor, which the policy requires to equal it.
+  An exception that waives `cooldown` waives both. The schemas are standards'
+  with one change: they accept any `schemaVersion` from 2 up and ignore
+  unknown top-level, `fastTrack` and `autoMerge` keys, so a later standards
+  release cannot fail every consumer. The runtime (ajv, yaml) installs from
+  the action's own lockfile, which Dependabot tracks. This action is the
+  checker consumers run, as a step of a lane their `ci-status` aggregates; in
+  phase 4 of the org update policy standards' `dependabot-policy.mjs` becomes a
+  pointer to it. No repository enables it yet.
 - `.github/actions/verify-pulumi-deploy-policy` — verifies the complete Pulumi personal
   [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
   then [exports stack state][pulumi-stack-export] without plaintext secrets and
@@ -1204,8 +1212,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `.github/standards/dependabot-policy/policy.json`, it is that copy's
   `tier: auto` publishers plus its `fastTrack` `github-actions` and `own` globs
   (`melodic-software/*`). The copy is read through the contents API at the base
-  commit, so the pull request cannot change it; one that cannot be read or
-  parsed arms nothing, and with no copy the input stands, as before. No
+  commit, so the pull request cannot change it. Whatever the input, a synced
+  copy also narrows: its `autoMerge.ecosystems` bound the ecosystems armed, and
+  its `autoMerge.reviewOnly` dependencies for this repository are never armed.
+  A copy that cannot be read or parsed arms nothing, and with no copy the
+  input stands, as before. No
   package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its

@@ -236,7 +236,7 @@ for (const malformed of [
 // The publisher and fast-track shape of standards
 // components/dependabot-policy/policy.json schemaVersion 2 (standards#987),
 // plus one review-tier publisher the real file does not list.
-const syncedPolicy = ({ fastTrack } = {}) =>
+const syncedPolicy = ({ fastTrack, ecosystems, reviewOnly } = {}) =>
   JSON.stringify({
     schemaVersion: 2,
     fastTrack: fastTrack ?? {
@@ -253,6 +253,8 @@ const syncedPolicy = ({ fastTrack } = {}) =>
         "anthropics/*": { tier: "auto" },
         "example/*": { tier: "review" },
       },
+      ecosystems: ecosystems ?? ["github-actions", "npm", "pip", "uv", "nuget"],
+      reviewOnly: reviewOnly ?? [],
     },
   });
 
@@ -362,6 +364,10 @@ for (const [label, basePolicy] of [
   ["not JSON", "{"],
   ["without autoMerge.publishers", JSON.stringify({ fastTrack: {} })],
   [
+    "without autoMerge.ecosystems",
+    JSON.stringify({ autoMerge: { publishers: {}, reviewOnly: [] } }),
+  ],
+  [
     "with a non-list fast track",
     syncedPolicy({ fastTrack: { own: "melodic-software/*" } }),
   ],
@@ -382,6 +388,54 @@ test("a synced policy the API cannot return arms nothing", async () => {
       }),
     }),
     /could not be read at the base: Server Error/u,
+  );
+});
+
+test("the synced policy's autoMerge.ecosystems leaves other ecosystems for a person", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
+      ],
+      basePolicy: syncedPolicy({ ecosystems: ["github-actions"] }),
+    }),
+    /left-pad is a npm_and_yarn update, which the policy's autoMerge.ecosystems leaves out/u,
+  );
+  const { armCalls } = await runGate({
+    updates: [
+      update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
+    ],
+    basePolicy: syncedPolicy({ ecosystems: ["npm"] }),
+  });
+  assert.equal(armCalls.length, 1);
+});
+
+test("the synced policy's reviewOnly entries for this repository are never armed", async () => {
+  const entry = (repository) => ({
+    repository,
+    ecosystem: "npm",
+    directory: "/",
+    dependency: "tedious",
+  });
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("tedious", "version-update:semver-patch", "npm_and_yarn"),
+      ],
+      basePolicy: syncedPolicy({
+        reviewOnly: [entry("melodic-software/medley")],
+      }),
+    }),
+    /tedious is a review-only dependency/u,
+  );
+  const { armCalls } = await runGate({
+    updates: [update("tedious", "version-update:semver-patch", "npm_and_yarn")],
+    basePolicy: syncedPolicy({ reviewOnly: [entry("melodic-software/other")] }),
+  });
+  assert.equal(
+    armCalls.length,
+    1,
+    "another repository's entry does not apply here",
   );
 });
 

@@ -282,7 +282,11 @@ async function runWithFakes({
 test("the workspace's synced policy sets the publishers the queue arms", async () => {
   const { counts, notices } = await runWithFakes({
     policy: JSON.stringify({
-      autoMerge: { publishers: { "github/*": { tier: "auto" } } },
+      autoMerge: {
+        publishers: { "github/*": { tier: "auto" } },
+        ecosystems: ["github-actions"],
+        reviewOnly: [],
+      },
     }),
   });
   assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
