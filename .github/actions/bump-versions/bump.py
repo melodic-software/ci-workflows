@@ -38,6 +38,8 @@ from urllib.parse import quote, urlencode
 from xml.etree import ElementTree
 
 BRANCH_PREFIX = "version-bump/"
+DEPENDABOT_POLICY = ".github/standards/dependabot-policy/policy.json"
+COOLDOWN_CLASSES = ("own", "patch", "minor", "major")
 SIGNER_EMAIL = "noreply@github.com"
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 HEX = {"sha256": 64, "sha512": 128}
@@ -1212,9 +1214,34 @@ def changed_paths() -> list[str]:
 # ---------------------------------------------------------------- commands
 
 
-def load_policy(path: Path) -> dict[str, Any]:
+def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
+    """cooldownDays from the standards dependabot-policy copy the standards sync places here."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SystemExit(
+            f"{policy_path} sets no cooldownDays and {path} is absent: the repository must"
+            " receive the standards dependabot-policy sync component or set cooldownDays"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path} is not valid JSON: {exc}") from None
+    days = doc.get("cooldownDays") if isinstance(doc, dict) else None
+    if not isinstance(days, dict) or not all(
+        type(days.get(c)) is int and days[c] >= 0 for c in COOLDOWN_CLASSES
+    ):
+        raise SystemExit(
+            f"{path} cooldownDays must give a non-negative integer for each of"
+            f" {', '.join(COOLDOWN_CLASSES)}"
+        )
+    return {c: days[c] for c in COOLDOWN_CLASSES}
+
+
+def load_policy(path: Path, dependabot_policy: Path) -> dict[str, Any]:
+    """The version-bump policy; its own cooldownDays wins over the synced org policy's."""
     policy: dict[str, Any] = yq_json(".", path)
     policy["_dir"] = path.resolve().parent
+    if "cooldownDays" not in policy:
+        policy["cooldownDays"] = synced_cooldown_days(dependabot_policy, path)
     return policy
 
 
@@ -1385,7 +1412,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     # clean tree: uncommitted work would be swept into the bump and then lost.
     if not args.dry_run and changed_paths():
         raise SystemExit("prepare needs a clean tree; commit or stash first")
-    policy = load_policy(Path(args.policy))
+    policy = load_policy(Path(args.policy), Path(args.dependabot_policy))
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     now = parse_date(args.now) if args.now else dt.datetime.now(dt.UTC)
@@ -1816,6 +1843,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("prepare")
     p.add_argument("--policy", required=True, help="policy file, relative to the root")
+    p.add_argument(
+        "--dependabot-policy",
+        default=DEPENDABOT_POLICY,
+        help="synced org policy giving cooldownDays when the policy file sets none",
+    )
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="", help="comma-separated tool or group names")
     p.add_argument(

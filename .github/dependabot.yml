@@ -10,8 +10,9 @@ updates:
   # into .github/actions/<name>/ from "/" alone).
   #
   # Dependabot only updates `uses:` action SHAs. The tool versions pinned inside
-  # the actions' run scripts and input defaults have no ecosystem manifest here
-  # and are tracked manually at the weekly review.
+  # the actions' run scripts and input defaults have no ecosystem manifest here;
+  # .github/version-bump/policy.yaml lists them and
+  # maintenance-bump-pinned-versions.yml moves them.
   - package-ecosystem: github-actions
     directories:
       - /

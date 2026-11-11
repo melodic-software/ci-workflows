@@ -16,7 +16,7 @@ test("Node action defaults match the repository .node-version", () => {
   const nodeVersion = read(".node-version").trim();
   assert.match(nodeVersion, /^\d+\.\d+\.\d+$/u);
 
-  for (const name of ["markdownlint", "biome"]) {
+  for (const name of ["markdownlint", "biome", "check-dependabot-policy"]) {
     const action = parseWorkflow(
       read(path.join(".github", "actions", name, "action.yml")),
     );

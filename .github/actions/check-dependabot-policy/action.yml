@@ -1,0 +1,50 @@
+name: Check Dependabot Policy
+description: >-
+  Check the caller's Dependabot config against the organization dependency-update
+  policy. A consumer calls it as a step of its ci-status lane jobs. It fails
+  closed (exit 2) when the synced policy from the standards dependabot-policy
+  component is absent.
+
+inputs:
+  root:
+    description: Repository root the other paths resolve against.
+    default: '.'
+  policy:
+    description: Path to the synced policy file, relative to root.
+    default: .github/standards/dependabot-policy/policy.json
+  config:
+    description: Path to the repository's exception file, relative to root.
+    default: .github/dependabot-policy.json
+  dependabot:
+    description: Path to the Dependabot config, relative to root.
+    default: .github/dependabot.yml
+  node-version:
+    description: Node.js version to set up.
+    default: 24.21.0
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Check Dependabot policy
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        POLICY: ${{ inputs.policy }}
+        CONFIG: ${{ inputs.config }}
+        DEPENDABOT: ${{ inputs.dependabot }}
+      run: |
+        set -euo pipefail
+
+        dir="$(mktemp -d "${RUNNER_TEMP%/}/check-dependabot-policy.XXXXXXXX")"
+        cp "$GITHUB_ACTION_PATH/package.json" "$GITHUB_ACTION_PATH/package-lock.json" \
+          "$GITHUB_ACTION_PATH/check-dependabot-policy.mjs" \
+          "$GITHUB_ACTION_PATH/policy.schema.json" \
+          "$GITHUB_ACTION_PATH/dependabot-policy.schema.json" "$dir/"
+        npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund
+        node "$dir/check-dependabot-policy.mjs" --root "$ROOT" --policy "$POLICY" \
+          --config "$CONFIG" --dependabot "$DEPENDABOT"

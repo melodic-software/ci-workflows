@@ -145,9 +145,15 @@ consumer to audit it.
   while the upstream [runspace-affinity defect][pssa-1708] is open; retrying a
   crashing rule is not a quality gate.
 - `.github/actions/bump-versions` — moves a repository's release pins to the newest
-  release past its cooldown, as declared in a policy file (cooldown days, per-tool
-  source, verification and pins; a pin in a file yq cannot parse is addressed by a
-  regex with one capture group that must match one line). `command: prepare` resolves
+  release past its cooldown, as declared in a policy file (per-tool source,
+  verification and pins; a pin in a file yq cannot parse is addressed by a regex
+  with one capture group that must match one line). The cooldown days per change
+  class (`own`, `patch`, `minor`, `major`) come from the org update policy, the
+  standards `dependabot-policy` `cooldownDays`, read from the standards-synced
+  copy the `dependabot-policy` input names (default
+  `.github/standards/dependabot-policy/policy.json`). A policy file that still
+  sets `cooldownDays` keeps its own values; with neither, `prepare` fails rather
+  than assume a cooldown. `command: prepare` resolves
   and verifies under the caller's read-only token and sets `prepared-count`; when that
   is above zero the caller mints an App token and calls `command: publish`, which
   commits through the API so GitHub signs it, opens or updates each pull request on
@@ -160,6 +166,20 @@ consumer to audit it.
   Authenticode publisher under a pinned root (`osslsigncode: 'true'`). `afterBump`
   commands in the policy run from the repository root after the pins are rewritten and
   read the bump from `VERSION_BUMP_READY`.
+- `.github/actions/check-dependabot-policy` — checks a repository's
+  `.github/dependabot.yml` against the org update policy, the standards-synced
+  `.github/standards/dependabot-policy/policy.json`, and fails closed (exit 2)
+  when that copy is absent. It runs the standards `dependabot-policy` analyzer's
+  rules (schedule, cooldown floor, groups, open-pull-request cap, disabling
+  ignores, the `.github/dependabot-policy.json` exceptions) plus three that
+  analyzer does not: `cooldown.default-days` equals the `patch` class,
+  `cooldown.semver-major-days` equals the `major` class, and `cooldown.exclude`
+  equals the policy's `fastTrack` list for the entry's ecosystem (plus
+  `fastTrack.own` for `github-actions`). An exception that waives `cooldown`
+  waives all three. The policy schemas are copies of standards'; the runtime
+  (ajv, yaml) installs from the action's own lockfile, pinned as standards
+  pins it. A consumer adds it as a step of a lane its `ci-status` aggregates;
+  no repository enables it yet.
 - `.github/actions/verify-pulumi-deploy-policy` — verifies the complete Pulumi personal
   [OIDC allow-policy][pulumi-oidc] set against a versioned exact-claim contract,
   then [exports stack state][pulumi-stack-export] without plaintext secrets and
@@ -1175,10 +1195,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fetch-metadata succeeded; every update is `github_actions` or, unless the
   caller passes `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or
   `nuget` (docker, dotnet-sdk and other ecosystems stay manual); every GitHub
-  Actions dependency name matches a glob in the caller's `publisher-allowlist`
-  JSON array (default `["actions/*","github/*","anthropics/*"]`, mirroring
-  standards `dependabot-policy` `autoMerge`; an input that is not a JSON array
-  of non-empty strings arms nothing); no package name is in the caller's
+  Actions dependency name matches a glob in the allowlist (an input that is
+  not a JSON array of non-empty strings arms nothing). The allowlist is the
+  caller's `publisher-allowlist` JSON array (default
+  `["actions/*","github/*","anthropics/*"]`, mirroring standards
+  `dependabot-policy` `autoMerge`), except that at the default, when the pull
+  request's base commit holds the standards-synced
+  `.github/standards/dependabot-policy/policy.json`, it is that copy's
+  `tier: auto` publishers plus its `fastTrack` `github-actions` and `own` globs
+  (`melodic-software/*`). The copy is read through the contents API at the base
+  commit, so the pull request cannot change it; one that cannot be read or
+  parsed arms nothing, and with no copy the input stands, as before. No
+  package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its
   minor component; the metadata names exactly the updates and versions the
@@ -1220,14 +1248,27 @@ GitHub continues the normal weekly patching of each hosted image generation.
   own Dependabot merge path, not a reusable. Every 30 minutes and on dispatch,
   on main only, it lists the open PRs authored by `49699333`, reads each head
   commit's Dependabot metadata, runs the same gate with the reusable's
-  default inputs, and requires a `ci-status` check run that succeeded on the
-  head. It then arms each passing PR with the melodic-release App token from
+  default inputs (a synced dependabot-policy copy in the checked-out main
+  would set the publishers the same way; this repository has none yet), and
+  requires a `ci-status` check run that succeeded on the head. It then arms each passing PR with the melodic-release App token from
   the `plugin-release` environment, at the verified head and with no merge
   method, so the merge queue takes it. Out-of-tier PRs are left alone with a
   notice, and one armed on an earlier head is disarmed. Arming a PR that changes a workflow file needs the App's
   `workflows: write`; without it the run warns
   `melodic-release lacks workflows: write` and moves on. No failure fails the
   job, and it logs both tokens' `api-calls`.
+
+- `.github/workflows/maintenance-bump-pinned-versions.yml` — this repository's
+  own tool-pin updater, not a reusable. Daily and on dispatch, on main only, it
+  runs `bump-versions` over `.github/version-bump/policy.yaml`: the tool
+  versions and release digests the actions and reusable workflows pin outside
+  Dependabot (the policy lists each pin, and the ones it leaves to a person
+  with the reason). Each tool is capped at its current major, since a merged
+  bump reaches every `@main` caller. It opens each bump with the melodic-release
+  App token from the `plugin-release` environment. The cooldowns come from the
+  standards-synced `.github/standards/dependabot-policy/policy.json`; this
+  repository does not receive that file yet, so until a standards sync target
+  adds it the run warns and bumps nothing.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The

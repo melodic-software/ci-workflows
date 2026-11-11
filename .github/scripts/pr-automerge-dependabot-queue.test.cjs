@@ -2,13 +2,16 @@
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
-const { parseCommitMetadata } = require(path.join(actionDir, "gate.cjs"));
+const { POLICY_PATH, parseCommitMetadata } = require(
+  path.join(actionDir, "gate.cjs"),
+);
 const { runQueue } = require(path.join(actionDir, "queue.cjs"));
 const workflowsDir = path.join(__dirname, "..", "workflows");
 const queueWorkflow = parseWorkflow(
@@ -199,7 +202,15 @@ async function runWithFakes({
   inQueue = {},
   appErrors = {},
   listError = null,
+  // The synced policy in the checked-out workspace; absent unless given.
+  policy = undefined,
 } = {}) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "queue-workspace-"));
+  if (policy !== undefined) {
+    const policyFile = path.join(workspace, POLICY_PATH);
+    fs.mkdirSync(path.dirname(policyFile), { recursive: true });
+    fs.writeFileSync(policyFile, policy);
+  }
   const reads = [];
   const appCalls = [];
   const notices = [];
@@ -258,13 +269,41 @@ async function runWithFakes({
     core,
     env: {
       APP_SLUG: "melodic-release",
+      GITHUB_WORKSPACE: workspace,
       PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]',
       PACKAGE_AUTO_MERGE: "true",
       REVIEW_ONLY_DEPENDENCIES: "[]",
     },
   });
+  fs.rmSync(workspace, { recursive: true, force: true });
   return { counts, reads, appCalls, notices, warnings };
 }
+
+test("the workspace's synced policy sets the publishers the queue arms", async () => {
+  const { counts, notices } = await runWithFakes({
+    policy: JSON.stringify({
+      autoMerge: { publishers: { "github/*": { tier: "auto" } } },
+    }),
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.match(
+    notices[0],
+    /actions\/setup-dotnet is not an allowlisted publisher/u,
+  );
+});
+
+test("an unreadable synced policy leaves every pull request alone", async () => {
+  const { counts, appCalls, notices } = await runWithFakes({
+    pulls: [dependabotPull(7), dependabotPull(8)],
+    policy: "{",
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
+  assert.deepEqual(appCalls, []);
+  assert.match(
+    notices[0],
+    /#7 left alone: .*is not a readable dependabot policy/u,
+  );
+});
 
 test("an in-tier group with a green ci-status is queued at its head with the App token", async () => {
   const { counts, appCalls, warnings } = await runWithFakes();

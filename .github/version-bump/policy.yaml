@@ -1,0 +1,248 @@
+# Version-bump policy for the tools this repository's actions and reusable workflows pin outside
+# Dependabot: how each is resolved, verified and rewritten. Read by the bump-versions action, run
+# daily by .github/workflows/maintenance-bump-pinned-versions.yml. Field meanings: the
+# bump-versions entry in README.md.
+#
+# Cooldowns come from the standards dependabot-policy (cooldownDays per change class), read from
+# the copy the standards sync places at .github/standards/dependabot-policy/policy.json. This file
+# sets none of its own.
+#
+# Every tool is capped at its current major (line: major, or minor for Python): a bump reaches
+# every caller of this repository's reusable workflows at @main as soon as it merges, so a major
+# is a person's change. The run reports the newest release outside the line.
+
+# The npm registry's signing key, from https://registry.npmjs.org/-/npm/v1/keys (the key with no
+# expiry).
+npmRegistryKeys:
+  "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U": MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEY6Ya7W++7aUPzvMTrezH6Ycx3c+HOKYCcNGybJZSCJq/fd7Qa8uuAKtdIkUQtQiEKERhAmE5lMMJhP8OkDOa2g==
+
+# Bullets added to each bump pull request's Verification section.
+prNotes:
+  - Merging reaches every caller of the reusable workflows at @main, and each caller of an action on its next pin move.
+
+# Pins the bot does not move, each with its reason. Reported in every run's measurement.
+exceptions:
+  - tool: actionlint
+    reason: The kjanat/actionlint fork's version numbers overlap upstream's, so its pins carry attestation-source-digest, the release tag's commit, which pr-require-checks verifies with the asset's build attestation. The engine has no source for a tag's commit, so version, sha256 and the attestation inputs move together by hand.
+  - tool: markdownlint-cli2
+    reason: The markdownlint action follows melodic-software/standards' markdownlint-cli2 pin and never runs ahead of it (.github/actions/markdownlint/action.yml).
+  - tool: node
+    reason: .node-version is a standards node-runtime managed file, and the biome and markdownlint node-version defaults must equal it (.github/scripts/node-version-agreement.test.cjs); standards moves it.
+  - tool: zizmor
+    reason: pr-audit-workflows.yml keeps zizmor in step with the fleet pin in melodic-software/dotfiles (.chezmoidata/uv-tools.yaml), so the two move together by hand.
+  - tool: govulncheck
+    reason: pr-run-checks-go.yml pins the module's go.sum hash (GOVULNCHECK_MODULE_SUM), which the engine has no digest source for.
+  - tool: osv-scanner
+    reason: .github/osv-scanner-pin.json and pr-scan-dependencies.yml pin the release's source commit and its SLSA provenance digest with the slsa-verifier that checks it, and the pin file sets automaticMerge false.
+  - tool: osslsigncode
+    reason: The bump-versions installer takes the Ubuntu 24.04 archive package, which changes only with the runner image's release; there is no upstream release to track.
+
+tools:
+  # Neighbouring pins in different files that pr-require-checks keeps equal
+  # (actionlint-shellcheck-pin.test.cjs), so one pull request.
+  shellcheck:
+    class: third-party
+    group: shellcheck
+    line: major
+    file: .github/actions/shellcheck/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: koalaman/shellcheck, tagPrefix: v}
+    verify:
+      unverified: koalaman/shellcheck publishes no checksum or signature; the digest is of the archive GitHub serves after the cooldown.
+    fields:
+      - path: .inputs.sha256.default
+        digest: {assetFile: 'shellcheck-v{version}.linux.x86_64.tar.gz'}
+
+  actionlint-shellcheck:
+    class: third-party
+    group: shellcheck
+    line: major
+    file: .github/actions/actionlint/action.yml
+    version: .inputs["shellcheck-version"].default
+    source: {type: github-release, repo: koalaman/shellcheck, tagPrefix: v}
+    verify:
+      unverified: koalaman/shellcheck publishes no checksum or signature; the digest is of the archive GitHub serves after the cooldown.
+    fields:
+      - path: .inputs["shellcheck-sha256"].default
+        digest: {assetFile: 'shellcheck-v{version}.linux.x86_64.tar.gz'}
+
+  editorconfig-checker:
+    class: third-party
+    line: major
+    file: .github/actions/editorconfig-checker/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: editorconfig-checker/editorconfig-checker, tagPrefix: v}
+    verify:
+      checksums: {asset: checksums.txt, algo: sha256}
+    fields:
+      - path: .inputs.sha256.default
+        digest: {asset: editorconfig-checker-linux-amd64.tar.gz}
+
+  gitleaks:
+    class: third-party
+    line: major
+    file: .github/actions/gitleaks/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: gitleaks/gitleaks, tagPrefix: v}
+    verify:
+      checksums: {asset: 'gitleaks_{version}_checksums.txt', algo: sha256}
+    fields:
+      - path: .inputs.sha256.default
+        digest: {asset: 'gitleaks_{version}_linux_x64.tar.gz'}
+
+  # The offline lane installs the binary; the online reusable passes the same release to
+  # lychee-action, so one pull request.
+  lychee-offline:
+    class: third-party
+    group: lychee
+    line: major
+    file: .github/actions/lychee-offline/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: lycheeverse/lychee, tagPrefix: lychee-v}
+    verify:
+      note: sha256 from the .sha256 file the release publishes beside the archive
+    fields:
+      - path: .inputs.sha256.default
+        digest: {url: 'https://github.com/lycheeverse/lychee/releases/download/lychee-v{version}/lychee-x86_64-unknown-linux-gnu.tar.gz.sha256'}
+
+  lychee-online:
+    class: third-party
+    group: lychee
+    line: major
+    file: .github/workflows/maintenance-check-links-online.yml
+    version: .on.workflow_call.inputs["lychee-version"].default
+    format: 'v{version}'
+    source: {type: github-release, repo: lycheeverse/lychee, tagPrefix: lychee-v}
+    verify:
+      note: lychee-action installs this release; the offline lane's pin in the same pull request carries its sha256
+
+  shfmt:
+    class: third-party
+    line: major
+    file: .github/actions/shfmt/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: mvdan/sh, tagPrefix: v}
+    verify:
+      unverified: mvdan/sh publishes no checksum file; the digest is of the binary GitHub serves after the cooldown.
+    fields:
+      - path: .inputs.sha256.default
+        digest: {assetFile: 'shfmt_v{version}_linux_amd64'}
+
+  typos:
+    class: third-party
+    line: major
+    file: .github/actions/typos/action.yml
+    version: .inputs.version.default
+    source: {type: github-release, repo: crate-ci/typos, tagPrefix: v}
+    verify:
+      unverified: crate-ci/typos publishes no checksum file; the digest is of the archive GitHub serves after the cooldown.
+    fields:
+      - path: .inputs.sha256.default
+        digest: {assetFile: 'typos-v{version}-x86_64-unknown-linux-musl.tar.gz'}
+
+  # The Linux and Windows jobs install the same release, so one pull request.
+  golangci-lint-linux:
+    class: third-party
+    group: golangci-lint
+    line: major
+    file: .github/workflows/pr-run-checks-go.yml
+    version: .jobs["check-linux"].env.GOLANGCI_LINT_VERSION
+    source: {type: github-release, repo: golangci/golangci-lint, tagPrefix: v}
+    verify:
+      checksums: {asset: 'golangci-lint-{version}-checksums.txt', algo: sha256}
+    fields:
+      - path: .jobs["check-linux"].env.GOLANGCI_LINT_SHA256
+        digest: {asset: 'golangci-lint-{version}-linux-amd64.tar.gz'}
+
+  golangci-lint-windows:
+    class: third-party
+    group: golangci-lint
+    line: major
+    file: .github/workflows/pr-run-checks-go.yml
+    version: .jobs["check-windows"].env.GOLANGCI_LINT_VERSION
+    source: {type: github-release, repo: golangci/golangci-lint, tagPrefix: v}
+    verify:
+      checksums: {asset: 'golangci-lint-{version}-checksums.txt', algo: sha256}
+    fields:
+      - path: .jobs["check-windows"].env.GOLANGCI_LINT_SHA256
+        digest: {asset: 'golangci-lint-{version}-windows-amd64.zip'}
+
+  yq:
+    class: third-party
+    line: major
+    file: .github/actions/bump-versions/install-tools.sh
+    version: {regex: '^yq_version=v([0-9.]+)$'}
+    source: {type: github-release, repo: mikefarah/yq, tagPrefix: v}
+    verify:
+      unverified: mikefarah/yq's checksums file lists every algorithm in columns the engine does not parse; the digest is of the binary GitHub serves after the cooldown.
+    fields:
+      - path: {regex: '^yq_sha256=([0-9a-f]{64})$'}
+        digest: {assetFile: yq_linux_amd64}
+
+  biome:
+    class: third-party
+    line: major
+    file: .github/actions/biome/action.yml
+    version: .inputs["fallback-version"].default
+    source: {type: npm, package: '@biomejs/biome'}
+
+  pyright:
+    class: third-party
+    line: major
+    file: .github/actions/pyright/action.yml
+    version: .inputs.version.default
+    source: {type: pypi, package: pyright}
+
+  check-jsonschema:
+    class: third-party
+    line: major
+    file: .github/actions/check-jsonschema/action.yml
+    version: .inputs.version.default
+    source: {type: pypi, package: check-jsonschema}
+
+  ruff:
+    class: third-party
+    line: major
+    file: .github/actions/ruff/action.yml
+    version: .inputs.version.default
+    source: {type: pypi, package: ruff}
+
+  psscriptanalyzer:
+    class: third-party
+    line: major
+    file: .github/actions/psscriptanalyzer/action.yml
+    version: .inputs["analyzer-version"].default
+    source: {type: psgallery, package: PSScriptAnalyzer}
+
+  # Every action that sets up Python takes the same patch release, so one pull request.
+  python-bump-versions:
+    class: third-party
+    group: python
+    line: minor
+    file: .github/actions/bump-versions/action.yml
+    version: .inputs["python-version"].default
+    source: {type: python-org}
+
+  python-check-jsonschema:
+    class: third-party
+    group: python
+    line: minor
+    file: .github/actions/check-jsonschema/action.yml
+    version: .inputs["python-version"].default
+    source: {type: python-org}
+
+  python-pyright:
+    class: third-party
+    group: python
+    line: minor
+    file: .github/actions/pyright/action.yml
+    version: .inputs["python-version"].default
+    source: {type: python-org}
+
+  python-ruff:
+    class: third-party
+    group: python
+    line: minor
+    file: .github/actions/ruff/action.yml
+    version: .inputs["python-version"].default
+    source: {type: python-org}

@@ -787,6 +787,141 @@ class HookTest(unittest.TestCase):
         run.assert_not_called()
 
 
+class SyncedCooldownTest(unittest.TestCase):
+    """cooldownDays come from the policy file, else the synced standards dependabot-policy."""
+
+    # standards components/dependabot-policy/policy.json schemaVersion 2 (standards#987).
+    SYNCED = {
+        "schemaVersion": 2,
+        "cooldownMinimumDays": 3,
+        "cooldownDays": {"own": 0, "patch": 3, "minor": 3, "major": 7},
+    }
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.yaml = self.root / "policy.yaml"
+        self.synced = self.root / "policy.json"
+
+    def load(self, yaml_doc: dict[str, Any]) -> dict[str, Any]:
+        with mock.patch.object(bump, "yq_json", return_value=yaml_doc):
+            return bump.load_policy(self.yaml, self.synced)
+
+    def test_policy_without_cooldown_takes_the_synced_classes(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        policy = self.load({"tools": {}})
+        self.assertEqual(
+            policy["cooldownDays"], {"own": 0, "patch": 3, "minor": 3, "major": 7}
+        )
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 7)
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "1.0.1"), 3)
+
+    def test_policy_cooldown_wins_over_the_synced_copy(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        own = {"own": 1, "patch": 2, "minor": 4, "major": 9}
+        policy = self.load({"cooldownDays": own, "tools": {}})
+        self.assertEqual(policy["cooldownDays"], own)
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 9)
+
+    def test_policy_cooldown_needs_no_synced_copy(self) -> None:
+        own = {"own": 0, "patch": 3, "minor": 3, "major": 7}
+        self.assertEqual(self.load({"cooldownDays": own})["cooldownDays"], own)
+
+    def test_neither_source_fails_naming_both_paths(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.load({"tools": {}})
+        self.assertIn(str(self.yaml), str(raised.exception))
+        self.assertIn(str(self.synced), str(raised.exception))
+
+    def test_synced_copy_missing_a_class_fails(self) -> None:
+        self.synced.write_text(
+            json.dumps({"cooldownDays": {"own": 0, "patch": 3, "minor": 3}}),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SystemExit, "own, patch, minor, major"):
+            self.load({"tools": {}})
+
+    def test_synced_copy_with_a_non_integer_class_fails(self) -> None:
+        days = {"own": False, "patch": 3, "minor": 3, "major": 7}
+        self.synced.write_text(json.dumps({"cooldownDays": days}), encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "non-negative integer"):
+            self.load({"tools": {}})
+
+    def test_synced_copy_that_is_not_json_fails(self) -> None:
+        self.synced.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "not valid JSON"):
+            self.load({"tools": {}})
+
+    def test_cpython_source_waits_the_synced_patch_cooldown(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        policy = self.load({"tools": {}})
+        uv = {
+            "draft": False,
+            "prerelease": False,
+            "published_at": (NOW - dt.timedelta(days=2)).isoformat(),
+            "tag_name": "0.9.0",
+        }
+        with (
+            mock.patch.object(bump, "gh_json", return_value=[uv]),
+            self.assertRaisesRegex(bump.BumpError, "past the cooldown"),
+        ):
+            bump.cpython_releases(policy, NOW)
+
+
+REPO = SCRIPT.parents[3]
+OWN_POLICY = REPO / ".github" / "version-bump" / "policy.yaml"
+
+
+@unittest.skipUnless(shutil.which("yq"), "needs yq (bump-versions/install-tools.sh)")
+class OwnPolicyPinsTest(unittest.TestCase):
+    """This repository's own policy: every pin it names is one line a bump can rewrite."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.policy = bump.yq_json(".", OWN_POLICY)
+
+    def assert_one_line(self, path: Any, file: Path) -> str:
+        text = bump.read_exact(file)
+        if isinstance(path, dict):
+            return bump.regex_pin(text, path["regex"])[0]
+        old = bump.yq_json(path, file)
+        self.assertIsInstance(old, str, f"{path} in {file} is not a string scalar")
+        bump.locate_line(text, path, old, bump.yq_line(path, file))
+        return old
+
+    def test_cooldowns_come_from_the_synced_org_policy(self) -> None:
+        self.assertNotIn("cooldownDays", self.policy)
+
+    def test_every_version_and_field_pin_is_on_one_line(self) -> None:
+        for name, tool in self.policy["tools"].items():
+            with self.subTest(tool=name):
+                file = REPO / tool["file"]
+                scalar = self.assert_one_line(tool["version"], file)
+                self.assertIsNotNone(
+                    bump.parse_version(bump.pinned_version(tool, scalar))
+                )
+                for item in tool.get("fields", []):
+                    self.assert_one_line(
+                        item["path"], REPO / item.get("file", tool["file"])
+                    )
+
+    def test_tools_in_one_group_pin_the_same_release(self) -> None:
+        tools = self.policy["tools"]
+        for group, names in bump.group_units(tools).items():
+            with self.subTest(group=group):
+                versions = {
+                    bump.pinned_version(
+                        tools[n],
+                        self.assert_one_line(
+                            tools[n]["version"], REPO / tools[n]["file"]
+                        ),
+                    )
+                    for n in names
+                }
+                self.assertEqual(len(versions), 1, f"{group} pins {sorted(versions)}")
+
+
 def subprocess_result(stdout: str, returncode: int) -> Any:
     return mock.Mock(stdout=stdout, returncode=returncode)
 

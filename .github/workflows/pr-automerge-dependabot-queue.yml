@@ -80,6 +80,8 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           # The reusable's input defaults, which this repository's tier uses.
+          # A synced standards dependabot-policy copy in the checkout, once
+          # this repository receives one, sets the publishers instead.
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
           PACKAGE_AUTO_MERGE: "true"
           REVIEW_ONLY_DEPENDENCIES: "[]"

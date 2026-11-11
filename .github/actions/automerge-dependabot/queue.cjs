@@ -9,9 +9,26 @@
 // Nothing here throws: one pull request's failure is a warning and the next
 // one is still tried, so this job never blocks anything.
 
-const { DEPENDABOT_ID, gateFailure, parseCommitMetadata } = require(
-  "./gate.cjs",
-);
+const fs = require("node:fs");
+const path = require("node:path");
+const {
+  DEPENDABOT_ID,
+  POLICY_PATH,
+  gateFailure,
+  parseCommitMetadata,
+  resolvePublisherAllowlist,
+} = require("./gate.cjs");
+
+// The synced policy in the checked-out default branch: { text }, with text
+// undefined when the repository has no copy, or { failure }.
+function readWorkspacePolicy(workspace) {
+  try {
+    return { text: fs.readFileSync(path.join(workspace, POLICY_PATH), "utf8") };
+  } catch (error) {
+    if (error.code === "ENOENT") return { text: undefined };
+    return { failure: `${POLICY_PATH} could not be read: ${error.message}` };
+  }
+}
 
 const CI_STATUS = "ci-status";
 const MISSING_WORKFLOWS = /without `?workflows`? permission/iu;
@@ -63,7 +80,7 @@ function warnArmFailure(core, pr, error) {
 }
 
 // Returns what happened to one pull request: queued, skipped or failed.
-async function queueOne({ github, app, repo, core, pr, inputs, appSlug }) {
+async function queueOne({ github, app, repo, core, pr, inputs, policyFailure, appSlug }) {
   const disarm = () => app.graphql(DISARM, { id: pr.node_id });
   const commits = await github.paginate(github.rest.pulls.listCommits, {
     ...repo,
@@ -71,10 +88,13 @@ async function queueOne({ github, app, repo, core, pr, inputs, appSlug }) {
     per_page: 100,
   });
   const updates = parseCommitMetadata(commits.at(-1)?.commit?.message, pr.head.ref);
-  const reason =
-    updates === null
-      ? "its head commit carries no readable Dependabot metadata"
-      : await gateFailure({ pr, updates, listCommits: async () => commits, inputs });
+  let reason = policyFailure;
+  if (!reason) {
+    reason =
+      updates === null
+        ? "its head commit carries no readable Dependabot metadata"
+        : await gateFailure({ pr, updates, listCommits: async () => commits, inputs });
+  }
   if (reason) {
     core.notice(`#${pr.number} left alone: ${reason}.`);
     // GitHub keeps auto-merge on when a user with write access pushes to
@@ -128,8 +148,13 @@ async function queueOne({ github, app, repo, core, pr, inputs, appSlug }) {
 
 async function runQueue({ github, app, context, core, env }) {
   const repo = context.repo;
+  const policy = readWorkspacePolicy(env.GITHUB_WORKSPACE);
+  const resolved = policy.failure
+    ? { failure: policy.failure }
+    : resolvePublisherAllowlist(env.PUBLISHER_ALLOWLIST, policy.text);
+  const policyFailure = resolved.failure ?? "";
   const inputs = {
-    publisherAllowlist: env.PUBLISHER_ALLOWLIST,
+    publisherAllowlist: resolved.allowlist,
     packageAutoMerge: env.PACKAGE_AUTO_MERGE,
     reviewOnly: env.REVIEW_ONLY_DEPENDENCIES,
   };
@@ -147,7 +172,9 @@ async function runQueue({ github, app, context, core, env }) {
   }
   for (const pr of pulls.filter((pull) => pull.user?.id === DEPENDABOT_ID)) {
     try {
-      counts[await queueOne({ github, app, repo, core, pr, inputs, appSlug: env.APP_SLUG })] += 1;
+      counts[
+        await queueOne({ github, app, repo, core, pr, inputs, policyFailure, appSlug: env.APP_SLUG })
+      ] += 1;
     } catch (error) {
       core.warning(`Could not check #${pr.number}: ${error.message}`);
       counts.failed += 1;

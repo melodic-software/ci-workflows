@@ -79,6 +79,49 @@ function parseJson(text) {
   }
 }
 
+// Where the standards sync places the org dependabot-policy in a repository.
+const POLICY_PATH = ".github/standards/dependabot-policy/policy.json";
+// pr-automerge-dependabot.yml's publisher-allowlist default. A caller that
+// passes any other list keeps it whatever the policy says.
+const DEFAULT_PUBLISHER_ALLOWLIST = ["actions/*", "github/*", "anthropics/*"];
+
+const isObject = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const isGlobList = (value) =>
+  Array.isArray(value) &&
+  value.every((entry) => typeof entry === "string" && entry.length > 0);
+
+// The publisher-allowlist the gate applies, from the caller's input and the
+// synced policy's text (undefined when the repository has no synced copy).
+// With no copy, or a caller list other than the default, the input stands.
+// Otherwise the list is the policy's `tier: auto` publishers plus its GitHub
+// Actions and own fast track, whose patch and minor bumps arm like any other
+// allowlisted publisher's. Returns { allowlist } as JSON text, or { failure }.
+function resolvePublisherAllowlist(inputAllowlist, policyText) {
+  if (policyText === undefined) return { allowlist: inputAllowlist };
+  const input = parseJson(inputAllowlist);
+  if (JSON.stringify(input) !== JSON.stringify(DEFAULT_PUBLISHER_ALLOWLIST)) {
+    return { allowlist: inputAllowlist };
+  }
+  const policy = parseJson(policyText);
+  const publishers = policy?.autoMerge?.publishers;
+  const fastTrack = policy?.fastTrack ?? {};
+  const tracks = [fastTrack["github-actions"] ?? [], fastTrack.own ?? []];
+  if (
+    !isObject(publishers) ||
+    !isObject(fastTrack) ||
+    !tracks.every(isGlobList)
+  ) {
+    return {
+      failure: `${POLICY_PATH} is not a readable dependabot policy (autoMerge.publishers, fastTrack)`,
+    };
+  }
+  const auto = Object.keys(publishers).filter(
+    (publisher) => publishers[publisher]?.tier === "auto",
+  );
+  return { allowlist: JSON.stringify([...new Set([...auto, ...tracks.flat()])]) };
+}
+
 // `pr` is the REST pull request (user.id, title, body, head.sha). `updates`
 // is fetch-metadata's updated-dependencies shape. `listCommits` returns the
 // REST commit list, read only once every cheaper gate holds. `inputs` holds
@@ -247,6 +290,13 @@ async function runEvent({ github, context, core, env }) {
       return "fetching the Dependabot metadata failed";
     const updates = parseJson(env.UPDATED_DEPENDENCIES_JSON || "");
     if (updates === undefined) return "the Dependabot metadata is not valid JSON";
+    const policy = await readBasePolicy();
+    if (policy.failure) return policy.failure;
+    const resolved = resolvePublisherAllowlist(
+      env.PUBLISHER_ALLOWLIST,
+      policy.text,
+    );
+    if (resolved.failure) return resolved.failure;
     return gateFailure({
       pr,
       updates,
@@ -257,11 +307,29 @@ async function runEvent({ github, context, core, env }) {
           per_page: 100,
         }),
       inputs: {
-        publisherAllowlist: env.PUBLISHER_ALLOWLIST,
+        publisherAllowlist: resolved.allowlist,
         packageAutoMerge: env.PACKAGE_AUTO_MERGE,
         reviewOnly: env.REVIEW_ONLY_DEPENDENCIES,
       },
     });
+  }
+
+  // Read at the base commit, so the pull request cannot change its own tier.
+  async function readBasePolicy() {
+    try {
+      const { data } = await github.rest.repos.getContent({
+        ...context.repo,
+        path: POLICY_PATH,
+        ref: pr.base.sha,
+        mediaType: { format: "raw" },
+      });
+      return { text: String(data) };
+    } catch (error) {
+      if (error.status === 404) return { text: undefined };
+      return {
+        failure: `${POLICY_PATH} could not be read at the base: ${error.message}`,
+      };
+    }
   }
 
   const reason = await eventFailure();
@@ -286,9 +354,12 @@ async function runEvent({ github, context, core, env }) {
 }
 
 module.exports = {
+  DEFAULT_PUBLISHER_ALLOWLIST,
   DEPENDABOT_ID,
+  POLICY_PATH,
   WEB_FLOW_ID,
   gateFailure,
   parseCommitMetadata,
+  resolvePublisherAllowlist,
   runEvent,
 };

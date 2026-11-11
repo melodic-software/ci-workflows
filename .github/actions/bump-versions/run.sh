@@ -12,7 +12,9 @@ engine="$GITHUB_ACTION_PATH/bump.py"
 case "$BUMP_COMMAND" in
   prepare)
     : "${BUMP_POLICY:?}"
-    args=(--policy "$BUMP_POLICY" --out "$BUMP_OUT" --only "${BUMP_ONLY:-}")
+    : "${BUMP_DEPENDABOT_POLICY:?}"
+    args=(--policy "$BUMP_POLICY" --dependabot-policy "$BUMP_DEPENDABOT_POLICY")
+    args+=(--out "$BUMP_OUT" --only "${BUMP_ONLY:-}")
     if [[ "${BUMP_DRY_RUN:-false}" == true ]]; then args+=(--dry-run); fi
     python -B "$engine" prepare "${args[@]}"
     count=$(jq '[.bumps[] | select(.outcome == "prepared" or .outcome == "stale-pr")] | length' \
