@@ -781,14 +781,18 @@ gate_step_outcome() {
 #   unknown     anything else: fewer jobs listed than `total_count`, nothing
 #               but the gate listed, or a body jq cannot parse.
 # Jobs named in `alias-jobs` are left out of the shape: they mirror the gate.
+# A run with no job named <gate-job-name> predates the rename, so there the
+# alias name is the gate.
 # Each caller reads `unknown` the way that fails closed for it.
 job_shape() {
   jq -r --arg gate "$2" --argjson aliases "$alias_jobs_json" \
     '(.total_count // 0) as $total | [ .jobs[]? ] as $jobs
-     | ($jobs | map(select(.conclusion != "skipped" and (.name as $n | $aliases | index($n) | not)) | .name)) as $ran
+     | (if any($jobs[]; .name == $gate) then {gate: $gate, ignore: $aliases}
+        else {gate: (first($jobs[] | .name | select(. as $n | $aliases | index($n))) // $gate), ignore: []} end) as $shape
+     | ($jobs | map(select(.conclusion != "skipped" and (.name as $n | $shape.ignore | index($n) | not)) | .name)) as $ran
      | if ($jobs | length) < $total then "unknown"
-       elif ($jobs | length) > 1 and $ran == [$gate] then "contract"
-       elif any($ran[]; . != $gate) then "full"
+       elif ($jobs | length) > 1 and $ran == [$shape.gate] then "contract"
+       elif any($ran[]; . != $shape.gate) then "full"
        else "unknown" end' \
     <"$1" 2>/dev/null || echo unknown
 }
@@ -1639,7 +1643,14 @@ rerun_failed_contract_only_siblings() {
       # The next poll is this read's retry, so `gh_api` sends it once.
       # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable sibling is waited for.
       if GH_API_RETRY_ERRORS=false gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
-        ran="$(jq -r '[ .jobs[]? | select(.status == "in_progress" or ((.conclusion // "skipped") != "skipped")) ] | length' <"$gh_stdout")" || ran=0
+        # An alias job mirrors the gate, so it is not a second job that ran;
+        # in a run from before the rename it is the gate itself. With this
+        # run's gate name unresolved, aliases are left out, which can only
+        # make a sibling wait longer, never skip its re-run.
+        ran="$(jq -r --arg gate "$own_gate_job" --argjson aliases "$alias_jobs_json" \
+          '[ .jobs[]? ] as $jobs | (if $gate == "" or any($jobs[]; .name == $gate) then $aliases else [] end) as $ignore
+           | [ $jobs[] | select(.name as $n | $ignore | index($n) | not)
+               | select(.status == "in_progress" or ((.conclusion // "skipped") != "skipped")) ] | length' <"$gh_stdout")" || ran=0
       fi
       if [[ ! "$ran" =~ ^[0-9]+$ || "$ran" -lt 2 ]]; then
         waiting="${waiting}${waiting:+ }${id}"
