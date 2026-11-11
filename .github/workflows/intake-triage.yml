@@ -437,10 +437,10 @@ jobs:
     name: claude-intake-triage
     needs: check-key-credit
     runs-on: ${{ inputs.runner }}
-    # The triage step (12 minutes, CLI install included) leaves four minutes
-    # for runner isolation, checkout and the github-script steps, and three
-    # for the transcript upload.
-    timeout-minutes: 19
+    # The triage step (12 minutes, CLI install included) and runner isolation
+    # (12) leave five minutes for checkout, the github-script steps and the
+    # transcript upload.
+    timeout-minutes: 29
     # After the author gate (check-key-credit's if): skipped when that gate
     # turned the run away or the key-credit gate named the subscription leg
     # first, so a key in its credit backoff starts no key job. !cancelled()
@@ -566,51 +566,10 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
-        timeout-minutes: 2
-        env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
 
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1265,7 +1224,7 @@ jobs:
           && ((needs.claude.result == 'success' && needs.claude.outputs.next-leg == 'subscription')
               || (needs.claude.result == 'skipped' && needs.check-key-credit.outputs.next-leg == 'subscription')) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 19
+    timeout-minutes: 29
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1382,51 +1341,10 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
-        timeout-minutes: 2
-        env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
 
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2047,7 +1965,7 @@ jobs:
       ${{ !cancelled() && needs.subscription.result == 'success'
           && needs.subscription.outputs.next-leg == 'fallback' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 19
+    timeout-minutes: 29
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -2164,51 +2082,10 @@ jobs:
       # GitHub-hosted runners, which are discarded after the job. The docker
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
-        timeout-minutes: 2
-        env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
 
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
