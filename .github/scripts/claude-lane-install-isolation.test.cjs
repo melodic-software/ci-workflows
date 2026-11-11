@@ -15,7 +15,12 @@ const test = require("node:test");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const workflowsDir = path.join(__dirname, "..", "workflows");
-const actionDir = path.join(__dirname, "..", "actions", "install-subprocess-isolation");
+const actionDir = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "install-subprocess-isolation",
+);
 const COMPOSITE = "$/.github/actions/install-subprocess-isolation";
 const FAIL_CLOSED =
   "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment";
@@ -25,7 +30,8 @@ const steps = (file) =>
     parseWorkflow(fs.readFileSync(path.join(workflowsDir, file), "utf8")).jobs,
   ).flatMap((job) => job.steps ?? []);
 
-const isolationSteps = (file) => steps(file).filter((step) => step.uses === COMPOSITE);
+const isolationSteps = (file) =>
+  steps(file).filter((step) => step.uses === COMPOSITE);
 
 test("both review lanes run the same subprocess isolation step", () => {
   const [review] = isolationSteps("pr-review.yml");
@@ -46,14 +52,22 @@ test("every lane job installs through the composite", () => {
   for (const [file, [count, removeSudo]] of Object.entries(expected)) {
     const found = isolationSteps(file);
     assert.equal(found.length, count, file);
-    for (const step of found) assert.equal(step.with?.["remove-sudo"], removeSudo, `${file}: ${step.name}`);
+    for (const step of found)
+      assert.equal(
+        step.with?.["remove-sudo"],
+        removeSudo,
+        `${file}: ${step.name}`,
+      );
   }
 });
 
 const INLINE_APT = /apt[-_]get[^\n]*install[^\n]*\b(bubblewrap|socat)\b/;
 
 test("the inline-apt pattern matches the install lines the lanes used to carry", () => {
-  assert.match("if ! apt_get install -y --no-install-recommends bubblewrap socat; then", INLINE_APT);
+  assert.match(
+    "if ! apt_get install -y --no-install-recommends bubblewrap socat; then",
+    INLINE_APT,
+  );
   assert.match("sudo apt-get install -y socat", INLINE_APT);
 });
 
@@ -61,7 +75,9 @@ test("no workflow installs bubblewrap or socat with its own apt-get line", () =>
   const inline = fs
     .readdirSync(workflowsDir)
     .filter((file) => /\.ya?ml$/.test(file))
-    .filter((file) => INLINE_APT.test(fs.readFileSync(path.join(workflowsDir, file), "utf8")));
+    .filter((file) =>
+      INLINE_APT.test(fs.readFileSync(path.join(workflowsDir, file), "utf8")),
+    );
   assert.deepEqual(inline, []);
 });
 
@@ -69,12 +85,22 @@ test("no workflow installs bubblewrap or socat with its own apt-get line", () =>
 // grace runs past it; 10 s covers that and process start-up.
 test("every isolation step's limit holds the whole apt budget", () => {
   const action = fs.readFileSync(path.join(actionDir, "action.yml"), "utf8");
-  const budget = Number(/budget-seconds:[\s\S]*?default: "(\d+)"/.exec(action)?.[1]);
+  const budget = Number(
+    /budget-seconds:[\s\S]*?default: "(\d+)"/.exec(action)?.[1],
+  );
   assert.ok(budget > 0, "action.yml declares a budget");
-  for (const file of ["pr-review.yml", "pr-review-security.yml", "intake-triage.yml", "pr-review-cli.yml"]) {
+  for (const file of [
+    "pr-review.yml",
+    "pr-review-security.yml",
+    "intake-triage.yml",
+    "pr-review-cli.yml",
+  ]) {
     for (const step of isolationSteps(file)) {
       const budgetUsed = Number(step.with?.["budget-seconds"] ?? budget);
-      assert.ok(budgetUsed + 10 <= step["timeout-minutes"] * 60, `${file}: ${step.name}`);
+      assert.ok(
+        budgetUsed + 10 <= step["timeout-minutes"] * 60,
+        `${file}: ${step.name}`,
+      );
     }
   }
 });
@@ -107,25 +133,46 @@ function run({ apt, preinstalled = [], budget = "540" }) {
     fs.mkdirSync(bin);
     fs.mkdirSync(state);
     for (const tool of TOOLS) {
-      const real = execFileSync("bash", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim();
+      const real = execFileSync("bash", ["-c", `command -v ${tool}`], {
+        encoding: "utf8",
+      }).trim();
       fs.symlinkSync(real, path.join(bin, tool));
     }
-    const stubs = { sudo: sh('exec "$@"'), sleep: sh(":"), sysctl: sh(":"), dpkg: sh(`echo "dpkg $*" >>"$FAKE_LOG"`), "apt-get": APT_GET };
+    const stubs = {
+      sudo: sh('exec "$@"'),
+      sleep: sh(":"),
+      sysctl: sh(":"),
+      dpkg: sh(`echo "dpkg $*" >>"$FAKE_LOG"`),
+      "apt-get": APT_GET,
+    };
     for (const tool of preinstalled) stubs[tool] = sh(":");
     for (const [name, body] of Object.entries(stubs)) {
       fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
     }
     const log = path.join(root, "log");
     fs.writeFileSync(log, "");
-    const result = spawnSync(path.join(bin, "bash"), [path.join(actionDir, "install.sh")], {
-      encoding: "utf8",
-      env: { PATH: bin, BUDGET_SECONDS: budget, FAKE_LOG: log, FAKE_BIN: bin, FAKE_STATE: state, FAKE_APT: apt },
-    });
+    const result = spawnSync(
+      path.join(bin, "bash"),
+      [path.join(actionDir, "install.sh")],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: bin,
+          BUDGET_SECONDS: budget,
+          FAKE_LOG: log,
+          FAKE_BIN: bin,
+          FAKE_STATE: state,
+          FAKE_APT: apt,
+        },
+      },
+    );
     return {
       status: result.status,
       stdout: result.stdout,
       calls: fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean),
-      installed: fs.existsSync(path.join(bin, "bwrap")) && fs.existsSync(path.join(bin, "socat")),
+      installed:
+        fs.existsSync(path.join(bin, "bwrap")) &&
+        fs.existsSync(path.join(bin, "socat")),
     };
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -133,13 +180,18 @@ function run({ apt, preinstalled = [], budget = "540" }) {
 }
 
 const aptCalls = (calls) => calls.filter((c) => c.startsWith("apt-get "));
-const updates = (calls) => calls.filter((c) => / update /.test(` ${c} `)).length;
+const updates = (calls) =>
+  calls.filter((c) => / update /.test(` ${c} `)).length;
 
 test("fresh image lists install without an index refresh", () => {
   const r = run({ apt: "lists" });
   assert.equal(r.status, 0, r.stdout);
   assert.equal(r.installed, true);
-  assert.equal(aptCalls(r.calls).length, 1, `one apt-get call, got: ${r.calls}`);
+  assert.equal(
+    aptCalls(r.calls).length,
+    1,
+    `one apt-get call, got: ${r.calls}`,
+  );
   assert.equal(updates(r.calls), 0);
 });
 
@@ -148,7 +200,11 @@ test("stale image lists fall back to update and install, repairing dpkg once", (
   assert.equal(r.status, 0, r.stdout);
   assert.equal(r.installed, true);
   assert.deepEqual(
-    r.calls.map((c) => c.split(" ").find((w) => ["install", "update", "--configure"].includes(w))),
+    r.calls.map((c) =>
+      c
+        .split(" ")
+        .find((w) => ["install", "update", "--configure"].includes(w)),
+    ),
     ["install", "--configure", "update", "install"],
   );
 });
