@@ -27,6 +27,7 @@ _spec.loader.exec_module(bump)
 POLICY = {"cooldownDays": {"own": 0, "patch": 3, "minor": 3, "major": 7}}
 THIRD = {"class": "third-party"}
 NOW = dt.datetime(2026, 11, 2, 12, tzinfo=dt.UTC)
+DISARMED = mock.Mock(returncode=0, stderr="")
 
 
 def release(version: str, days_old: float) -> object:
@@ -205,14 +206,14 @@ class PublishGuardTest(unittest.TestCase):
         row = {"pr": 9, "tagCooldown": 3}
         with (
             mock.patch.object(bump, "run") as run,
-            mock.patch.object(bump, "run_raw") as run_raw,
+            mock.patch.object(bump, "run_raw", return_value=DISARMED) as run_raw,
         ):
-            bump.arm_auto_merge(row, "o/r", {"date": recent})
+            bump.arm_auto_merge(row, [], "o/r", {"date": recent})
             run.assert_not_called()
             # An arm left from an earlier target is disabled while the new one waits.
             self.assertIn("--disable-auto", run_raw.call_args.args[0])
             self.assertFalse(row["autoMerge"])
-            bump.arm_auto_merge(row, "o/r", {"date": old})
+            bump.arm_auto_merge(row, [], "o/r", {"date": old})
             run.assert_called_once()
             self.assertTrue(row["autoMerge"])
 
@@ -236,24 +237,63 @@ class PublishGuardTest(unittest.TestCase):
         self.assertTrue(bump.has_major(rows))
         self.assertFalse(bump.has_major(rows[:1]))
         self.assertTrue(bump.has_major([{"current": "2.9.0", "target": "3.0.0"}]))
-        row = {"pr": 9, "tagCooldown": 0, "hasMajor": True}
+
+    def test_publish_holds_a_bump_with_a_major_row_for_review(self) -> None:
+        cases = {
+            "major": [{"tool": "x", "current": "2.9.0", "target": "3.0.0"}],
+            "0.x minor": [
+                {"current": "1.4.0", "target": "1.5.0"},
+                {"current": "0.24.2", "target": "0.25.0"},
+            ],
+        }
+        marker = "<!-- version-bump-targets: t -->"
+        open_pr = {"number": 9, "body": marker, "mergeable": "MERGEABLE"}
+        tip = {"sha": "a" * 40, "date": dt.datetime.now(dt.UTC).isoformat()}
+        for name, rows in cases.items():
+            with (
+                self.subTest(name),
+                mock.patch.object(bump, "own_prs", return_value=[open_pr]),
+                mock.patch.object(bump, "branch_tip", return_value=tip),
+                mock.patch.object(bump, "run") as run,
+                mock.patch.object(bump, "run_raw", return_value=DISARMED) as run_raw,
+            ):
+                pin = {"branch": "b", "name": "n", "targets": "t"}
+                bump.publish_bump(
+                    pin, rows, Path(), "o/r", "base", "app", "u", {}, "main"
+                )
+                calls = [c.args[0] for c in run_raw.call_args_list]
+                self.assertIn(
+                    ["gh", "pr", "merge", "9", "-R", "o/r", "--disable-auto"], calls
+                )
+                armed = [c.args[0] for c in run.call_args_list if "--auto" in c.args[0]]
+                self.assertEqual(
+                    armed, [], "a bump holding a major must never be armed"
+                )
+                self.assertFalse(pin["autoMerge"])
+                self.assertEqual(pin["detail"], "a major release waits for review")
+
+    def test_disarm_accepts_a_failure_only_where_no_arm_exists(self) -> None:
+        failed = mock.Mock(returncode=1, stderr="GraphQL: something went wrong")
         with (
-            mock.patch.object(bump, "run") as run,
-            mock.patch.object(bump, "run_raw") as run_raw,
+            mock.patch.object(bump, "run_raw", return_value=failed),
+            mock.patch.object(bump, "run", return_value="false\n") as run,
         ):
-            bump.arm_auto_merge(
-                row, "o/r", {"date": dt.datetime.now(dt.UTC).isoformat()}
-            )
-        run.assert_not_called()
-        self.assertIn("--disable-auto", run_raw.call_args.args[0])
-        self.assertFalse(row["autoMerge"])
-        self.assertEqual(row["detail"], "a major release waits for review")
+            bump.disarm_auto_merge(9, "o/r")
+        self.assertIn("autoMergeRequest", run.call_args.args[0])
+        with (
+            mock.patch.object(bump, "run_raw", return_value=failed),
+            mock.patch.object(bump, "run", return_value="true\n"),
+            self.assertRaisesRegex(
+                bump.BumpError, "could not disable auto-merge on #9"
+            ),
+        ):
+            bump.disarm_auto_merge(9, "o/r")
 
     def test_release_source_arms_at_once(self) -> None:
         row = {"pr": 9, "tagCooldown": 0}
         now = dt.datetime.now(dt.UTC).isoformat()
         with mock.patch.object(bump, "run") as run:
-            bump.arm_auto_merge(row, "o/r", {"date": now})
+            bump.arm_auto_merge(row, [], "o/r", {"date": now})
             run.assert_called_once()
 
 

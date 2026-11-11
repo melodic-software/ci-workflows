@@ -204,10 +204,13 @@ async function runWithFakes({
   listError = null,
   // The synced policy in the checked-out workspace; absent unless given.
   policy = undefined,
+  // A directory at the policy path, so the read fails with something other than ENOENT.
+  policyIsDirectory = false,
 } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "queue-workspace-"));
+  const policyFile = path.join(workspace, POLICY_PATH);
+  if (policyIsDirectory) fs.mkdirSync(policyFile, { recursive: true });
   if (policy !== undefined) {
-    const policyFile = path.join(workspace, POLICY_PATH);
     fs.mkdirSync(path.dirname(policyFile), { recursive: true });
     fs.writeFileSync(policyFile, policy);
   }
@@ -307,6 +310,41 @@ test("an unreadable synced policy leaves every pull request alone", async () => 
     notices[0],
     /#7 left alone: .*is not a readable dependabot policy/u,
   );
+});
+
+test("an armed pull request is disarmed when the synced policy is malformed", async () => {
+  const { counts, appCalls, notices } = await runWithFakes({
+    pulls: [
+      dependabotPull(7, {
+        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+      }),
+    ],
+    policy: "{",
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(
+    appCalls.map((call) => [call.mutation, call.variables.id]),
+    [["disablePullRequestAutoMerge", "PR_7"]],
+  );
+  assert.match(notices[0], /#7 left alone: .*is not a readable dependabot policy/u);
+});
+
+test("a synced policy path that cannot be read leaves pull requests alone and disarms armed ones", async () => {
+  const { counts, appCalls, notices } = await runWithFakes({
+    pulls: [
+      dependabotPull(7, {
+        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+      }),
+      dependabotPull(8),
+    ],
+    policyIsDirectory: true,
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
+  assert.deepEqual(
+    appCalls.map((call) => [call.mutation, call.variables.id]),
+    [["disablePullRequestAutoMerge", "PR_7"]],
+  );
+  assert.match(notices[0], /#7 left alone: .*policy\.json could not be read: EISDIR/u);
 });
 
 test("an in-tier group with a green ci-status is queued at its head with the App token", async () => {
@@ -636,9 +674,20 @@ test("the queue's tier inputs are the reusable's defaults", () => {
     env.PACKAGE_AUTO_MERGE,
     String(inputs["package-auto-merge"].default),
   );
-  assert.equal(
-    env.REVIEW_ONLY_DEPENDENCIES,
-    inputs["review-only-dependencies"].default,
+});
+
+test("the queue holds every runtime dependency of the policy checker for review", () => {
+  const env = step("Queue in-tier Dependabot pull requests").env;
+  const manifest = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, "..", "actions", "check-dependabot-policy", "package.json"),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(
+    JSON.parse(env.REVIEW_ONLY_DEPENDENCIES).sort(),
+    Object.keys(manifest.dependencies).sort(),
+    "consumers run the checker in ci-status, so its runtime is never auto-merged",
   );
 });
 

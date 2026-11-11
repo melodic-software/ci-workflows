@@ -1536,7 +1536,30 @@ def has_major(rows: list[dict[str, Any]]) -> bool:
     return any(change_class(r["current"], r["target"]) == "major" for r in rows)
 
 
-def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None:
+def disarm_auto_merge(pr: int, repo: str) -> None:
+    """Drop any auto-merge arm a rebuilt pull request still carries from an earlier target.
+
+    gh fails where no arm exists; that failure is accepted only once the pull request reads
+    back with no arm, so any other failure leaves the run red instead of the old arm live.
+    """
+    proc = run_raw(["gh", "pr", "merge", str(pr), "-R", repo, "--disable-auto"])
+    if proc.returncode == 0:
+        return
+    armed = run(
+        [
+            *["gh", "pr", "view", str(pr), "-R", repo],
+            *["--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
+        ]
+    ).strip()
+    if armed != "false":
+        raise BumpError(
+            f"could not disable auto-merge on #{pr}: {proc.stderr.strip()[-400:]}"
+        )
+
+
+def arm_auto_merge(
+    bump: dict[str, Any], rows: list[dict[str, Any]], repo: str, tip: dict[str, Any]
+) -> None:
     """Arm auto-merge, except while a tag source in the bump is still inside its cooldown.
 
     A tag's commit date (and the module proxy's .info Time for a git-sourced module) is set
@@ -1544,8 +1567,8 @@ def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None
     own commit, whose date GitHub sets. A bump holding a major move is never armed: the org
     update policy sends majors to review, so its pull request waits for a person.
     """
-    if bump.get("hasMajor"):
-        run_raw(["gh", "pr", "merge", str(bump["pr"]), "-R", repo, "--disable-auto"])
+    if has_major(rows):
+        disarm_auto_merge(bump["pr"], repo)
         bump["autoMerge"] = False
         bump["detail"] = "a major release waits for review"
         return
@@ -1553,11 +1576,7 @@ def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None
     if wait:
         age = dt.datetime.now(dt.UTC) - parse_date(tip["date"])
         if age.total_seconds() < wait * 86400:
-            # A pull request rebuilt for a newer tag may still carry an earlier arm.
-            # Disabling it where none is armed fails harmlessly, so the exit is ignored.
-            run_raw(
-                ["gh", "pr", "merge", str(bump["pr"]), "-R", repo, "--disable-auto"]
-            )
+            disarm_auto_merge(bump["pr"], repo)
             bump["autoMerge"] = False
             bump["detail"] = "auto-merge waits for the cooldown from first sighting"
             return
@@ -1579,7 +1598,6 @@ def publish_bump(
     branch = bump["branch"]
     title = pr_title(bump, rows)
     bump["tagCooldown"] = tag_cooldown(rows)
-    bump["hasMajor"] = has_major(rows)
     prs = own_prs(branch, repo, app_slug)
     tip = branch_tip(repo, branch, f"{app_slug}[bot]")
     marker = TARGETS_MARKER.search(prs[0].get("body") or "") if prs else None
@@ -1592,7 +1610,7 @@ def publish_bump(
     ):
         # Re-armed every run, so a failed arm on an earlier run recovers.
         bump["outcome"], bump["pr"] = "already-open", prs[0]["number"]
-        arm_auto_merge(bump, repo, tip)
+        arm_auto_merge(bump, rows, repo, tip)
         return
     commit = signed_commit(bump, out, repo, base, title, results["policy"])
     update_ref(repo, branch, tip["sha"] if tip else "0" * 40, commit["sha"])
@@ -1619,7 +1637,7 @@ def publish_bump(
         number = int(url.rsplit("/", 1)[-1])
         bump["outcome"] = "pr-opened"
     bump["pr"] = number
-    arm_auto_merge(bump, repo, commit)
+    arm_auto_merge(bump, rows, repo, commit)
 
 
 def branch_tip(repo: str, branch: str, app_login: str) -> dict[str, Any] | None:
