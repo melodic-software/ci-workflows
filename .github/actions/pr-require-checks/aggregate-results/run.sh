@@ -492,6 +492,9 @@ verify_carried_writer() {
 # branches), and every later `resolve_own_gate` answers from what that lookup
 # found, so the run spends one retry budget in all.
 own_gate_job=""
+# Jobs that only mirror the gate under an older check name (`alias-jobs`), as
+# a JSON array of names. The run-shape reads ignore them.
+alias_jobs_json="$(printf '%s' "${ALIAS_JOBS:-}" | tr -s ' \t\r\n' '\n' | jq -R . | jq -sc 'map(select(length > 0))')"
 own_gate_job_id=""
 own_gate_step=""
 own_gate_endpoint=""
@@ -758,9 +761,9 @@ verify_writer_step() {
 # contract step can fail it over a true lanes `success`, and only the step
 # tells the two apart.
 gate_step_outcome() {
-  jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" \
+  jq -r --arg job "$own_gate_job" --arg step "$own_gate_step" --argjson aliases "$alias_jobs_json" \
     '[ .jobs[]? | select(.name == $job) ] as $gates
-     | [ $gates[] | .steps[]? | select(.name == $step) ]
+     | [ .jobs[]? | select(.name == $job or (.name as $n | $aliases | index($n))) | .steps[]? | select(.name == $step) ]
      | if length == 1 then .[0] | (if .status == "completed" then (.conclusion // "") else "running" end)
        elif length > 1 then "ambiguous"
        elif ($gates | length) == 1 and $gates[0].status == "completed" and $gates[0].conclusion == "success" and ($gates[0].steps // [] | length) == 0 then "success"
@@ -777,10 +780,12 @@ gate_step_outcome() {
 #               lane still ran its change-detection job, so it reads `full`;
 #   unknown     anything else: fewer jobs listed than `total_count`, nothing
 #               but the gate listed, or a body jq cannot parse.
+# Jobs named in `alias-jobs` are left out of the shape: they mirror the gate.
 # Each caller reads `unknown` the way that fails closed for it.
 job_shape() {
-  jq -r --arg gate "$2" \
-    '(.total_count // 0) as $total | [ .jobs[]? ] as $jobs | ($jobs | map(select(.conclusion != "skipped") | .name)) as $ran
+  jq -r --arg gate "$2" --argjson aliases "$alias_jobs_json" \
+    '(.total_count // 0) as $total | [ .jobs[]? ] as $jobs
+     | ($jobs | map(select(.conclusion != "skipped" and (.name as $n | $aliases | index($n) | not)) | .name)) as $ran
      | if ($jobs | length) < $total then "unknown"
        elif ($jobs | length) > 1 and $ran == [$gate] then "contract"
        elif any($ran[]; . != $gate) then "full"
@@ -1666,7 +1671,7 @@ rerun_failed_contract_only_siblings() {
       warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: write' "Not re-running run ${id}."
       continue
     fi
-    contract_shaped="$(jq -r '[ .jobs[]? | .conclusion ] | ((map(select(. != "skipped")) == ["failure"]) and (length > 1))' <"$gh_stdout")"
+    contract_shaped="$(jq -r --argjson aliases "$alias_jobs_json" '[ .jobs[]? | select(.name as $n | $aliases | index($n) | not) | .conclusion ] | ((map(select(. != "skipped")) == ["failure"]) and (length > 1))' <"$gh_stdout")"
     if [[ "$contract_shaped" != true ]]; then
       echo "Not re-running failed run ${id} on ${SHA}: its latest attempt is not contract-only (more than its gate ran, or the gate did not fail)."
       continue
