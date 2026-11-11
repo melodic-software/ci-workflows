@@ -84,10 +84,56 @@ function stripHtml(text) {
     .trim();
 }
 
-// A comment body as posted: stripped, capped, and footed for its lane on its
-// last line.
-function commentBody(body, lane) {
-  return `${stripHtml(body).slice(0, MAX_BODY)}\n\nclaude-lane: ${lane}`;
+// A comment body as posted: stripped, capped, then the binding line when
+// there is one, a blank line, and the lane's footer on its last line.
+function commentBody(body, lane, binding = "") {
+  return `${stripHtml(body).slice(0, MAX_BODY)}${binding ? `\n${binding}` : ""}\n\nclaude-lane: ${lane}`;
+}
+
+// The line that binds a lane comment to the run that posted it and the head
+// that run reviewed, or "" when either is unreadable. A reader accepts a
+// github-actions[bot] comment as the lane's only when that run's comment
+// record (writeRecord) lists it (claude-code-plugins lib/lane-binding.mjs).
+function bindingLine(env) {
+  return /^[1-9][0-9]{0,19}$/u.test(env.GITHUB_RUN_ID ?? "") &&
+    /^[0-9a-f]{40}$/u.test(env.HEAD_SHA ?? "")
+    ? `<!-- claude-lane-run id=${env.GITHUB_RUN_ID} sha=${env.HEAD_SHA} -->`
+    : "";
+}
+
+const BINDING_LINE = /\n<!-- claude-lane-run id=([1-9][0-9]{0,19}) sha=[0-9a-f]{40} -->(?=\n\nclaude-lane: [\w-]+$)/u;
+
+// The run a posted body's binding names, or "".
+const boundRun = (body) => BINDING_LINE.exec(String(body ?? ""))?.[1] ?? "";
+
+// A posted body with its binding line and footer removed.
+const unfooted = (body, lane) =>
+  String(body ?? "")
+    .replace(BINDING_LINE, "")
+    .replace(`\n\nclaude-lane: ${lane}`, "");
+
+// Appends what this run posted to the comment record at LANE_RECORD, one JSON
+// line per comment: its lane, pull request, head, kind (review_comment,
+// issue_comment or review), id and the sha256 of its body as GitHub stored
+// it. The status job uploads the file as this attempt's
+// claude-lane-comments-<lane>-<attempt> artifact. No LANE_RECORD, no record.
+function writeRecord(env, items) {
+  if (!env.LANE_RECORD || items.length === 0) return;
+  const lines = items.map(({ kind, id, body }) =>
+    JSON.stringify({
+      lane: env.LANE_ID,
+      pr: Number(env.PR_NUMBER),
+      head: env.HEAD_SHA,
+      kind,
+      id,
+      sha256: require("node:crypto")
+        .createHash("sha256")
+        .update(String(body ?? ""), "utf8")
+        .digest("hex"),
+    }),
+  );
+  fs.mkdirSync(path.dirname(env.LANE_RECORD), { recursive: true });
+  fs.appendFileSync(env.LANE_RECORD, `${lines.join("\n")}\n`);
 }
 
 // The comments the extract step could not place (path, line or side
@@ -257,7 +303,7 @@ function judge(env) {
 
 // Splits the review's comments into those that can post inline and those
 // that go to the summary. One bad anchor sends the whole batch to the summary.
-function placeComments(review, files, lane) {
+function placeComments(review, files, lane, binding = "") {
   const prepared = review.comments.map((comment) => ({
     path: comment.path,
     line: comment.line,
@@ -265,7 +311,7 @@ function placeComments(review, files, lane) {
     ...(comment.start_line === undefined
       ? {}
       : { start_line: comment.start_line, start_side: comment.side }),
-    body: commentBody(comment.body, lane),
+    body: commentBody(comment.body, lane, binding),
   }));
   const problems = prepared
     .map((comment) => anchorProblem(comment, files))
@@ -312,7 +358,7 @@ function summaryText(review, unanchored, lane) {
   const malformed = malformedComments(review);
   const extra = unanchored.map(
     (comment) =>
-      `- \`${comment.path}:${comment.line}\` (${comment.side}): ${comment.body.replace(`\n\nclaude-lane: ${lane}`, "")}`,
+      `- \`${comment.path}:${comment.line}\` (${comment.side}): ${unfooted(comment.body, lane)}`,
   );
   const unplaced = malformed.map(
     (comment) =>
@@ -354,7 +400,10 @@ function scan(findSecret, texts) {
   return { withheld: "", warnings };
 }
 
-const commentKey = (c) => `${c.path}\n${c.line}\n${c.side}\n${c.body}`;
+// A comment's place and text; the binding line does not count, so a later
+// run on the same head reposts nothing an earlier run posted.
+const commentKey = (c) =>
+  `${c.path}\n${c.line}\n${c.side}\n${String(c.body ?? "").replace(BINDING_LINE, "")}`;
 
 // The lines one patch's hunk ranges ("<old> <new>", each "<start>[,<count>]"
 // as in its @@ line) cover, the same sets commentableLines reads from the
@@ -601,7 +650,8 @@ async function publish({ github, context, core, env }) {
     live === head
       ? (scopedLines(env) ?? (await diffLines(github, owner, repo, number)))
       : new Map();
-  const placed = placeComments(review, files, lane);
+  const binding = bindingLine(env);
+  const placed = placeComments(review, files, lane, binding);
   if (live !== head)
     placed.problems.unshift(`the pull request's head moved to ${live}`);
   const summary = summaryText(review, placed.unanchored, lane);
@@ -650,7 +700,7 @@ async function publish({ github, context, core, env }) {
   try {
     // A rerun posts only what this lane has not posted on this head. With
     // nothing to post inline there is nothing to compare.
-    const posted = new Set(
+    const earlier =
       placed.inline.length === 0
         ? []
         : (
@@ -660,26 +710,56 @@ async function publish({ github, context, core, env }) {
               pull_number: number,
               per_page: 100,
             })
-          )
-            .filter(
-              (c) =>
-                c.user?.login === "github-actions[bot]" &&
-                c.commit_id === head,
-            )
-            .map((c) => commentKey({ ...c, side: c.side ?? "RIGHT" })),
+          ).filter(
+            (c) =>
+              c.user?.login === "github-actions[bot]" && c.commit_id === head,
+          );
+    const posted = new Set(
+      earlier.map((c) => commentKey({ ...c, side: c.side ?? "RIGHT" })),
+    );
+    const wanted = new Set(placed.inline.map(commentKey));
+    // An earlier attempt of this run already posted these: this attempt's
+    // record lists them too, so a lost first record is replaced by a re-run.
+    writeRecord(
+      env,
+      earlier
+        .filter(
+          (c) =>
+            boundRun(c.body) === env.GITHUB_RUN_ID &&
+            wanted.has(commentKey({ ...c, side: c.side ?? "RIGHT" })),
+        )
+        .map((c) => ({ kind: "review_comment", id: c.id, body: c.body })),
     );
     const fresh = placed.inline.filter((c) => !posted.has(commentKey(c)));
     inline = placed.inline.length;
     if (fresh.length > 0) {
-      await github.rest.pulls.createReview({
+      const { data: created } = await github.rest.pulls.createReview({
         owner,
         repo,
         pull_number: number,
         commit_id: head,
         event: "COMMENT",
-        body: `**${lane}**: ${inline} inline finding(s) on \`${head}\`; the summary is in this lane's pull request comment.\n\nclaude-lane: ${lane}`,
+        body: `**${lane}**: ${inline} inline finding(s) on \`${head}\`; the summary is in this lane's pull request comment.${binding ? `\n${binding}` : ""}\n\nclaude-lane: ${lane}`,
         comments: fresh,
       });
+      const comments = await github.paginate(
+        github.rest.pulls.listCommentsForReview,
+        {
+          owner,
+          repo,
+          pull_number: number,
+          review_id: created.id,
+          per_page: 100,
+        },
+      );
+      writeRecord(env, [
+        { kind: "review", id: created.id, body: created.body },
+        ...comments.map((c) => ({
+          kind: "review_comment",
+          id: c.id,
+          body: c.body,
+        })),
+      ]);
     }
     await writeMarker(
       github,
@@ -742,6 +822,8 @@ async function shadowReport(core, env, report) {
 
 module.exports = {
   anchorProblem,
+  bindingLine,
+  boundRun,
   commentBody,
   commentableLines,
   coverageText,
@@ -757,4 +839,5 @@ module.exports = {
   statusLine,
   stripHtml,
   summaryText,
+  writeRecord,
 };

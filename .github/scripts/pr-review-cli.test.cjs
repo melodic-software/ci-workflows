@@ -511,8 +511,11 @@ test("after a key-credit skip, publish reads the counted token leg's success, no
 });
 
 test("the model jobs cannot write and give the model no shell, GitHub token or second secret", () => {
+  // Read-only actions lets the settled-threads and prior-findings steps read
+  // lane runs' comment records; the model gets no token either way.
   for (const job of [key, subscription, fallback]) {
     assert.deepEqual(job.permissions, {
+      actions: "read",
       contents: "read",
       "pull-requests": "read",
     });
@@ -5305,9 +5308,16 @@ test("every upload follows a credential scan over the same path, and a scan that
         "handoff-file": { outputs: { sha256: "a".repeat(64) } },
         "credit-marker": { outcome: "success" },
         "probe-marker": { outcome: "success" },
+        held: { outcome: "skipped" },
         [scan.id]: { outputs: { clean: "true" } },
       };
-      const inputs = { publish: "shadow" };
+      // The comment record uploads in comments mode, the shadow report in
+      // any other.
+      const inputs = {
+        publish: upload.if.includes("inputs.publish == 'comments'")
+          ? "comments"
+          : "shadow",
+      };
       assert.equal(
         evaluate(upload.if, { steps, inputs }),
         true,
@@ -5323,14 +5333,15 @@ test("every upload follows a credential scan over the same path, and a scan that
       }
     });
   }
-  // The gate's probing marker, the key job's credit-stop marker, then each
-  // leg's review handoff.
+  // The gate's probing marker, the key job's credit-stop marker, each leg's
+  // review handoff, then the lane comment record and the shadow report.
   assert.deepEqual(uploads, [
     "check-key-credit",
     "review-key",
     "review-key",
     "review-subscription",
     "review-fallback",
+    "status",
     "status",
   ]);
 });

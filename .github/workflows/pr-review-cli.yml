@@ -163,7 +163,11 @@ name: PR Review CLI
 #     own. Each step writes its own outputs file, so the later model step
 #     cannot rewrite the scope step's outputs; the status job already trusts
 #     them for its skips. It strips HTML comments, foots every comment with
-#     `claude-lane: <lane>`, and withholds the whole review when
+#     `claude-lane: <lane>` under a `<!-- claude-lane-run id=<run> sha=<head>
+#     -->` binding line, records each comment it posts (id and body digest)
+#     in this attempt's `claude-lane-comments-<lane>-<attempt>` artifact,
+#     which readers check a binding against because any workflow posts as
+#     github-actions[bot], and withholds the whole review when
 #     claude-code-plugins' lib/publish-gate.mjs, read at that repository's
 #     default-branch tip, finds a credential format. It posts with its own
 #     token, as github-actions[bot]. Any workflow in the repository holding
@@ -684,6 +688,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -2989,6 +2994,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -5267,6 +5273,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -7504,7 +7511,7 @@ jobs:
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
-    timeout-minutes: 23
+    timeout-minutes: 26
     permissions:
       actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
       checks: read # and those status jobs' cost notices (check-run annotations)
@@ -7675,6 +7682,7 @@ jobs:
         uses: $/.github/actions/publish-review
         env:
           PUBLISH: ${{ inputs.publish }}
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
@@ -7725,6 +7733,7 @@ jobs:
         uses: $/.github/actions/apply-review-hold
         env:
           PUBLISH: ${{ inputs.publish }}
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
@@ -7746,6 +7755,34 @@ jobs:
           SUB_CLASS: ${{ steps.token-leg.outputs.class }}
           SUB_VERDICT: ${{ steps.token-leg.outputs.verdict }}
           SUB_REVIEW: ${{ steps.token-leg.outputs.review }}
+
+      # The comments this attempt posted, and those an earlier attempt of this
+      # run posted that it would have posted again: ids and body digests only,
+      # no model text. A reader accepts a github-actions[bot] comment footed
+      # for this lane only when the run its binding line names lists it here
+      # (claude-code-plugins lib/lane-binding.mjs), so a failed scan or upload
+      # fails the job and a re-run uploads the record again.
+      - name: Scan the lane comment record for credentials
+        id: record-scan
+        if: always() && inputs.publish == 'comments' && steps.held.outcome != 'success'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 1
+        uses: $/.github/actions/scan-upload
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        with:
+          path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+
+      - name: Upload the lane comment record
+        if: always() && inputs.publish == 'comments' && steps.held.outcome != 'success' && steps.record-scan.outputs.clean == 'true'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claude-lane-comments-${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+          if-no-files-found: ignore
+          retention-days: 90
 
       # The shadow report carries model text: scanned first, and withheld on a hit.
       - name: Scan the shadow report for credentials

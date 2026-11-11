@@ -7,7 +7,15 @@
 // through issues.addLabels or issues.createComment.
 "use strict";
 
-const { judge, loadGate, scan, stripHtml } = require("../publish-review/publish.cjs");
+const {
+  bindingLine,
+  boundRun,
+  judge,
+  loadGate,
+  scan,
+  stripHtml,
+  writeRecord,
+} = require("../publish-review/publish.cjs");
 
 // The criteria that stop a pull request: a real-charge cost and a CRITICAL
 // security finding. A trusted path (the review's trust-gate, or hold-paths)
@@ -514,13 +522,22 @@ async function run({ github, context, core, env = process.env }) {
   const marker = `<!-- claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} -->`;
   try {
     const comments = await listPrComments();
-    const posted = comments.some(
+    const posted = comments.filter(
       (c) =>
         c.user?.login === "github-actions[bot]" &&
         (c.body === marker || c.body?.startsWith(`${marker}\n`)),
     );
-    if (!posted) {
-      await github.rest.issues.createComment({
+    // An earlier attempt of this run posted it: this attempt's record lists
+    // it too (publish.cjs writeRecord).
+    writeRecord(
+      env,
+      posted
+        .filter((c) => boundRun(c.body) === env.GITHUB_RUN_ID)
+        .map((c) => ({ kind: "issue_comment", id: c.id, body: c.body })),
+    );
+    if (posted.length === 0) {
+      const binding = bindingLine(env);
+      const { data: created } = await github.rest.issues.createComment({
         owner,
         repo,
         issue_number: number,
@@ -529,10 +546,14 @@ async function run({ github, context, core, env = process.env }) {
           `**${lane}** holds this pull request for a person (${criteria.join(", ")}) at \`${env.HEAD_SHA}\`.`,
           "",
           reason,
+          ...(binding ? [binding] : []),
           "",
           `claude-lane: ${lane}`,
         ].join("\n"),
       });
+      writeRecord(env, [
+        { kind: "issue_comment", id: created?.id, body: created?.body },
+      ]);
     }
   } catch (error) {
     errors.push(`could not post the hold comment: ${error.message}`);

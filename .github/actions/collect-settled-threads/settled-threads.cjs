@@ -73,18 +73,51 @@ function resolutionHead(thread, settledAt, activity) {
 }
 
 // A review lane's own finding: posted by github-actions[bot] (the status job
-// posts with the job token), never edited, and ending in the footer
-// publish-review's commentBody writes on its last line. Its text is admitted
+// posts with the job token), never edited, ending in the footer
+// publish-review's commentBody writes on its last line, and bound to the lane
+// run that posted it (`bound`, from boundLaneFindings). Its text is admitted
 // without adding that account to the trusted-actor list, which would trust
 // every workflow's comments. Returns { authorId, login, body } with the
-// footer removed, or null.
+// binding line and footer removed, or null.
 const ACTIONS_BOT_ID = 41898282;
 const LANE_FOOTER = /\n\nclaude-lane: (?:claude-review|claude-security-review)$/u;
-function laneFinding(c) {
-  const author = c?.author;
-  if (author?.__typename !== "Bot" || author.databaseId !== ACTIONS_BOT_ID || author.login !== "github-actions") return null;
-  if (c.lastEditedAt !== null || typeof c.body !== "string" || !LANE_FOOTER.test(c.body)) return null;
-  return { authorId: ACTIONS_BOT_ID, login: "github-actions[bot]", body: c.body.replace(LANE_FOOTER, "") };
+const footedByActions = (c) =>
+  c?.author?.__typename === "Bot" &&
+  c.author.databaseId === ACTIONS_BOT_ID &&
+  c.author.login === "github-actions" &&
+  c.lastEditedAt === null &&
+  typeof c.body === "string" &&
+  LANE_FOOTER.test(c.body);
+function laneFinding(c, bound = new Map()) {
+  if (!footedByActions(c) || !bound.has(c.databaseId)) return null;
+  return { authorId: ACTIONS_BOT_ID, login: "github-actions[bot]", body: bound.get(c.databaseId).replace(LANE_FOOTER, "") };
+}
+
+// The footed github-actions[bot] comments the lane run their binding names
+// lists in its comment record, by id, each body without its binding line:
+// claude-code-plugins' lib/lane-binding.mjs, from the review plugin's copy in
+// the clone (`source`). Each cited run is read once; a read that fails throws.
+async function boundLaneFindings(threads, { github, owner, repo, number, source }) {
+  const { laneChecker, withoutBinding } = await import(
+    require("node:url").pathToFileURL(path.join(source, "plugins/review/lib/lane-binding.mjs")).href
+  );
+  const check = laneChecker({
+    pr: number,
+    getRun: async (id) => (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: Number(id) })).data,
+    listArtifacts: (id) => github.paginate(github.rest.actions.listWorkflowRunArtifacts, { owner, repo, run_id: Number(id), per_page: 100 }),
+    download: async (id) =>
+      Buffer.from((await github.rest.actions.downloadArtifact({ owner, repo, artifact_id: id, archive_format: "zip" })).data),
+  });
+  const bound = new Map();
+  for (const thread of threads) {
+    for (const c of thread?.comments?.nodes ?? []) {
+      if (!footedByActions(c)) continue;
+      if (await check({ kind: "review_comment", id: c.databaseId, body: c.body, createdAt: c.createdAt, lastEditedAt: c.lastEditedAt })) {
+        bound.set(c.databaseId, withoutBinding(c.body));
+      }
+    }
+  }
+  return bound;
 }
 
 // The settled threads, each with only the comments select-trusted-text kept
@@ -93,14 +126,14 @@ function laneFinding(c) {
 // ids, whose reply settles it only under a finding whose text is kept, so the
 // model can tell which point the reply decides. A resolution by anyone else
 // settles nothing.
-function settledThreads(threads, kept, ids, humans) {
+function settledThreads(threads, kept, ids, humans, bound = new Map()) {
   const out = [];
   for (const thread of threads) {
     const comments = thread?.comments?.nodes ?? [];
     if (typeof thread?.path !== "string" || comments.length === 0) continue;
     const trusted = comments
       .map((c, i) => {
-        const text = kept.get(c?.databaseId) ?? laneFinding(c);
+        const text = kept.get(c?.databaseId) ?? laneFinding(c, bound);
         return text && { ...text, root: i === 0, at: c.createdAt, lane: !kept.has(c?.databaseId) };
       })
       .filter(Boolean);
@@ -215,7 +248,14 @@ async function run({ github, context, core }) {
       .map((i) => [i.id, { authorId: i.author_id, login: i.author_login, body: i.body }]),
   );
 
-  const settled = settledThreads(threads.nodes ?? [], kept, ids, humans);
+  const bound = await boundLaneFindings(threads.nodes ?? [], {
+    github,
+    owner,
+    repo,
+    number: Number(env.PR_NUMBER),
+    source: env.SOURCE,
+  });
+  const settled = settledThreads(threads.nodes ?? [], kept, ids, humans, bound);
   if (settled.length === 0) {
     core.info("No settled review threads.");
     return;
@@ -275,4 +315,4 @@ async function run({ github, context, core }) {
   );
 }
 
-module.exports = { judge, laneFinding, render, resolutionHead, run, settledThreads, touches };
+module.exports = { boundLaneFindings, judge, laneFinding, render, resolutionHead, run, settledThreads, touches };

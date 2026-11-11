@@ -284,7 +284,7 @@ function fakeGithub({
         createComment: async (params) => {
           calls.push(["createComment", params]);
           if (fail.createComment) throw new Error("HTTP 500");
-          return { data: {} };
+          return { data: { id: 701, body: params.body } };
         },
         removeLabel: refuse("removeLabel"),
         removeAllLabels: refuse("removeAllLabels"),
@@ -1465,4 +1465,66 @@ test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
   });
   assert.equal(core.outputs.hold, "true");
   assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
+});
+
+test("the hold comment carries the run's binding above its footer and the run's record lists it; a re-run lists its run's earlier one", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { createHash } = require("node:crypto");
+  const read = (file) =>
+    fs.existsSync(file)
+      ? fs
+          .readFileSync(file, "utf8")
+          .trim()
+          .split("\n")
+          .map((l) => JSON.parse(l))
+      : [];
+  const digest = (body) =>
+    createHash("sha256").update(body, "utf8").digest("hex");
+  const dir = fs.mkdtempSync(
+    path.join(require("node:os").tmpdir(), "hold-record-"),
+  );
+  const record = path.join(dir, "first.jsonl");
+  const env = baseEnv({
+    GITHUB_RUN_ID: "4242",
+    LANE_RECORD: record,
+    KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+  });
+  const { writes, error } = await apply(env);
+  assert.equal(error, undefined);
+  const body = writes.find(([name]) => name === "createComment")[1].body;
+  assert.match(
+    body,
+    new RegExp(
+      `\\nR\\n<!-- claude-lane-run id=4242 sha=${HEAD} -->\\n\\nclaude-lane: claude-review$`,
+      "u",
+    ),
+  );
+  assert.deepEqual(read(record), [
+    {
+      lane: "claude-review",
+      pr: 7,
+      head: HEAD,
+      kind: "issue_comment",
+      id: 701,
+      sha256: digest(body),
+    },
+  ]);
+  const again = path.join(dir, "second.jsonl");
+  const earlier = { id: 701, user: { login: "github-actions[bot]" }, body };
+  const rerun = await apply(
+    { ...env, LANE_RECORD: again },
+    { comments: [earlier] },
+  );
+  assert.equal(
+    rerun.writes.filter(([name]) => name === "createComment").length,
+    0,
+  );
+  assert.deepEqual(read(again), read(record));
+  const other = path.join(dir, "third.jsonl");
+  await apply(
+    { ...env, GITHUB_RUN_ID: "5000", LANE_RECORD: other },
+    { comments: [earlier] },
+  );
+  assert.deepEqual(read(other), []);
 });
