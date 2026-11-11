@@ -1699,6 +1699,19 @@ clear_rerun_fixtures() {
     "$fixtures"/POST_repos_melodic-software_ci-workflows_actions_runs_*
 }
 
+# A failed contract-only run's alias job fails with its gate. Without
+# alias-jobs two failed jobs do not read as contract-only and the run stays red.
+echo 'case: a full-mode success re-runs a failed contract-only sibling whose alias failed too, given alias-jobs'
+clear_run_fixtures
+clear_rerun_fixtures
+current_run
+workflow_runs "[$(completed_run 5000 failure)]"
+printf '%s' '{"jobs":[{"name":"ci-status","conclusion":"failure"},{"name":"lint","conclusion":"skipped"},{"name":"old-gate","conclusion":"failure"}]}' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5000_jobs.json"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true ALIAS_JOBS='old-gate'
+expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+expect_no_gh_call 'actions/runs/5000/rerun-failed-jobs'
+
 # 5000 and 4242 (this run, completed only in this fixture) are contract-only
 # shaped: one failed gate, every other job skipped. 5100 is a failed full run,
 # 5500 a failed single-job run, and 5200, 5300 and 5400 did not fail.
@@ -1907,6 +1920,51 @@ jobs_raw 4300 "$contract_only_jobs"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_sleep
+
+# A job that mirrors the gate under an older check name runs on a
+# contract-only event too. Without alias-jobs it reads as a lane that ran, so
+# a contract-only sibling would count as a full run in flight.
+contract_only_jobs_with_alias='[{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"},{"name":"ci-status","conclusion":null},{"name":"old-gate","conclusion":null}]'
+echo 'case: yield ignores a contract-only sibling whose alias job is listed, given alias-jobs'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
+jobs_raw 4300 "$contract_only_jobs_with_alias"
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true ALIAS_JOBS='old-gate'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+# A success a full run wrote before the gate job was renamed names its gate
+# job by the old name, which alias-jobs now carries. Without looking under that
+# name too, every open pull request's carried success is discarded until a push.
+echo 'case: a success written under the gate job'"'"'s old name is carried, given alias-jobs'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+printf '{"jobs":[{"name":"lint","status":"completed","conclusion":"success","steps":[]},%s]}' "$(writer_gate_job success | sed 's/"name":"ci-status"/"name":"old-gate"/')" \
+  >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4100_jobs.json"
+run_case 0 'skipped skipped' pass true true ALIAS_JOBS='old-gate'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+run_case 1 'skipped skipped' pass true true
+expect_no_log "Carried forward: ci-lanes is success on ${sha}"
+install_step_fixtures
+
+# A contract-only sibling from before the rename has no job under the new gate
+# name: its gate carries the name alias-jobs now lists. Dropping that job
+# would leave nothing that ran and the shape unknown.
+echo 'case: yield reads a pre-rename contract-only sibling, gated under the alias name, as contract-only'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
+jobs_raw 4300 '[{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"},{"name":"old-gate","conclusion":null}]'
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true ALIAS_JOBS='old-gate'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
+echo 'case: without alias-jobs the same sibling counts as a full run in flight'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
+jobs_raw 4300 "$contract_only_jobs_with_alias"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true
+expect_log '::error::superseded by full run https://github.com/melodic-software/ci-workflows/actions/runs/4300'
 
 # Without the gate-name check, a full run whose first job has finished and whose
 # lanes were skipped, before its gate job exists, has the contract-only shape
@@ -2525,6 +2583,20 @@ expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
 expect_rerun_after_last_listing 5000
 expect_rerun_after_last_listing 5300
 expect_log "Re-ran 2 failed contract-only run(s) on ${sha}."
+
+# A contract-only sibling whose gate already failed while its alias job still
+# runs. Without leaving the alias out of the in-flight count, the two jobs read
+# as a full run, the wait ends, and the sibling is never re-run.
+echo 'case: the in-flight wait leaves an alias job out of a contract-only sibling'"'"'s count, given alias-jobs'
+reset_yield_fixtures
+workflow_runs_on_call 1 "[$(completed_run 5000 failure),$(run_entry 5300 in_progress 2026-09-05T12:00:40Z)]"
+workflow_runs "[$(completed_run 5000 failure),$(completed_run 5300 failure)]"
+jobs_for 5000 failure skipped
+printf '{"jobs":%s}' '[{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"ci-status","status":"completed","conclusion":"failure"},{"name":"old-gate","status":"in_progress","conclusion":null}]' >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs.1.json"
+jobs_for 5300 failure skipped
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true ALIAS_JOBS='old-gate'
+expect_log "Waiting 10s for in-flight run(s) 5300 on ${sha} to finish before re-running failed contract-only runs."
+expect_gh_call "POST repos/${repository}/actions/runs/5300/rerun-failed-jobs"
 
 # A carry-forward wait of 0 reads once and never polls, so it has the same race.
 echo 'case: with a carry-forward wait of 0 a full-mode success also waits for an in-flight contract-only sibling'
