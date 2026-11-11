@@ -336,7 +336,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
   const pick = step(status, "token-leg");
   const names = status.steps.map((s) => s.id ?? s.name);
   assert.ok(names.indexOf("handoffs") < names.indexOf("token-leg"));
-  assert.ok(names.indexOf("token-leg") < names.indexOf("Publish the review"));
+  assert.ok(names.indexOf("token-leg") < names.indexOf("publish"));
   assert.doesNotMatch(pick.with.script, /\$\{\{/u);
   const run = async (env) => {
     const outputs = {};
@@ -511,8 +511,11 @@ test("after a key-credit skip, publish reads the counted token leg's success, no
 });
 
 test("the model jobs cannot write and give the model no shell, GitHub token or second secret", () => {
+  // Read-only actions lets the settled-threads and prior-findings steps read
+  // lane runs' comment records; the model gets no token either way.
   for (const job of [key, subscription, fallback]) {
     assert.deepEqual(job.permissions, {
+      actions: "read",
       contents: "read",
       "pull-requests": "read",
     });
@@ -5305,9 +5308,16 @@ test("every upload follows a credential scan over the same path, and a scan that
         "handoff-file": { outputs: { sha256: "a".repeat(64) } },
         "credit-marker": { outcome: "success" },
         "probe-marker": { outcome: "success" },
+        held: { outcome: "skipped" },
         [scan.id]: { outputs: { clean: "true" } },
       };
-      const inputs = { publish: "shadow" };
+      // The comment record uploads in comments mode, the shadow report in
+      // any other.
+      const inputs = {
+        publish: upload.if.includes("inputs.publish == 'comments'")
+          ? "comments"
+          : "shadow",
+      };
       assert.equal(
         evaluate(upload.if, { steps, inputs }),
         true,
@@ -5323,14 +5333,15 @@ test("every upload follows a credential scan over the same path, and a scan that
       }
     });
   }
-  // The gate's probing marker, the key job's credit-stop marker, then each
-  // leg's review handoff.
+  // The gate's probing marker, the key job's credit-stop marker, each leg's
+  // review handoff, then the lane comment record and the shadow report.
   assert.deepEqual(uploads, [
     "check-key-credit",
     "review-key",
     "review-key",
     "review-subscription",
     "review-fallback",
+    "status",
     "status",
   ]);
 });
@@ -5985,4 +5996,53 @@ test("the extract step names a whole review's binary files and changes no count"
       what,
     );
   }
+});
+
+// A reader counts an attempt's record only when it ends complete, so the
+// record is started before the publish step and closed only when the publish
+// and hold steps did not fail.
+test("each comments-mode attempt starts its lane comment record and closes it only after a clean publish and hold", () => {
+  const names = status.steps.map((s) => s.name);
+  const start = names.indexOf("Start the lane comment record");
+  const close = status.steps.find(
+    (s) => s.name === "Close the lane comment record",
+  );
+  assert.ok(start >= 0 && start < names.indexOf("Publish the review"));
+  assert.ok(
+    names.indexOf("Apply the hold") <
+      names.indexOf("Close the lane comment record"),
+  );
+  assert.ok(
+    names.indexOf("Close the lane comment record") <
+      names.indexOf("Upload the lane comment record"),
+  );
+  const inputs = { publish: "comments" };
+  for (const [outcome, closes] of [
+    ["success", true],
+    ["skipped", true],
+    ["failure", false],
+    ["cancelled", false],
+  ]) {
+    assert.equal(
+      evaluate(close.if, {
+        inputs,
+        steps: { publish: { outcome }, hold: { outcome: "success" } },
+      }),
+      closes,
+      `publish ${outcome}`,
+    );
+    assert.equal(
+      evaluate(close.if, {
+        inputs,
+        steps: { publish: { outcome: "success" }, hold: { outcome } },
+      }),
+      closes,
+      `hold ${outcome}`,
+    );
+  }
+  assert.match(close.run, /\{"complete":true\}/u);
+  const upload = status.steps.find(
+    (s) => s.name === "Upload the lane comment record",
+  );
+  assert.equal(upload.with["if-no-files-found"], "error");
 });

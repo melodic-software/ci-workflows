@@ -10,7 +10,7 @@ description: >-
 
 inputs:
   source:
-    description: The claude-code-plugins clone holding .github/actions/select-trusted-text.
+    description: The claude-code-plugins clone holding .github/actions/select-trusted-text and plugins/review/lib/lane-binding.mjs.
     required: true
   output-file:
     description: Where the threads file is written, inside the checkout.
