@@ -103,6 +103,7 @@ async function boundLaneFindings(threads, { github, owner, repo, number, source 
   );
   const check = laneChecker({
     pr: number,
+    getPull: async (n) => (await github.rest.pulls.get({ owner, repo, pull_number: n })).data,
     getRun: async (id) => (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: Number(id) })).data,
     listArtifacts: (id) => github.paginate(github.rest.actions.listWorkflowRunArtifacts, { owner, repo, run_id: Number(id), per_page: 100 }),
     download: async (id) =>

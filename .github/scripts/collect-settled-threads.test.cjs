@@ -568,11 +568,12 @@ test("boundLaneFindings checks only footed github-actions[bot] comments, each th
   // comments whose body names run 4242, after reading that run once.
   fs.writeFileSync(
     path.join(lib, "lane-binding.mjs"),
-    `export const laneChecker = ({ pr, getRun, listArtifacts, download }) => async (c) => {
+    `export const laneChecker = ({ pr, getPull, getRun, listArtifacts, download }) => async (c) => {
+  const pull = await getPull(pr);
   const run = await getRun("4242");
   const [artifact] = await listArtifacts("4242");
   const bytes = await download(artifact.id);
-  return pr === 7 && c.kind === "review_comment" && run.path === "lane.yml" && bytes.toString() === "record" && c.body.includes("run 4242");
+  return pr === 7 && pull.head.ref === "feat/x" && c.kind === "review_comment" && run.path === "lane.yml" && bytes.toString() === "record" && c.body.includes("run 4242");
 };
 export const withoutBinding = (body) => body.replace(" run 4242", "");
 `,
@@ -580,6 +581,12 @@ export const withoutBinding = (body) => body.replace(" run 4242", "");
   const calls = [];
   const github = {
     rest: {
+      pulls: {
+        get: async (a) => {
+          calls.push(["pull", a.pull_number]);
+          return { data: { head: { ref: "feat/x" } } };
+        },
+      },
       actions: {
         getWorkflowRun: async (a) => {
           calls.push(["run", a.run_id]);
