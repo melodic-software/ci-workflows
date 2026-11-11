@@ -163,7 +163,11 @@ name: PR Review CLI
 #     own. Each step writes its own outputs file, so the later model step
 #     cannot rewrite the scope step's outputs; the status job already trusts
 #     them for its skips. It strips HTML comments, foots every comment with
-#     `claude-lane: <lane>`, and withholds the whole review when
+#     `claude-lane: <lane>` under a `<!-- claude-lane-run id=<run> sha=<head>
+#     -->` binding line, records each comment it posts (id and body digest)
+#     in this attempt's `claude-lane-comments-<lane>-<attempt>` artifact,
+#     which readers check a binding against because any workflow posts as
+#     github-actions[bot], and withholds the whole review when
 #     claude-code-plugins' lib/publish-gate.mjs, read at that repository's
 #     default-branch tip, finds a credential format. It posts with its own
 #     token, as github-actions[bot]. Any workflow in the repository holding
@@ -646,7 +650,7 @@ jobs:
     name: key
     needs: [resolve-pull-request, check-key-credit]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 121 || 113 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 131 || 123 }}
     if: >-
       needs.check-key-credit.outputs.next-leg != 'subscription'
       && !cancelled()
@@ -684,6 +688,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -731,52 +736,13 @@ jobs:
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
         id: isolate
-        continue-on-error: ${{ inputs.publish != 'comments' }}
-        timeout-minutes: 2
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
         env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+          PUBLISH: ${{ inputs.publish }}
 
       # No credential is persisted. The model reads the head, never runs it.
       - name: Check out
@@ -2951,7 +2917,7 @@ jobs:
     name: subscription
     needs: [resolve-pull-request, check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 121 || 113 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 131 || 123 }}
     if: >-
       (needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription')
       && !cancelled()
@@ -2989,6 +2955,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -3036,52 +3003,13 @@ jobs:
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
         id: isolate
-        continue-on-error: ${{ inputs.publish != 'comments' }}
-        timeout-minutes: 2
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
         env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+          PUBLISH: ${{ inputs.publish }}
 
       # No credential is persisted. The model reads the head, never runs it.
       - name: Check out
@@ -5229,7 +5157,7 @@ jobs:
     name: fallback
     needs: [resolve-pull-request, check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 121 || 113 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 131 || 123 }}
     if: >-
       needs.review-subscription.outputs.next-leg == 'fallback'
       && !cancelled()
@@ -5267,6 +5195,7 @@ jobs:
               && contains(format(',{0},', inputs.dispatcher-actor-ids),
                           format(',{0},', github.event.sender.id))))
     permissions:
+      actions: read # the settled-threads and prior-findings steps read lane runs' comment records
       contents: read
       pull-requests: read
     cache-mode: none
@@ -5314,52 +5243,13 @@ jobs:
       # socket becomes root-only, then the runner user's sudoers entry goes.
       - name: Isolate the runner
         id: isolate
-        continue-on-error: ${{ inputs.publish != 'comments' }}
-        timeout-minutes: 2
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 12
+        uses: $/.github/actions/install-subprocess-isolation
+        with:
+          remove-sudo: "true"
         env:
-          RUNNER_HOSTING: ${{ runner.environment }}
-        run: |
-          if command -v apt-get >/dev/null &&
-            ! { command -v bwrap && command -v socat; } >/dev/null; then
-            # Every apt-get call shares one deadline, so a slow mirror ends the
-            # install with a named error inside the step limit. The first try
-            # skips apt-get update and installs from the image's package lists;
-            # the lists are refreshed only when that fails.
-            deadline=$((SECONDS + 100))
-            apt_get() {
-              left=$((deadline - SECONDS))
-              [ "$left" -gt 0 ] && sudo timeout -k 2 "$left" apt-get "$@"
-            }
-            echo "$(date -u +%T) installing bubblewrap and socat from the image's package lists"
-            if ! apt_get install -y --no-install-recommends bubblewrap socat; then
-              echo "$(date -u +%T) refreshing the package lists and retrying"
-              apt_get update -qq &&
-                apt_get install -y --no-install-recommends bubblewrap socat ||
-                echo "::error::apt-get did not install bubblewrap and socat within 100 s; the package mirror is slow or unreachable"
-            fi
-          fi
-          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
-          if [ "$RUNNER_HOSTING" = github-hosted ] &&
-            [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          if ! { command -v bwrap && command -v socat; } >/dev/null; then
-            echo "::error::bubblewrap or socat is not installed; Claude Code cannot scrub its subprocess environment"
-            exit 1
-          fi
-          sock=/var/run/docker.sock
-          if [ -e "$sock" ]; then
-            sudo chmod 600 "$sock"
-          fi
-          sudo rm -f /etc/sudoers.d/runner
-          if sudo -n true 2>/dev/null; then
-            echo "::error::sudo still works for the runner user"
-            exit 1
-          fi
-          if [ -e "$sock" ] && { [ -r "$sock" ] || [ -w "$sock" ]; }; then
-            echo "::error::the docker socket is still open to the runner user"
-            exit 1
-          fi
+          PUBLISH: ${{ inputs.publish }}
 
       # No credential is persisted. The model reads the head, never runs it.
       - name: Check out
@@ -7504,7 +7394,7 @@ jobs:
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
-    timeout-minutes: 23
+    timeout-minutes: 28
     permissions:
       actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
       checks: read # and those status jobs' cost notices (check-run annotations)
@@ -7668,13 +7558,28 @@ jobs:
         run: |
           echo "::notice::held: ${LANE_ID} did not review ${HEAD_SHA}: ${HELD}. A later run of this workflow reviews it."
 
+      # Every comments-mode attempt uploads a record, an empty one included,
+      # so a reader can tell "posted nothing" from "lost before the upload".
+      # The first line is no JSON object, which a reader skips.
+      - name: Start the lane comment record
+        if: always() && inputs.publish == 'comments'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        env:
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+        run: |
+          mkdir -p "${LANE_RECORD%/*}"
+          echo "# claude-lane-comments" >"$LANE_RECORD"
+
       - name: Publish the review
+        id: publish
         if: steps.held.outcome != 'success'
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 5
         uses: $/.github/actions/publish-review
         env:
           PUBLISH: ${{ inputs.publish }}
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
@@ -7725,6 +7630,7 @@ jobs:
         uses: $/.github/actions/apply-review-hold
         env:
           PUBLISH: ${{ inputs.publish }}
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
@@ -7746,6 +7652,50 @@ jobs:
           SUB_CLASS: ${{ steps.token-leg.outputs.class }}
           SUB_VERDICT: ${{ steps.token-leg.outputs.verdict }}
           SUB_REVIEW: ${{ steps.token-leg.outputs.review }}
+
+      # The record is complete only when the publish and hold steps ended
+      # without a failure: a reader treats an attempt whose record lacks this
+      # line as one that left no record (claude-code-plugins
+      # lib/lane-binding.mjs), so a step cut off between posting and
+      # recording drops no comment.
+      - name: Close the lane comment record
+        if: >-
+          always() && inputs.publish == 'comments'
+          && steps.publish.outcome != 'failure' && steps.publish.outcome != 'cancelled'
+          && steps.hold.outcome != 'failure' && steps.hold.outcome != 'cancelled'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        env:
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+        run: echo '{"complete":true}' >>"$LANE_RECORD"
+
+      # The comments this attempt posted, and those an earlier attempt of this
+      # run posted that it would have posted again: ids and body digests only,
+      # no model text. A reader accepts a github-actions[bot] comment footed
+      # for this lane only when the run its binding line names lists it here
+      # (claude-code-plugins lib/lane-binding.mjs), so a failed scan or upload
+      # fails the job and a re-run uploads the record again.
+      - name: Scan the lane comment record for credentials
+        id: record-scan
+        if: always() && inputs.publish == 'comments'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 1
+        uses: $/.github/actions/scan-upload
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        with:
+          path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+
+      - name: Upload the lane comment record
+        if: always() && inputs.publish == 'comments' && steps.record-scan.outputs.clean == 'true'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claude-lane-comments-${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+          if-no-files-found: error
+          retention-days: 90
 
       # The shadow report carries model text: scanned first, and withheld on a hit.
       - name: Scan the shadow report for credentials

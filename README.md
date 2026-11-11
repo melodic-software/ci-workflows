@@ -851,6 +851,12 @@ consumer to audit it.
   before runner isolation; run-claude-cli refuses to run without the file.
   `loopback-base-url` lets the settings pin a loopback key proxy instead of
   the public API (see run-claude-cli's loopback key proxy above).
+- `.github/actions/install-subprocess-isolation` — every Claude lane's
+  bubblewrap and socat install: from the image's package lists first, the
+  lists refreshed only when that fails, within one apt budget, failing closed
+  without either tool. `remove-sudo: "true"` then removes sudo and docker
+  access in the same step. Uses no Actions cache, since the cache unpacks
+  while sudo still works (its `action.yml` says why).
 - `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
   with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
