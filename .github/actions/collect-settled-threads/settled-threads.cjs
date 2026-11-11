@@ -96,7 +96,7 @@ function laneFinding(c, bound = new Map()) {
 // The footed github-actions[bot] comments the lane run their binding names
 // lists in its comment record, by id, each body without its binding line:
 // claude-code-plugins' lib/lane-binding.mjs, from the review plugin's copy in
-// the clone (`source`). Each cited run is read once; a read that fails throws.
+// the clone (`source`). Each cited run is read once; a comment whose check fails to read is left out.
 async function boundLaneFindings(threads, { github, owner, repo, number, source }) {
   const { laneChecker, withoutBinding } = await import(
     require("node:url").pathToFileURL(path.join(source, "plugins/review/lib/lane-binding.mjs")).href
@@ -113,8 +113,15 @@ async function boundLaneFindings(threads, { github, owner, repo, number, source 
   for (const thread of threads) {
     for (const c of thread?.comments?.nodes ?? []) {
       if (!footedByActions(c)) continue;
-      if (await check({ kind: "review_comment", id: c.databaseId, body: c.body, createdAt: c.createdAt, lastEditedAt: c.lastEditedAt })) {
-        bound.set(c.databaseId, withoutBinding(c.body));
+      // A comment that cannot be checked (its run unread, or still running)
+      // is left out alone, so the rest of the settled threads still reach the
+      // review.
+      try {
+        if (await check({ kind: "review_comment", id: c.databaseId, body: c.body, createdAt: c.createdAt, lastEditedAt: c.lastEditedAt })) {
+          bound.set(c.databaseId, withoutBinding(c.body));
+        }
+      } catch {
+        // Not bound.
       }
     }
   }

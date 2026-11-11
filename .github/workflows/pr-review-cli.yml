@@ -7394,7 +7394,7 @@ jobs:
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
-    timeout-minutes: 26
+    timeout-minutes: 28
     permissions:
       actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
       checks: read # and those status jobs' cost notices (check-run annotations)
@@ -7558,7 +7558,21 @@ jobs:
         run: |
           echo "::notice::held: ${LANE_ID} did not review ${HEAD_SHA}: ${HELD}. A later run of this workflow reviews it."
 
+      # Every comments-mode attempt uploads a record, an empty one included,
+      # so a reader can tell "posted nothing" from "lost before the upload".
+      # The first line is no JSON object, which a reader skips.
+      - name: Start the lane comment record
+        if: always() && inputs.publish == 'comments'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        env:
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+        run: |
+          mkdir -p "${LANE_RECORD%/*}"
+          echo "# claude-lane-comments" >"$LANE_RECORD"
+
       - name: Publish the review
+        id: publish
         if: steps.held.outcome != 'success'
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 5
@@ -7639,6 +7653,22 @@ jobs:
           SUB_VERDICT: ${{ steps.token-leg.outputs.verdict }}
           SUB_REVIEW: ${{ steps.token-leg.outputs.review }}
 
+      # The record is complete only when the publish and hold steps ended
+      # without a failure: a reader treats an attempt whose record lacks this
+      # line as one that left no record (claude-code-plugins
+      # lib/lane-binding.mjs), so a step cut off between posting and
+      # recording drops no comment.
+      - name: Close the lane comment record
+        if: >-
+          always() && inputs.publish == 'comments'
+          && steps.publish.outcome != 'failure' && steps.publish.outcome != 'cancelled'
+          && steps.hold.outcome != 'failure' && steps.hold.outcome != 'cancelled'
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        env:
+          LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
+        run: echo '{"complete":true}' >>"$LANE_RECORD"
+
       # The comments this attempt posted, and those an earlier attempt of this
       # run posted that it would have posted again: ids and body digests only,
       # no model text. A reader accepts a github-actions[bot] comment footed
@@ -7647,7 +7677,7 @@ jobs:
       # fails the job and a re-run uploads the record again.
       - name: Scan the lane comment record for credentials
         id: record-scan
-        if: always() && inputs.publish == 'comments' && steps.held.outcome != 'success'
+        if: always() && inputs.publish == 'comments'
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 1
         uses: $/.github/actions/scan-upload
@@ -7657,14 +7687,14 @@ jobs:
           path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
 
       - name: Upload the lane comment record
-        if: always() && inputs.publish == 'comments' && steps.held.outcome != 'success' && steps.record-scan.outputs.clean == 'true'
+        if: always() && inputs.publish == 'comments' && steps.record-scan.outputs.clean == 'true'
         continue-on-error: ${{ inputs.publish != 'comments' }}
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: claude-lane-comments-${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 90
 
       # The shadow report carries model text: scanned first, and withheld on a hit.

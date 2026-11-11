@@ -336,7 +336,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
   const pick = step(status, "token-leg");
   const names = status.steps.map((s) => s.id ?? s.name);
   assert.ok(names.indexOf("handoffs") < names.indexOf("token-leg"));
-  assert.ok(names.indexOf("token-leg") < names.indexOf("Publish the review"));
+  assert.ok(names.indexOf("token-leg") < names.indexOf("publish"));
   assert.doesNotMatch(pick.with.script, /\$\{\{/u);
   const run = async (env) => {
     const outputs = {};
@@ -5996,4 +5996,53 @@ test("the extract step names a whole review's binary files and changes no count"
       what,
     );
   }
+});
+
+// A reader counts an attempt's record only when it ends complete, so the
+// record is started before the publish step and closed only when the publish
+// and hold steps did not fail.
+test("each comments-mode attempt starts its lane comment record and closes it only after a clean publish and hold", () => {
+  const names = status.steps.map((s) => s.name);
+  const start = names.indexOf("Start the lane comment record");
+  const close = status.steps.find(
+    (s) => s.name === "Close the lane comment record",
+  );
+  assert.ok(start >= 0 && start < names.indexOf("Publish the review"));
+  assert.ok(
+    names.indexOf("Apply the hold") <
+      names.indexOf("Close the lane comment record"),
+  );
+  assert.ok(
+    names.indexOf("Close the lane comment record") <
+      names.indexOf("Upload the lane comment record"),
+  );
+  const inputs = { publish: "comments" };
+  for (const [outcome, closes] of [
+    ["success", true],
+    ["skipped", true],
+    ["failure", false],
+    ["cancelled", false],
+  ]) {
+    assert.equal(
+      evaluate(close.if, {
+        inputs,
+        steps: { publish: { outcome }, hold: { outcome: "success" } },
+      }),
+      closes,
+      `publish ${outcome}`,
+    );
+    assert.equal(
+      evaluate(close.if, {
+        inputs,
+        steps: { publish: { outcome: "success" }, hold: { outcome } },
+      }),
+      closes,
+      `hold ${outcome}`,
+    );
+  }
+  assert.match(close.run, /\{"complete":true\}/u);
+  const upload = status.steps.find(
+    (s) => s.name === "Upload the lane comment record",
+  );
+  assert.equal(upload.with["if-no-files-found"], "error");
 });

@@ -3,6 +3,7 @@
 // env; the review is model text and is checked before anything is posted.
 "use strict";
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -106,6 +107,9 @@ const BINDING_LINE = /\n<!-- claude-lane-run id=([1-9][0-9]{0,19}) sha=[0-9a-f]{
 // The run a posted body's binding names, or "".
 const boundRun = (body) => BINDING_LINE.exec(String(body ?? ""))?.[1] ?? "";
 
+// A posted body without its binding line.
+const unbound = (body) => String(body ?? "").replace(BINDING_LINE, "");
+
 // A posted body with its binding line and footer removed.
 const unfooted = (body, lane) =>
   String(body ?? "")
@@ -126,7 +130,7 @@ function writeRecord(env, items) {
       head: env.HEAD_SHA,
       kind,
       id,
-      sha256: require("node:crypto")
+      sha256: crypto
         .createHash("sha256")
         .update(String(body ?? ""), "utf8")
         .digest("hex"),
@@ -403,7 +407,7 @@ function scan(findSecret, texts) {
 // A comment's place and text; the binding line does not count, so a later
 // run on the same head reposts nothing an earlier run posted.
 const commentKey = (c) =>
-  `${c.path}\n${c.line}\n${c.side}\n${String(c.body ?? "").replace(BINDING_LINE, "")}`;
+  `${c.path}\n${c.line}\n${c.side}\n${unbound(c.body)}`;
 
 // The lines one patch's hunk ranges ("<old> <new>", each "<start>[,<count>]"
 // as in its @@ line) cover, the same sets commentableLines reads from the
@@ -823,7 +827,6 @@ async function shadowReport(core, env, report) {
 module.exports = {
   anchorProblem,
   bindingLine,
-  boundRun,
   commentBody,
   commentableLines,
   coverageText,
@@ -839,5 +842,6 @@ module.exports = {
   statusLine,
   stripHtml,
   summaryText,
+  unbound,
   writeRecord,
 };

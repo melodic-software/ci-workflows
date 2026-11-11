@@ -9,7 +9,6 @@
 
 const {
   bindingLine,
-  boundRun,
   judge,
   loadGate,
   scan,
@@ -520,39 +519,41 @@ async function run({ github, context, core, env = process.env }) {
     errors.push(`could not add the ${label} label: ${error.message}`);
   }
   const marker = `<!-- claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} -->`;
+  const binding = bindingLine(env);
+  const body = [
+    marker,
+    `**${lane}** holds this pull request for a person (${criteria.join(", ")}) at \`${env.HEAD_SHA}\`.`,
+    "",
+    reason,
+    ...(binding ? [binding] : []),
+    "",
+    `claude-lane: ${lane}`,
+  ].join("\n");
   try {
-    const comments = await listPrComments();
-    const posted = comments.filter(
-      (c) =>
-        c.user?.login === "github-actions[bot]" &&
-        (c.body === marker || c.body?.startsWith(`${marker}\n`)),
+    const comments = (await listPrComments()).filter(
+      (c) => c.user?.login === "github-actions[bot]",
     );
-    // An earlier attempt of this run posted it: this attempt's record lists
-    // it too (publish.cjs writeRecord).
+    // The same hold an earlier attempt of this run posted, word for word:
+    // this attempt's record lists it too (publish.cjs writeRecord). Only an
+    // exact match counts, so no other workflow's comment is ever recorded.
     writeRecord(
       env,
-      posted
-        .filter((c) => boundRun(c.body) === env.GITHUB_RUN_ID)
+      comments
+        .filter((c) => c.body === body)
         .map((c) => ({ kind: "issue_comment", id: c.id, body: c.body })),
     );
-    if (posted.length === 0) {
-      const binding = bindingLine(env);
+    // A hold with this marker is already on the pull request: one per head
+    // and criteria. The label above holds either way, so a look-alike marker
+    // can at most keep the reason text off.
+    if (!comments.some((c) => c.body === marker || c.body?.startsWith(`${marker}\n`))) {
       const { data: created } = await github.rest.issues.createComment({
         owner,
         repo,
         issue_number: number,
-        body: [
-          marker,
-          `**${lane}** holds this pull request for a person (${criteria.join(", ")}) at \`${env.HEAD_SHA}\`.`,
-          "",
-          reason,
-          ...(binding ? [binding] : []),
-          "",
-          `claude-lane: ${lane}`,
-        ].join("\n"),
+        body,
       });
       writeRecord(env, [
-        { kind: "issue_comment", id: created?.id, body: created?.body },
+        { kind: "issue_comment", id: created.id, body: created.body },
       ]);
     }
   } catch (error) {

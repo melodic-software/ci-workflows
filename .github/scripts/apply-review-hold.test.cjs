@@ -1528,3 +1528,28 @@ test("the hold comment carries the run's binding above its footer and the run's 
   );
   assert.deepEqual(read(other), []);
 });
+
+test("a re-run records only a hold comment word for word its own, never a look-alike bound to its run", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(
+    path.join(require("node:os").tmpdir(), "hold-record-"),
+  );
+  const record = path.join(dir, "r.jsonl");
+  const marker = `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->`;
+  const lookalike = {
+    id: 9,
+    user: { login: "github-actions[bot]" },
+    body: `${marker}\nOther text.\n<!-- claude-lane-run id=4242 sha=${HEAD} -->\n\nclaude-lane: claude-review`,
+  };
+  const { writes } = await apply(
+    baseEnv({
+      GITHUB_RUN_ID: "4242",
+      LANE_RECORD: record,
+      KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+    }),
+    { comments: [lookalike] },
+  );
+  assert.equal(writes.filter(([name]) => name === "createComment").length, 0);
+  assert.equal(fs.existsSync(record), false);
+});
