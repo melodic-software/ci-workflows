@@ -224,12 +224,44 @@ function owns(section, listed) {
   );
 }
 
+// A section's lines before its first hunk, and its hunks' lines.
+function headAndHunks(section) {
+  const lines = section.text.split("\n");
+  const first = lines.findIndex((line) => line.startsWith("@@"));
+  return first < 0 ? [lines, []] : [lines.slice(0, first), lines.slice(first)];
+}
+
+// The pieces the split step cut a section into, in chunk order: each chunk's
+// sections with its header. They stand for the section only when each
+// repeats its lines before the first hunk and their hunks, in order, are its
+// hunks; otherwise null.
+function piecesOf(section, chunkDiffs) {
+  const pieces = [];
+  chunkDiffs.forEach((file, chunk) => {
+    for (const s of file?.sections ?? [])
+      if (s.header === section.header) pieces.push({ chunk, section: s });
+  });
+  const [head, hunks] = headAndHunks(section);
+  const rebuilt = pieces.flatMap(({ section: s }) => {
+    const [pieceHead, pieceHunks] = headAndHunks(s);
+    return pieceHead.join("\n") === head.join("\n") ? pieceHunks : [null];
+  });
+  return pieces.length > 1 &&
+    rebuilt.length === hunks.length &&
+    rebuilt.every((line, i) => line === hunks[i])
+    ? pieces
+    : null;
+}
+
 /**
  * The listed paths with no read evidence. scopeDiff is the diff the job wrote
  * for the scope; each review gives the extra diff files it was handed (its
  * chunk) and the lines its own transcript showed. alternates are diff files
  * any review may have read a section in. A section counts only where its text
- * is the scope diff's own.
+ * is the scope diff's own. A section whose header `cut` holds, of a chunked
+ * review, counts only when its pieces rebuild it and the review handed each
+ * piece's chunk showed every line of that piece; `pieces` names each piece
+ * that falls short.
  */
 function checkReads({
   workspace,
@@ -238,9 +270,10 @@ function checkReads({
   reviews,
   alternates = [],
   binary = new Set(),
+  cut = new Set(),
 }) {
   const scope = diffFile(workspace, scopeDiff);
-  if (!scope) return { unread: [...toRead] };
+  if (!scope) return { unread: [...toRead], pieces: [] };
   const shared = [
     scope,
     ...alternates.map((file) => diffFile(workspace, file)).filter(Boolean),
@@ -281,6 +314,23 @@ function checkReads({
     handed[i].some((file) =>
       file?.sections.some((s) => s.text === section.text),
     );
+  const pieces = [];
+  const chunkDiffs = handed.map((files) => files.find(Boolean) ?? null);
+  const piecesRead = (listed, section) => {
+    const found = piecesOf(section, chunkDiffs);
+    if (!found) {
+      pieces.push({ listed, rebuilt: false });
+      return false;
+    }
+    const short = found.flatMap(({ chunk, section: s }, i) => {
+      const lines = reviews[chunk].shown.get(chunkDiffs[chunk].key);
+      return lines !== undefined && s.required.every((n) => lines.has(n))
+        ? []
+        : [{ listed, piece: i + 1, of: found.length, chunk: chunk + 1 }];
+    });
+    pieces.push(...short);
+    return short.length === 0;
+  };
   const read = (listed) => {
     const sections = claims.get(listed);
     return (
@@ -288,15 +338,17 @@ function checkReads({
       sections.every(
         (section) =>
           claimed.get(section) === 1 &&
-          reviews.some(
-            (review, i) =>
-              holds(i, section) &&
-              covered(section, review, i, binary.has(listed)),
-          ),
+          (reviews.length > 1 && cut.has(section.header)
+            ? piecesRead(listed, section)
+            : reviews.some(
+                (review, i) =>
+                  holds(i, section) &&
+                  covered(section, review, i, binary.has(listed)),
+              )),
       )
     );
   };
-  return { unread: toRead.filter((listed) => !read(listed)) };
+  return { unread: toRead.filter((listed) => !read(listed)), pieces };
 }
 
 // A job-written list: a regular file of one path per line.
@@ -476,13 +528,20 @@ function check(env, write, mode) {
       : [],
   );
   if (binary.size !== Number(env.BINARY || 0)) binary.clear();
-  const { unread } = checkReads({
+  // The headers of the files the split step cut at their hunks.
+  const cut = new Set(
+    chunks > 1
+      ? (listOf(workspace, path.join(env.CHUNK_DIR, "sliced.txt")) ?? [])
+      : [],
+  );
+  const { unread, pieces } = checkReads({
     workspace,
     toRead,
     scopeDiff: env.SCOPE_DIFF,
     alternates,
     binary,
     reviews,
+    cut,
   });
   write(
     `::notice title=pr-review-cli reads::listed=${toRead.length} unread=${unread.length} mode=${mode}`,
@@ -498,6 +557,18 @@ function check(env, write, mode) {
     write(
       `::warning title=pr-review-cli reads::no Read showed the whole change of ${unread.length} listed file(s): ${names}`,
     );
+    const short = pieces
+      .filter((p) => PLAIN_PATH.test(p.listed))
+      .slice(0, NAMED)
+      .map((p) =>
+        p.rebuilt === false
+          ? `${p.listed} (its pieces do not rebuild its change)`
+          : `piece ${p.piece} of ${p.of} of ${p.listed} (chunk ${p.chunk})`,
+      );
+    if (short.length > 0)
+      write(
+        `::warning title=pr-review-cli reads::cut files not read whole: ${short.join(", ")}`,
+      );
     const read = Math.min(coverage.read, coverage.changed - unread.length);
     review.coverage = {
       ...coverage,
