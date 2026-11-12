@@ -12,6 +12,13 @@ inputs:
     description: Policy file, relative to the repository root (command prepare).
     required: false
     default: .github/version-bump/policy.yaml
+  dependabot-policy:
+    description: >-
+      The standards dependabot-policy policy.json the standards sync places in the repository,
+      relative to its root. Its cooldownDays apply when the policy file sets none (command
+      prepare); a policy file that sets cooldownDays keeps its own.
+    required: false
+    default: .github/standards/dependabot-policy/policy.json
   out:
     description: Directory for results.json and the prepared bumps, relative to the repository root.
     required: false
@@ -69,6 +76,7 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         BUMP_COMMAND: ${{ inputs.command }}
         BUMP_POLICY: ${{ inputs.policy }}
+        BUMP_DEPENDABOT_POLICY: ${{ inputs.dependabot-policy }}
         BUMP_OUT: ${{ inputs.out }}
         BUMP_ONLY: ${{ inputs.only }}
         BUMP_DRY_RUN: ${{ inputs.dry-run }}

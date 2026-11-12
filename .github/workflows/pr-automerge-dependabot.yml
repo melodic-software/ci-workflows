@@ -36,10 +36,19 @@ name: PR Automerge Dependabot
 #   - every update is `github_actions`, or, unless the caller passes
 #     `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or `nuget`; any
 #     other ecosystem (docker, dotnet_sdk and the rest) is left for a human;
-#   - every GitHub Actions dependency name matches a glob in the caller's
-#     `publisher-allowlist` (default mirrors standards
-#     `components/dependabot-policy/policy.json` `autoMerge`); an input that is
-#     not a JSON array of non-empty strings arms nothing;
+#   - every GitHub Actions dependency name matches a glob in the allowlist.
+#     When the caller leaves `publisher-allowlist` at its default (which
+#     mirrors standards `components/dependabot-policy/policy.json` `autoMerge`)
+#     and the base commit holds the synced copy of that policy at
+#     `.github/standards/dependabot-policy/policy.json`, the allowlist is the
+#     copy's `tier: auto` publishers plus its `fastTrack` `github-actions` and
+#     `own` globs. With no synced copy, or a caller list other than the
+#     default, the input is the allowlist. A synced copy also narrows, at any
+#     input: its `autoMerge.ecosystems` bound the ecosystems armed and its
+#     `autoMerge.reviewOnly` entries for this repository are never armed.
+#     A copy that cannot be read or
+#     parsed, or an input that is not a JSON array of non-empty strings, arms
+#     nothing;
 #   - no package dependency name is in the caller's `review-only-dependencies`
 #     (its entries in that policy's `autoMerge.reviewOnly`);
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
@@ -67,7 +76,8 @@ name: PR Automerge Dependabot
 # TRUST: every PR-derived value (dependency names, versions, the metadata
 # JSON) is untrusted. Values reach the script through `env:` only, never a
 # `${{ }}` expansion inside script text. No checkout: nothing from the pull
-# request is executed. The gate is the automerge-dependabot composite, reached
+# request is executed, and the synced policy is read through the contents API
+# at the pull request's base commit, so the pull request cannot change it. The gate is the automerge-dependabot composite, reached
 # through `$/`, so it runs at the commit of this workflow the caller calls.
 on:
   workflow_call:
@@ -91,8 +101,9 @@ on:
       publisher-allowlist:
         description: >-
           JSON array of GitHub Actions publisher globs (`*` matches any run of
-          characters) whose patch and minor bumps are armed. Narrow it to keep
-          a publisher's bumps for a person.
+          characters) whose patch and minor bumps are armed. At this default,
+          a synced standards dependabot-policy copy at the base sets the list
+          instead. Narrow it to keep a publisher's bumps for a person.
         type: string
         default: '["actions/*","github/*","anthropics/*"]'
 

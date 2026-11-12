@@ -1,0 +1,120 @@
+name: Maintenance Bump Pinned Versions
+
+# Moves every pin in .github/version-bump/policy.yaml (the tool versions and
+# release digests the actions and reusable workflows pin outside Dependabot) to
+# its newest release past the cooldown, checked against the publisher's data.
+# The cooldown per change class comes from the standards dependabot-policy copy
+# at .github/standards/dependabot-policy/policy.json. Each tool, or group of
+# tools that must move together, gets its own pull request on
+# version-bump/<name>, opened by the melodic-release App and armed for the
+# merge queue; ci-status still gates each one.
+#
+# Until this repository receives that synced copy, the run warns and bumps
+# nothing: the policy sets no cooldown of its own, and the engine never falls
+# back to a built-in one.
+#
+# Every run that prepares uploads results.json (per tool: current, latest,
+# release date, days behind, cooldown or exception, outcome) and writes the
+# same table to the job summary.
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Resolve and verify only; write nothing and open no pull request
+        type: boolean
+        default: false
+      tools:
+        description: Comma-separated tool or group names from policy.yaml (empty for all)
+        type: string
+        default: ''
+
+permissions: {}
+
+# Branches are per tool and leased, but one run at a time keeps two runs from
+# rebuilding the same branch.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump pinned versions
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: plugin-release
+      # Secrets only: a daily run would otherwise write a deployment each time.
+      deployment: false
+    permissions:
+      contents: read
+      pull-requests: read # finds the bot's open pull request for a pin now current
+    env:
+      OUT: .work/version-bump
+      SYNCED_POLICY: .github/standards/dependabot-policy/policy.json
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Bumps are always based on main, whatever ref a dispatch ran from.
+          ref: main
+          persist-credentials: false
+      - name: Find the synced org update policy
+        id: policy
+        run: |
+          if [[ -f "$SYNCED_POLICY" ]]; then
+            echo "present=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "present=false" >>"$GITHUB_OUTPUT"
+            echo "::warning::$SYNCED_POLICY is absent, so no cooldown is known and nothing was bumped. This repository needs the standards dependabot-policy sync component."
+          fi
+      - name: Resolve, verify and prepare the bumps
+        id: prepare
+        if: ${{ steps.policy.outputs.present == 'true' }}
+        uses: $/.github/actions/bump-versions
+        with:
+          command: prepare
+          policy: .github/version-bump/policy.yaml
+          dependabot-policy: ${{ env.SYNCED_POLICY }}
+          out: ${{ env.OUT }}
+          only: ${{ inputs.tools }}
+          dry-run: ${{ inputs.dry-run }}
+      # Minted only when there is something to publish, and only after every
+      # download and verification ran under the read-only job token.
+      - name: Mint the release App token
+        id: app-token
+        if: ${{ steps.policy.outputs.present == 'true' && !inputs.dry-run && fromJSON(steps.prepare.outputs.prepared-count) > 0 }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PLUGIN_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PLUGIN_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          # A bump rewrites pins inside .github/workflows.
+          permission-workflows: write
+      - name: Commit, open the pull requests and arm auto-merge
+        if: ${{ steps.policy.outputs.present == 'true' && !inputs.dry-run && fromJSON(steps.prepare.outputs.prepared-count) > 0 }}
+        uses: $/.github/actions/bump-versions
+        with:
+          command: publish
+          out: ${{ env.OUT }}
+          token: ${{ steps.app-token.outputs.token }}
+          app-slug: ${{ steps.app-token.outputs.app-slug }}
+      - name: Write the job summary
+        if: ${{ !cancelled() && hashFiles('.work/version-bump/results.json') != '' }}
+        uses: $/.github/actions/bump-versions
+        with:
+          command: summary
+          out: ${{ env.OUT }}
+      - name: Upload the measurement
+        if: ${{ !cancelled() && hashFiles('.work/version-bump/results.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: version-bump-results
+          path: .work/version-bump/results.json
+          retention-days: 30

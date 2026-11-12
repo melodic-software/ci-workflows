@@ -438,14 +438,14 @@ jobs:
       - name: Check workflow and action naming
         uses: $/.github/actions/check-workflow-naming
         with:
-          standards-ref: 846528ba34a036ebbe8b22db6afaee79d017b67f
+          standards-ref: eef7cec74c88a30d287f9e15a28555126e74f9cd
       - name: Run a misnamed workflow fixture in enforcing mode
         id: bad-enforcing
         continue-on-error: true
         uses: $/.github/actions/check-workflow-naming
         with:
           root: fixtures/workflow-naming/bad
-          standards-ref: 846528ba34a036ebbe8b22db6afaee79d017b67f
+          standards-ref: eef7cec74c88a30d287f9e15a28555126e74f9cd
       - name: Prove the misnamed workflow fixture failed
         env:
           OUTCOME: ${{ steps.bad-enforcing.outcome }}
@@ -564,8 +564,15 @@ jobs:
         run: bash .github/actions/check-comment-markers/scan-tree.test.sh
       - name: Test the workflow-naming runner
         run: bash .github/actions/check-workflow-naming/run.test.sh
+      - name: Install the version-bump engine's pinned yq
+        # The engine's own-policy test reads .github/version-bump/policy.yaml with it.
+        run: bash .github/actions/bump-versions/install-tools.sh
       - name: Test the version-bump engine
         run: python3 -B -m unittest discover -s .github/actions/bump-versions -p 'test_*.py'
+      - name: Test the Dependabot policy check
+        run: |
+          npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund
+          node --test .github/actions/check-dependabot-policy/*.test.mjs
       - name: Test the pull-request contract runner
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner

@@ -80,9 +80,14 @@ jobs:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           # The reusable's input defaults, which this repository's tier uses.
+          # A synced standards dependabot-policy copy in the checkout, once
+          # this repository receives one, sets the publishers instead.
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
           PACKAGE_AUTO_MERGE: "true"
-          REVIEW_ONLY_DEPENDENCIES: "[]"
+          # Every package the check-dependabot-policy action's lockfile
+          # installs, transitive ones included: consumers run that checker in
+          # ci-status, so a bump to any of them waits for review.
+          REVIEW_ONLY_LOCKFILE: .github/actions/check-dependabot-policy/package-lock.json
         with:
           script: |
             const path = require("node:path");

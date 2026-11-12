@@ -38,6 +38,8 @@ from urllib.parse import quote, urlencode
 from xml.etree import ElementTree
 
 BRANCH_PREFIX = "version-bump/"
+DEPENDABOT_POLICY = ".github/standards/dependabot-policy/policy.json"
+COOLDOWN_CLASSES = ("own", "patch", "minor", "major")
 SIGNER_EMAIL = "noreply@github.com"
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 HEX = {"sha256": 64, "sha512": 128}
@@ -94,7 +96,8 @@ def change_class(current: str, candidate: str) -> str:
     cur, new = parse_version(current), parse_version(candidate)
     if cur is None or new is None:
         raise BumpError(f"cannot classify {current} -> {candidate}")
-    if cur[0] != new[0]:
+    # Below 1.0 a minor move is the breaking one, as Dependabot's gate treats it.
+    if cur[0] != new[0] or (cur[0] == 0 and cur[1:2] != new[1:2]):
         return "major"
     if cur[1:2] != new[1:2]:
         return "minor"
@@ -115,8 +118,13 @@ def cooldown_days(
 def in_line(
     current: tuple[int, ...], candidate: tuple[int, ...], line: str | None
 ) -> bool:
-    """line major keeps the first number, minor the first two; None allows any release."""
+    """line major keeps the first number, minor the first two; None allows any release.
+
+    Below 1.0 the minor number is the breaking one, so line major keeps it too.
+    """
     width = {"major": 1, "minor": 2}.get(line or "", 0)
+    if line == "major" and current[:1] == (0,):
+        width = 2
     return candidate[:width] == current[:width]
 
 
@@ -1212,9 +1220,34 @@ def changed_paths() -> list[str]:
 # ---------------------------------------------------------------- commands
 
 
-def load_policy(path: Path) -> dict[str, Any]:
+def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
+    """cooldownDays from the standards dependabot-policy copy the standards sync places here."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SystemExit(
+            f"{policy_path} sets no cooldownDays and {path} is absent: the repository must"
+            " receive the standards dependabot-policy sync component or set cooldownDays"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{path} is not valid JSON: {exc}") from None
+    days = doc.get("cooldownDays") if isinstance(doc, dict) else None
+    if not isinstance(days, dict) or not all(
+        type(days.get(c)) is int and days[c] >= 0 for c in COOLDOWN_CLASSES
+    ):
+        raise SystemExit(
+            f"{path} cooldownDays must give a non-negative integer for each of"
+            f" {', '.join(COOLDOWN_CLASSES)}"
+        )
+    return {c: days[c] for c in COOLDOWN_CLASSES}
+
+
+def load_policy(path: Path, dependabot_policy: Path) -> dict[str, Any]:
+    """The version-bump policy; its own cooldownDays wins over the synced org policy's."""
     policy: dict[str, Any] = yq_json(".", path)
     policy["_dir"] = path.resolve().parent
+    if "cooldownDays" not in policy:
+        policy["cooldownDays"] = synced_cooldown_days(dependabot_policy, path)
     return policy
 
 
@@ -1385,7 +1418,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     # clean tree: uncommitted work would be swept into the bump and then lost.
     if not args.dry_run and changed_paths():
         raise SystemExit("prepare needs a clean tree; commit or stash first")
-    policy = load_policy(Path(args.policy))
+    policy = load_policy(Path(args.policy), Path(args.dependabot_policy))
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     now = parse_date(args.now) if args.now else dt.datetime.now(dt.UTC)
@@ -1498,22 +1531,52 @@ def tag_cooldown(rows: list[dict[str, Any]]) -> int:
     )
 
 
-def arm_auto_merge(bump: dict[str, Any], repo: str, tip: dict[str, Any]) -> None:
+def has_major(rows: list[dict[str, Any]]) -> bool:
+    """Whether any row moves to a release of class major, a 0.x minor move included."""
+    return any(change_class(r["current"], r["target"]) == "major" for r in rows)
+
+
+def disarm_auto_merge(pr: int, repo: str) -> None:
+    """Drop any auto-merge arm a rebuilt pull request still carries from an earlier target.
+
+    gh fails where no arm exists; that failure is accepted only once the pull request reads
+    back with no arm, so any other failure leaves the run red instead of the old arm live.
+    """
+    proc = run_raw(["gh", "pr", "merge", str(pr), "-R", repo, "--disable-auto"])
+    if proc.returncode == 0:
+        return
+    armed = run(
+        [
+            *["gh", "pr", "view", str(pr), "-R", repo],
+            *["--json", "autoMergeRequest", "--jq", ".autoMergeRequest != null"],
+        ]
+    ).strip()
+    if armed != "false":
+        raise BumpError(
+            f"could not disable auto-merge on #{pr}: {proc.stderr.strip()[-400:]}"
+        )
+
+
+def arm_auto_merge(
+    bump: dict[str, Any], rows: list[dict[str, Any]], repo: str, tip: dict[str, Any]
+) -> None:
     """Arm auto-merge, except while a tag source in the bump is still inside its cooldown.
 
     A tag's commit date (and the module proxy's .info Time for a git-sourced module) is set
     by whoever made the commit, so for those sources the cooldown also runs from the bot's
-    own commit, whose date GitHub sets.
+    own commit, whose date GitHub sets. A bump holding a major move is never armed: the org
+    update policy sends majors to review, so its pull request waits for a person.
     """
+    if has_major(rows):
+        disarm_auto_merge(bump["pr"], repo)
+        bump["autoMerge"] = False
+        bump["detail"] = "a major release waits for review"
+        return
     wait = int(bump.get("tagCooldown", 0))
     if wait:
         age = dt.datetime.now(dt.UTC) - parse_date(tip["date"])
         if age.total_seconds() < wait * 86400:
-            # A pull request rebuilt for a newer tag may still carry an earlier arm.
-            # Disabling it where none is armed fails harmlessly, so the exit is ignored.
-            run_raw(
-                ["gh", "pr", "merge", str(bump["pr"]), "-R", repo, "--disable-auto"]
-            )
+            disarm_auto_merge(bump["pr"], repo)
             bump["autoMerge"] = False
             bump["detail"] = "auto-merge waits for the cooldown from first sighting"
             return
@@ -1547,7 +1610,7 @@ def publish_bump(
     ):
         # Re-armed every run, so a failed arm on an earlier run recovers.
         bump["outcome"], bump["pr"] = "already-open", prs[0]["number"]
-        arm_auto_merge(bump, repo, tip)
+        arm_auto_merge(bump, rows, repo, tip)
         return
     commit = signed_commit(bump, out, repo, base, title, results["policy"])
     update_ref(repo, branch, tip["sha"] if tip else "0" * 40, commit["sha"])
@@ -1574,7 +1637,7 @@ def publish_bump(
         number = int(url.rsplit("/", 1)[-1])
         bump["outcome"] = "pr-opened"
     bump["pr"] = number
-    arm_auto_merge(bump, repo, commit)
+    arm_auto_merge(bump, rows, repo, commit)
 
 
 def branch_tip(repo: str, branch: str, app_login: str) -> dict[str, Any] | None:
@@ -1816,6 +1879,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("prepare")
     p.add_argument("--policy", required=True, help="policy file, relative to the root")
+    p.add_argument(
+        "--dependabot-policy",
+        default=DEPENDABOT_POLICY,
+        help="synced org policy giving cooldownDays when the policy file sets none",
+    )
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="", help="comma-separated tool or group names")
     p.add_argument(

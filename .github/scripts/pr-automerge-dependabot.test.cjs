@@ -6,7 +6,9 @@ const path = require("node:path");
 const test = require("node:test");
 
 const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
-const { runEvent } = require(path.join(actionDir, "gate.cjs"));
+const { DEFAULT_PUBLISHER_ALLOWLIST, runEvent } = require(
+  path.join(actionDir, "gate.cjs"),
+);
 const workflowPath = path.join(
   __dirname,
   "..",
@@ -47,6 +49,7 @@ function actionEnv(name) {
 
 const DEPENDABOT_ID = 49699333;
 const HEAD = "a".repeat(40);
+const BASE = "b".repeat(40);
 
 // The shape of a real Dependabot commit, read live from
 // `gh api repos/melodic-software/medley/pulls/2094/commits` and
@@ -101,8 +104,12 @@ async function runGate({
     /^'(.*)'$/u,
     "$1",
   ),
+  // The synced policy at the base: absent (404) unless a text or an error is given.
+  basePolicy = undefined,
+  basePolicyError = undefined,
 } = {}) {
   const graphqlCalls = [];
+  const policyReads = [];
   const notices = [];
   const env = {
     UPDATED_DEPENDENCIES_JSON: metadataJson,
@@ -114,7 +121,19 @@ async function runGate({
   };
   const warnings = [];
   const github = {
-    rest: { pulls: { listCommits: Symbol("listCommits") } },
+    rest: {
+      pulls: { listCommits: Symbol("listCommits") },
+      repos: {
+        getContent: async (params) => {
+          policyReads.push(params);
+          if (basePolicyError) throw basePolicyError;
+          if (basePolicy === undefined) {
+            throw Object.assign(new Error("Not Found"), { status: 404 });
+          }
+          return { data: basePolicy };
+        },
+      },
+    },
     paginate: async (route, params) => {
       assert.equal(route, github.rest.pulls.listCommits);
       assert.equal(params.pull_number, 7);
@@ -136,6 +155,7 @@ async function runGate({
         title,
         body,
         head: { sha: HEAD },
+        base: { sha: BASE },
         auto_merge: autoMerge,
       },
     },
@@ -152,7 +172,7 @@ async function runGate({
   const disarmCalls = graphqlCalls.filter((call) =>
     /disablePullRequestAutoMerge/u.test(call.query),
   );
-  return { armCalls, disarmCalls, notices, warnings };
+  return { armCalls, disarmCalls, notices, warnings, policyReads };
 }
 
 function assertSkipped(result, reason) {
@@ -212,6 +232,212 @@ for (const malformed of [
     );
   });
 }
+
+// The publisher and fast-track shape of standards
+// components/dependabot-policy/policy.json schemaVersion 2 (standards#987),
+// plus one review-tier publisher the real file does not list.
+const syncedPolicy = ({ fastTrack, ecosystems, reviewOnly } = {}) =>
+  JSON.stringify({
+    schemaVersion: 2,
+    fastTrack: fastTrack ?? {
+      reviewed: "2026-11-11",
+      basis: "owner decision",
+      npm: ["@anthropic-ai/claude-code"],
+      "github-actions": ["anthropics/*"],
+      own: ["melodic-software/*"],
+    },
+    autoMerge: {
+      publishers: {
+        "actions/*": { tier: "auto" },
+        "github/*": { tier: "auto" },
+        "anthropics/*": { tier: "auto" },
+        "example/*": { tier: "review" },
+      },
+      ecosystems: ecosystems ?? ["github-actions", "npm", "pip", "uv", "nuget"],
+      reviewOnly: reviewOnly ?? [],
+    },
+  });
+
+test("the gate's default allowlist is the reusable's publisher-allowlist default", () => {
+  assert.deepEqual(
+    DEFAULT_PUBLISHER_ALLOWLIST,
+    JSON.parse(inputDefault("publisher-allowlist").replace(/^'(.*)'$/u, "$1")),
+  );
+});
+
+test("the synced policy is read at the base commit, never the head", async () => {
+  const { policyReads } = await runGate();
+  assert.deepEqual(policyReads, [
+    {
+      owner: "melodic-software",
+      repo: "medley",
+      path: ".github/standards/dependabot-policy/policy.json",
+      ref: BASE,
+      mediaType: { format: "raw" },
+    },
+  ]);
+});
+
+test("with no synced policy, an own action stays outside the default allowlist", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("melodic-software/ci-workflows", "version-update:semver-patch"),
+      ],
+    }),
+    /melodic-software\/ci-workflows is not an allowlisted publisher/u,
+  );
+});
+
+test("with the synced policy, an own action's patch bump arms on the fast track", async () => {
+  const { armCalls, notices } = await runGate({
+    updates: [
+      update("melodic-software/ci-workflows", "version-update:semver-patch"),
+    ],
+    basePolicy: syncedPolicy(),
+  });
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("with the synced policy, a fast-tracked major still goes to a person", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update(
+          "melodic-software/ci-workflows",
+          "version-update:semver-major",
+          "github_actions",
+          {
+            newVersion: "2.0.0",
+          },
+        ),
+      ],
+      basePolicy: syncedPolicy(),
+    }),
+    /melodic-software\/ci-workflows is not a patch or minor update/u,
+  );
+});
+
+test("with the synced policy, a review-tier publisher is not armed", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [update("example/action", "version-update:semver-patch")],
+      basePolicy: syncedPolicy(),
+    }),
+    /example\/action is not an allowlisted publisher/u,
+  );
+});
+
+test("a synced policy with no fast track arms only its auto-tier publishers", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("melodic-software/ci-workflows", "version-update:semver-patch"),
+      ],
+      basePolicy: syncedPolicy({ fastTrack: {} }),
+    }),
+    /melodic-software\/ci-workflows is not an allowlisted publisher/u,
+  );
+});
+
+test("a caller's narrowed allowlist wins over the synced policy", async () => {
+  for (const name of [
+    "melodic-software/ci-workflows",
+    "anthropics/claude-code-action",
+  ]) {
+    assertSkipped(
+      await runGate({
+        updates: [update(name, "version-update:semver-patch")],
+        publisherAllowlist: '["actions/*","github/*"]',
+        basePolicy: syncedPolicy(),
+      }),
+      new RegExp(
+        `${name.replace("/", "\\/")} is not an allowlisted publisher`,
+        "u",
+      ),
+    );
+  }
+});
+
+for (const [label, basePolicy] of [
+  ["not JSON", "{"],
+  ["without autoMerge.publishers", JSON.stringify({ fastTrack: {} })],
+  [
+    "without autoMerge.ecosystems",
+    JSON.stringify({ autoMerge: { publishers: {}, reviewOnly: [] } }),
+  ],
+  [
+    "with a non-list fast track",
+    syncedPolicy({ fastTrack: { own: "melodic-software/*" } }),
+  ],
+]) {
+  test(`a synced policy ${label} arms nothing and disarms an earlier arm`, async () => {
+    const result = await runGate({ basePolicy, autoMerge: { enabled_by: {} } });
+    assert.equal(result.armCalls.length, 0);
+    assert.match(result.notices[0], /is not a readable dependabot policy/u);
+    assert.equal(result.disarmCalls.length, 1);
+  });
+}
+
+test("a synced policy the API cannot return arms nothing", async () => {
+  assertSkipped(
+    await runGate({
+      basePolicyError: Object.assign(new Error("Server Error"), {
+        status: 500,
+      }),
+    }),
+    /could not be read at the base: Server Error/u,
+  );
+});
+
+test("the synced policy's autoMerge.ecosystems leaves other ecosystems for a person", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
+      ],
+      basePolicy: syncedPolicy({ ecosystems: ["github-actions"] }),
+    }),
+    /left-pad is a npm_and_yarn update, which the policy's autoMerge.ecosystems leaves out/u,
+  );
+  const { armCalls } = await runGate({
+    updates: [
+      update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
+    ],
+    basePolicy: syncedPolicy({ ecosystems: ["npm"] }),
+  });
+  assert.equal(armCalls.length, 1);
+});
+
+test("the synced policy's reviewOnly entries for this repository are never armed", async () => {
+  const entry = (repository) => ({
+    repository,
+    ecosystem: "npm",
+    directory: "/",
+    dependency: "tedious",
+  });
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("tedious", "version-update:semver-patch", "npm_and_yarn"),
+      ],
+      basePolicy: syncedPolicy({
+        reviewOnly: [entry("melodic-software/medley")],
+      }),
+    }),
+    /tedious is a review-only dependency/u,
+  );
+  const { armCalls } = await runGate({
+    updates: [update("tedious", "version-update:semver-patch", "npm_and_yarn")],
+    basePolicy: syncedPolicy({ reviewOnly: [entry("melodic-software/other")] }),
+  });
+  assert.equal(
+    armCalls.length,
+    1,
+    "another repository's entry does not apply here",
+  );
+});
 
 test("the job runs only on pull_request events authored by Dependabot's account id", () => {
   const job = workflowLines.indexOf("  enable-auto-merge:");

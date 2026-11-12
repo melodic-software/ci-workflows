@@ -27,6 +27,7 @@ _spec.loader.exec_module(bump)
 POLICY = {"cooldownDays": {"own": 0, "patch": 3, "minor": 3, "major": 7}}
 THIRD = {"class": "third-party"}
 NOW = dt.datetime(2026, 11, 2, 12, tzinfo=dt.UTC)
+DISARMED = mock.Mock(returncode=0, stderr="")
 
 
 def release(version: str, days_old: float) -> object:
@@ -46,6 +47,19 @@ class VersionClassTest(unittest.TestCase):
         # Calendar versions: a new month is minor, a new year is major.
         self.assertEqual(bump.change_class("2026.9.12", "2026.10.24"), "minor")
         self.assertEqual(bump.change_class("2026.12.3", "2027.1.0"), "major")
+
+    def test_below_one_a_minor_move_is_major(self) -> None:
+        # The Dependabot gate's breaksBelowOne rule: 0.24 -> 0.25 breaks, 0.24.2 -> 0.24.3 not.
+        self.assertEqual(bump.change_class("0.24.2", "0.25.0"), "major")
+        self.assertEqual(bump.change_class("0.24.2", "0.24.3"), "patch")
+        self.assertEqual(bump.change_class("0.38.2", "1.0.0"), "major")
+        self.assertEqual(bump.cooldown_days(POLICY, THIRD, "0.38.2", "0.39.0"), 7)
+
+    def test_line_major_below_one_keeps_the_minor(self) -> None:
+        self.assertFalse(bump.in_line((0, 24, 2), (0, 25, 0), "major"))
+        self.assertTrue(bump.in_line((0, 24, 2), (0, 24, 3), "major"))
+        self.assertTrue(bump.in_line((1, 4, 0), (1, 5, 0), "major"))
+        self.assertFalse(bump.in_line((1, 4, 0), (2, 0, 0), "major"))
 
     def test_cooldown_by_class_and_override(self) -> None:
         self.assertEqual(bump.cooldown_days(POLICY, THIRD, "1.0.0", "1.0.1"), 3)
@@ -192,14 +206,14 @@ class PublishGuardTest(unittest.TestCase):
         row = {"pr": 9, "tagCooldown": 3}
         with (
             mock.patch.object(bump, "run") as run,
-            mock.patch.object(bump, "run_raw") as run_raw,
+            mock.patch.object(bump, "run_raw", return_value=DISARMED) as run_raw,
         ):
-            bump.arm_auto_merge(row, "o/r", {"date": recent})
+            bump.arm_auto_merge(row, [], "o/r", {"date": recent})
             run.assert_not_called()
             # An arm left from an earlier target is disabled while the new one waits.
             self.assertIn("--disable-auto", run_raw.call_args.args[0])
             self.assertFalse(row["autoMerge"])
-            bump.arm_auto_merge(row, "o/r", {"date": old})
+            bump.arm_auto_merge(row, [], "o/r", {"date": old})
             run.assert_called_once()
             self.assertTrue(row["autoMerge"])
 
@@ -215,11 +229,71 @@ class PublishGuardTest(unittest.TestCase):
         self.assertEqual(bump.tag_cooldown(rows[:1]), 3)
         self.assertEqual(bump.tag_cooldown(rows[2:]), 0)
 
+    def test_bump_with_a_major_row_is_left_for_review(self) -> None:
+        rows = [
+            {"current": "1.4.0", "target": "1.5.0"},
+            {"current": "0.24.2", "target": "0.25.0"},
+        ]
+        self.assertTrue(bump.has_major(rows))
+        self.assertFalse(bump.has_major(rows[:1]))
+        self.assertTrue(bump.has_major([{"current": "2.9.0", "target": "3.0.0"}]))
+
+    def test_publish_holds_a_bump_with_a_major_row_for_review(self) -> None:
+        cases = {
+            "major": [{"tool": "x", "current": "2.9.0", "target": "3.0.0"}],
+            "0.x minor": [
+                {"current": "1.4.0", "target": "1.5.0"},
+                {"current": "0.24.2", "target": "0.25.0"},
+            ],
+        }
+        marker = "<!-- version-bump-targets: t -->"
+        open_pr = {"number": 9, "body": marker, "mergeable": "MERGEABLE"}
+        tip = {"sha": "a" * 40, "date": dt.datetime.now(dt.UTC).isoformat()}
+        for name, rows in cases.items():
+            with (
+                self.subTest(name),
+                mock.patch.object(bump, "own_prs", return_value=[open_pr]),
+                mock.patch.object(bump, "branch_tip", return_value=tip),
+                mock.patch.object(bump, "run") as run,
+                mock.patch.object(bump, "run_raw", return_value=DISARMED) as run_raw,
+            ):
+                pin = {"branch": "b", "name": "n", "targets": "t"}
+                bump.publish_bump(
+                    pin, rows, Path(), "o/r", "base", "app", "u", {}, "main"
+                )
+                calls = [c.args[0] for c in run_raw.call_args_list]
+                self.assertIn(
+                    ["gh", "pr", "merge", "9", "-R", "o/r", "--disable-auto"], calls
+                )
+                armed = [c.args[0] for c in run.call_args_list if "--auto" in c.args[0]]
+                self.assertEqual(
+                    armed, [], "a bump holding a major must never be armed"
+                )
+                self.assertFalse(pin["autoMerge"])
+                self.assertEqual(pin["detail"], "a major release waits for review")
+
+    def test_disarm_accepts_a_failure_only_where_no_arm_exists(self) -> None:
+        failed = mock.Mock(returncode=1, stderr="GraphQL: something went wrong")
+        with (
+            mock.patch.object(bump, "run_raw", return_value=failed),
+            mock.patch.object(bump, "run", return_value="false\n") as run,
+        ):
+            bump.disarm_auto_merge(9, "o/r")
+        self.assertIn("autoMergeRequest", run.call_args.args[0])
+        with (
+            mock.patch.object(bump, "run_raw", return_value=failed),
+            mock.patch.object(bump, "run", return_value="true\n"),
+            self.assertRaisesRegex(
+                bump.BumpError, "could not disable auto-merge on #9"
+            ),
+        ):
+            bump.disarm_auto_merge(9, "o/r")
+
     def test_release_source_arms_at_once(self) -> None:
         row = {"pr": 9, "tagCooldown": 0}
         now = dt.datetime.now(dt.UTC).isoformat()
         with mock.patch.object(bump, "run") as run:
-            bump.arm_auto_merge(row, "o/r", {"date": now})
+            bump.arm_auto_merge(row, [], "o/r", {"date": now})
             run.assert_called_once()
 
 
@@ -785,6 +859,147 @@ class HookTest(unittest.TestCase):
         with mock.patch.object(bump, "run") as run:
             bump.run_hooks({}, [])
         run.assert_not_called()
+
+
+class SyncedCooldownTest(unittest.TestCase):
+    """cooldownDays come from the policy file, else the synced standards dependabot-policy."""
+
+    # standards components/dependabot-policy/policy.json schemaVersion 2 (standards#987).
+    SYNCED = {
+        "schemaVersion": 2,
+        "cooldownMinimumDays": 3,
+        "cooldownDays": {"own": 0, "patch": 3, "minor": 3, "major": 7},
+    }
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.yaml = self.root / "policy.yaml"
+        self.synced = self.root / "policy.json"
+
+    def load(self, yaml_doc: dict[str, Any]) -> dict[str, Any]:
+        with mock.patch.object(bump, "yq_json", return_value=yaml_doc):
+            return bump.load_policy(self.yaml, self.synced)
+
+    def test_policy_without_cooldown_takes_the_synced_classes(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        policy = self.load({"tools": {}})
+        self.assertEqual(
+            policy["cooldownDays"], {"own": 0, "patch": 3, "minor": 3, "major": 7}
+        )
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 7)
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "1.0.1"), 3)
+
+    def test_policy_cooldown_wins_over_the_synced_copy(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        own = {"own": 1, "patch": 2, "minor": 4, "major": 9}
+        policy = self.load({"cooldownDays": own, "tools": {}})
+        self.assertEqual(policy["cooldownDays"], own)
+        self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 9)
+
+    def test_policy_cooldown_needs_no_synced_copy(self) -> None:
+        own = {"own": 0, "patch": 3, "minor": 3, "major": 7}
+        self.assertEqual(self.load({"cooldownDays": own})["cooldownDays"], own)
+
+    def test_neither_source_fails_naming_both_paths(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.load({"tools": {}})
+        self.assertIn(str(self.yaml), str(raised.exception))
+        self.assertIn(str(self.synced), str(raised.exception))
+
+    def test_synced_copy_missing_a_class_fails(self) -> None:
+        self.synced.write_text(
+            json.dumps({"cooldownDays": {"own": 0, "patch": 3, "minor": 3}}),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(SystemExit, "own, patch, minor, major"):
+            self.load({"tools": {}})
+
+    def test_synced_copy_with_a_non_integer_class_fails(self) -> None:
+        days = {"own": False, "patch": 3, "minor": 3, "major": 7}
+        self.synced.write_text(json.dumps({"cooldownDays": days}), encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "non-negative integer"):
+            self.load({"tools": {}})
+
+    def test_synced_copy_that_is_not_json_fails(self) -> None:
+        self.synced.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(SystemExit, "not valid JSON"):
+            self.load({"tools": {}})
+
+    def test_cpython_source_waits_the_synced_patch_cooldown(self) -> None:
+        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        policy = self.load({"tools": {}})
+        uv = {
+            "draft": False,
+            "prerelease": False,
+            "published_at": (NOW - dt.timedelta(days=2)).isoformat(),
+            "tag_name": "0.9.0",
+        }
+        with (
+            mock.patch.object(bump, "gh_json", return_value=[uv]),
+            self.assertRaisesRegex(bump.BumpError, "past the cooldown"),
+        ):
+            bump.cpython_releases(policy, NOW)
+
+
+REPO = SCRIPT.parents[3]
+OWN_POLICY = REPO / ".github" / "version-bump" / "policy.yaml"
+
+
+@unittest.skipUnless(shutil.which("yq"), "needs yq (bump-versions/install-tools.sh)")
+class OwnPolicyPinsTest(unittest.TestCase):
+    """This repository's own policy: every pin it names is one line a bump can rewrite."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.policy = bump.yq_json(".", OWN_POLICY)
+
+    def assert_one_line(self, path: Any, file: Path) -> str:
+        text = bump.read_exact(file)
+        if isinstance(path, dict):
+            return bump.regex_pin(text, path["regex"])[0]
+        old = bump.yq_json(path, file)
+        self.assertIsInstance(old, str, f"{path} in {file} is not a string scalar")
+        bump.locate_line(text, path, old, bump.yq_line(path, file))
+        return old
+
+    def test_cooldowns_come_from_the_synced_org_policy(self) -> None:
+        self.assertNotIn("cooldownDays", self.policy)
+
+    def test_every_tool_sets_a_line(self) -> None:
+        # A merged bump reaches every @main caller, so no tool may cross a major unattended.
+        for name, tool in self.policy["tools"].items():
+            with self.subTest(tool=name):
+                self.assertIn(tool.get("line"), {"major", "minor"})
+
+    def test_every_version_and_field_pin_is_on_one_line(self) -> None:
+        for name, tool in self.policy["tools"].items():
+            with self.subTest(tool=name):
+                file = REPO / tool["file"]
+                scalar = self.assert_one_line(tool["version"], file)
+                self.assertIsNotNone(
+                    bump.parse_version(bump.pinned_version(tool, scalar))
+                )
+                for item in tool.get("fields", []):
+                    self.assert_one_line(
+                        item["path"], REPO / item.get("file", tool["file"])
+                    )
+
+    def test_tools_in_one_group_pin_the_same_release(self) -> None:
+        tools = self.policy["tools"]
+        for group, names in bump.group_units(tools).items():
+            with self.subTest(group=group):
+                versions = {
+                    bump.pinned_version(
+                        tools[n],
+                        self.assert_one_line(
+                            tools[n]["version"], REPO / tools[n]["file"]
+                        ),
+                    )
+                    for n in names
+                }
+                self.assertEqual(len(versions), 1, f"{group} pins {sorted(versions)}")
 
 
 def subprocess_result(stdout: str, returncode: int) -> Any:

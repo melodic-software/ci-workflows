@@ -1,4 +1,4 @@
-name: check-example
+name: Check Example
 description: Contract fixture for check-workflow-naming; a verb-first action directory.
 runs:
   using: composite

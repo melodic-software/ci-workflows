@@ -1,4 +1,4 @@
-name: pr-require-checks
+name: PR Require Checks
 
 # Contract fixture for check-workflow-naming: a conforming gate workflow. It
 # lives outside this repository's own .github/workflows, so it never runs.
