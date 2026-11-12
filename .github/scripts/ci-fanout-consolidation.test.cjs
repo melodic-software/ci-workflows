@@ -240,7 +240,12 @@ test("every job except ci-status and the issue labeler carries the contract-only
   const ungated = [];
   for (const block of jobBlocks) {
     const name = jobName(block);
-    if (name === undefined || name === "ci-status" || name === MIRROR_JOB || name === ISSUE_JOB) {
+    if (
+      name === undefined ||
+      name === "ci-status" ||
+      name === MIRROR_JOB ||
+      name === ISSUE_JOB
+    ) {
       continue;
     }
     if (!jobCondition(block).includes(CONTRACT_ONLY_GATE)) {
@@ -252,10 +257,15 @@ test("every job except ci-status and the issue labeler carries the contract-only
   const ciStatusBlock = jobBlocks.find((block) => /^ci-status:$/mu.test(block));
   assert.ok(ciStatusBlock !== undefined);
   assert.ok(!ciStatusBlock.includes(CONTRACT_ONLY_GATE));
-  const mirrorBlock = jobBlocks.find((block) => new RegExp(`^${MIRROR_JOB}:$`, "mu").test(block));
+  const mirrorBlock = jobBlocks.find((block) =>
+    new RegExp(`^${MIRROR_JOB}:$`, "mu").test(block),
+  );
   assert.ok(mirrorBlock !== undefined);
   assert.ok(!mirrorBlock.includes(CONTRACT_ONLY_GATE));
-  assert.match(mirrorBlock, /^ {4}if: \$\{\{ github\.event_name != 'issues' && always\(\) \}\}$/mu);
+  assert.match(
+    mirrorBlock,
+    /^ {4}if: \$\{\{ github\.event_name != 'issues' && always\(\) \}\}$/mu,
+  );
 });
 
 test("the ci-status contract-only default matches every job gate", () => {
@@ -278,7 +288,12 @@ test("the ci-status contract-only default matches every job gate", () => {
   let compared = 0;
   for (const block of jobBlocks) {
     const name = jobName(block);
-    if (name === undefined || name === "ci-status" || name === MIRROR_JOB || name === ISSUE_JOB) {
+    if (
+      name === undefined ||
+      name === "ci-status" ||
+      name === MIRROR_JOB ||
+      name === ISSUE_JOB
+    ) {
       continue;
     }
     const body = /^ {4}if: \$\{\{ (?<body>.*) \}\}$/mu.exec(block)?.groups
