@@ -71,6 +71,9 @@ test("listCommits: one 503 then success reads the commits after 2 calls", async 
   assert.equal(await dependabotMode(run.args), "skip");
   assert.equal(run.calls(), 2);
   assert.deepEqual(run.sleeps, [2000]);
+  assert.deepEqual(run.core.warnings, [
+    "could not list the PR's commits: HTTP 503 Service Unavailable; retry 1 of 2 in 2 s",
+  ]);
 });
 
 test("listCommits: three 503s fail closed and name the 3 attempts", async () => {

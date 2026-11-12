@@ -87,10 +87,12 @@ function checkCommits(commits, headSha, commitProblems) {
 // A merge-group run passes its own withRetry so all its reads share one wait
 // budget; a pull request run makes this one read.
 async function listProblems(
-  { github, owner, repo, pullNumber, headSha, sleep, withRetry },
+  { github, core, owner, repo, pullNumber, headSha, sleep, withRetry },
   commitProblems,
 ) {
-  const retry = withRetry ?? createRetry({ sleep });
+  const retry =
+    withRetry ??
+    createRetry({ sleep, log: (message) => core.warning(message) });
   let commits;
   try {
     commits = await retry(

@@ -49,8 +49,13 @@ const PR = {
 
 // Each read answers from its queue in order: an Error is thrown, anything
 // else is the answer. The last entry repeats once the queue runs out.
-function fakeGithub({ get = [PR], pages = [["a.txt"]], list = [[]] } = {}) {
-  const calls = { get: 0, paginate: 0, list: 0 };
+function fakeGithub({
+  get = [PR],
+  pages = [["a.txt"]],
+  list = [[]],
+  commits = [[]],
+} = {}) {
+  const calls = { get: 0, paginate: 0, list: 0, commits: 0 };
   const next = (queue, n) => queue[Math.min(n, queue.length - 1)];
   return {
     calls,
@@ -67,9 +72,15 @@ function fakeGithub({ get = [PR], pages = [["a.txt"]], list = [[]] } = {}) {
           return { data: answer };
         },
         listFiles: "pulls.listFiles",
+        listCommits: "pulls.listCommits",
       },
     },
-    paginate: async () => {
+    paginate: async (method) => {
+      if (method === "pulls.listCommits") {
+        const answer = next(commits, calls.commits++);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      }
       const answer = next(pages, calls.paginate++);
       if (answer instanceof Error) throw answer;
       return answer.map((filename) => ({ filename }));
@@ -84,8 +95,11 @@ async function run(github, files = ["a.txt"]) {
   const core = {
     errors: [],
     failed: undefined,
+    warnings: [],
     info() {},
-    warning() {},
+    warning(message) {
+      this.warnings.push(message);
+    },
     error(message) {
       this.errors.push(message);
     },
@@ -114,6 +128,7 @@ async function run(github, files = ["a.txt"]) {
       mode,
       sleeps,
       errors: core.errors.join("\n"),
+      warnings: core.warnings,
       failed: core.failed,
       paths: fs.existsSync(listed)
         ? fs.readFileSync(listed, "utf8").split("\0").filter(Boolean)
@@ -133,6 +148,9 @@ test("pulls.get: one 503 then success passes after 2 calls and a 2 s wait", asyn
   assert.equal(result.mode, "hand-edit", result.errors);
   assert.equal(github.calls.get, 2);
   assert.deepEqual(result.sleeps, [2000]);
+  assert.deepEqual(result.warnings, [
+    "could not read pull request #7: HTTP 503 Service Unavailable; retry 1 of 2 in 2 s",
+  ]);
 });
 
 test("pulls.get: three 503s fail closed and name the 3 attempts", async () => {
@@ -341,3 +359,32 @@ for (const [name, error] of [
     );
   });
 }
+
+test("one merge-group run waits at most 120 s across all its reads", async () => {
+  const wait29 = () =>
+    httpError(503, "Service Unavailable", { "retry-after": "29" });
+  const dependabot = {
+    ...PR,
+    user: { login: "dependabot[bot]", id: 49699333 },
+  };
+  const github = fakeGithub({
+    get: [wait29(), wait29(), dependabot],
+    pages: [wait29(), wait29(), ["a.txt"]],
+    commits: [wait29()],
+  });
+  const result = await run(github);
+  const total = result.sleeps.reduce((sum, ms) => sum + ms, 0);
+  assert.ok(total <= 120_000, `waited ${total} ms`);
+  assert.deepEqual(result.sleeps, [29000, 29000, 29000, 29000]);
+  assert.equal(github.calls.commits, 1);
+  assert.ok(
+    result.warnings.some((w) =>
+      w.includes(
+        "could not list the PR's commits: Service Unavailable (1 attempt; the job's 120 s retry wait budget is spent)",
+      ),
+    ),
+    result.warnings.join("\n"),
+  );
+  // An unreadable commit list never skips a Dependabot pull request.
+  assert.equal(result.mode, "hand-edit", result.errors);
+});

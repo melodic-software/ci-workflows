@@ -17,19 +17,22 @@ class ReadError extends Error {}
 
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Retry-After is delay-seconds (digits only) or an HTTP-date (RFC 9110
+// section 10.2.3). A value in neither form, or one asking for no wait, is
+// treated as absent so the backoff applies rather than an immediate retry.
 function retryAfterMs(error) {
-  const value = error.response?.headers?.["retry-after"];
-  if (value === undefined) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const date = Date.parse(value);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+  const value = String(error.response?.headers?.["retry-after"] ?? "");
+  const ms = /^\d+$/u.test(value)
+    ? Number(value) * 1000
+    : Date.parse(value) - Date.now();
+  return ms > 0 ? ms : undefined;
 }
 
 // Returns withRetry(read, describe): read() runs up to BACKOFF_MS.length + 1
 // times, and the ReadError it throws names the attempts made, so a persistent
-// outage reads differently from one blip.
-function createRetry({ sleep = realSleep } = {}) {
+// outage reads differently from one blip. log() records each wait, so a read
+// the retry saved still leaves a trace.
+function createRetry({ sleep = realSleep, log = () => {} } = {}) {
   let jobWaited = 0;
   return async function withRetry(read, describe) {
     let waited = 0;
@@ -39,14 +42,16 @@ function createRetry({ sleep = realSleep } = {}) {
       } catch (error) {
         const tries = `${attempt} attempt${attempt === 1 ? "" : "s"}`;
         const fail = (why = "") =>
-          new ReadError(`${describe}: ${error.message} (${tries}${why})`);
+          new ReadError(`${describe}: ${error.message} (${tries}${why})`, {
+            cause: error,
+          });
         if (!RETRY_STATUSES.has(error.status) || attempt > BACKOFF_MS.length) {
           throw fail();
         }
         const asked = retryAfterMs(error);
         if (asked > MAX_WAIT_MS) {
           throw fail(
-            `; Retry-After ${asked / 1000} s exceeds the ${MAX_WAIT_MS / 1000} s cap`,
+            `; Retry-After ${Math.ceil(asked / 1000)} s exceeds the ${MAX_WAIT_MS / 1000} s cap`,
           );
         }
         const wait = asked ?? BACKOFF_MS[attempt - 1];
@@ -62,6 +67,9 @@ function createRetry({ sleep = realSleep } = {}) {
         }
         waited += wait;
         jobWaited += wait;
+        log(
+          `${describe}: HTTP ${error.status} ${error.message}; retry ${attempt} of ${BACKOFF_MS.length} in ${Math.ceil(wait / 1000)} s`,
+        );
         await sleep(wait);
       }
     }

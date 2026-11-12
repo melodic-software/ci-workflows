@@ -145,7 +145,11 @@ function groupDiff({ workspace, baseSha, headSha }) {
 // Returns null, with the run failed, when the group cannot be checked. Every
 // read in one run, the commit lists included, draws on one retry wait budget.
 async function resolveMergeGroup(input) {
-  const args = { ...input, withRetry: createRetry({ sleep: input.sleep }) };
+  const withRetry = createRetry({
+    sleep: input.sleep,
+    log: (message) => input.core.warning(message),
+  });
+  const args = { ...input, withRetry };
   const { core, headRef, baseRef, pathsDir } = args;
   const problems = [];
   try {
