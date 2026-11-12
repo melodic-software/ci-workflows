@@ -1912,8 +1912,10 @@ jobs:
           echo /.lane/ >>.git/info/exclude
 
       # A diff in scope over one review's read budget, or with more than
-      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole,
-      # into chunks of at most that budget and that many files by
+      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole
+      # unless its own section is over the budget (then cut at its hunks, each
+      # piece under its header), into chunks of at most that budget and that
+      # many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
@@ -1925,7 +1927,7 @@ jobs:
       # the rest is split; otherwise the
       # whole diff is split, copies and renames included. chunks=1 with no excluded= is
       # one review of the whole diff in scope, as before: a diff that fits, or
-      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # one the split refuses (a file with a hunk over the budget, more than MAX_CHUNKS
       # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
       # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
@@ -1952,11 +1954,13 @@ jobs:
           # which the full-diff step's file count counts once. A section that
           # deletes a file whole (git's deleted file mode, the scope step's
           # status: removed) counts no file, as in the full-diff and scope
-          # steps' counts, so a chunk of deletions alone counts 0.
+          # steps' counts, so a chunk of deletions alone counts 0. A section
+          # header listed in the optional second file counts no file.
           count_files() {
-            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+            SKIP="${2:-}" awk 'FILENAME == ENVIRON["SKIP"] { s[$0] = 1; next }
+              /^diff --git /{ if (h != "" && !d && !(h in s)) n[h] = 1; h = $0; d = 0; next }
               /^(deleted file mode |status: removed$)/{ d = 1 }
-              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
+              END { if (h != "" && !d && !(h in s)) n[h] = 1; for (k in n) c++; print c + 0 }' ${2:+"$2"} "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -2017,6 +2021,74 @@ jobs:
               distinct_bytes=$measured_bytes
             fi
           fi
+          # A file whose section is over the read budget is cut at its `@@`
+          # hunk boundaries into pieces of at most the budget, each under the
+          # file's own header (its lines before the first hunk), in order, and
+          # the split reads the cut diff; sliced.txt lists each cut file's
+          # header. A file with a hunk over the budget with its header is not
+          # cut, so the split refuses it and the review stays partial. A diff
+          # with no section over the budget reaches the split as it was.
+          sliced="$CHUNK_DIR/sliced.txt"
+          : >"$sliced"
+          # A diff whose last line has no newline is a byte shorter than awk counts it.
+          open=0
+          if [ -n "$(tail -c 1 "$input")" ]; then
+            open=1
+          fi
+          LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
+            function named(header,   rest, p) {
+              rest = substr(header, 12)
+              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
+              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+              if (n == 0) return
+              if (bytes > budget) {
+                h = 0
+                head = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                hunks = 0
+                for (i = h + 1; i <= n; i++) {
+                  if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
+                  size[hunks] += length(line[i]) + 1
+                }
+                size[hunks] -= size_end
+                big = 0
+                for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
+                if (big > budget) {
+                  print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
+                } else if (hunks > 1) {
+                  print line[1] > list
+                  piece = budget
+                  for (k = 1; k <= hunks; k++) {
+                    if (piece + size[k] > budget) {
+                      for (i = 1; i <= h; i++) print line[i] > cut
+                      piece = head
+                    }
+                    last = k < hunks ? start[k + 1] - 1 : n
+                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    piece += size[k]
+                  }
+                  n = 0
+                  bytes = 0
+                  return
+                }
+              }
+              for (i = 1; i <= n; i++) print line[i] > cut
+              n = 0
+              bytes = 0
+            }
+            /^diff --git / { flush() }
+            { line[++n] = $0; bytes += length($0) + 1 }
+            END { bytes -= open; size_end = open; flush() }' "$input"
+          slices=$(wc -l <"$sliced" | tr -d ' ')
+          cut_note=
+          if [ "$slices" -gt 0 ]; then
+            input="$CHUNK_DIR/sliced.diff"
+            cut_note=" sliced=$slices"
+          else
+            rm -f "$CHUNK_DIR/sliced.diff"
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -2033,10 +2105,19 @@ jobs:
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
           # A chunk over the file cap (a split-diff.py that ignored it) is one
-          # review, which the extract step then calls partial.
+          # review, which the extract step then calls partial. A cut file
+          # counts once, in the chunk holding its last piece, so the chunks'
+          # counts add up to the files in scope.
           files=
           for k in $(seq "$chunks"); do
-            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            later=
+            if [ "$slices" -gt 0 ] && [ "$k" -lt "$chunks" ]; then
+              later="$CHUNK_DIR/later-$k.txt"
+              for j in $(seq $((k + 1)) "$chunks"); do
+                grep -Fx -f "$sliced" "$CHUNK_DIR/chunk-$j.patch" || true
+              done >"$later"
+            fi
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch" "$later")
             if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
               echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
               unsplit
@@ -2044,7 +2125,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -4380,8 +4461,10 @@ jobs:
           echo /.lane/ >>.git/info/exclude
 
       # A diff in scope over one review's read budget, or with more than
-      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole,
-      # into chunks of at most that budget and that many files by
+      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole
+      # unless its own section is over the budget (then cut at its hunks, each
+      # piece under its header), into chunks of at most that budget and that
+      # many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
@@ -4393,7 +4476,7 @@ jobs:
       # the rest is split; otherwise the
       # whole diff is split, copies and renames included. chunks=1 with no excluded= is
       # one review of the whole diff in scope, as before: a diff that fits, or
-      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # one the split refuses (a file with a hunk over the budget, more than MAX_CHUNKS
       # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
       # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
@@ -4420,11 +4503,13 @@ jobs:
           # which the full-diff step's file count counts once. A section that
           # deletes a file whole (git's deleted file mode, the scope step's
           # status: removed) counts no file, as in the full-diff and scope
-          # steps' counts, so a chunk of deletions alone counts 0.
+          # steps' counts, so a chunk of deletions alone counts 0. A section
+          # header listed in the optional second file counts no file.
           count_files() {
-            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+            SKIP="${2:-}" awk 'FILENAME == ENVIRON["SKIP"] { s[$0] = 1; next }
+              /^diff --git /{ if (h != "" && !d && !(h in s)) n[h] = 1; h = $0; d = 0; next }
               /^(deleted file mode |status: removed$)/{ d = 1 }
-              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
+              END { if (h != "" && !d && !(h in s)) n[h] = 1; for (k in n) c++; print c + 0 }' ${2:+"$2"} "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -4485,6 +4570,74 @@ jobs:
               distinct_bytes=$measured_bytes
             fi
           fi
+          # A file whose section is over the read budget is cut at its `@@`
+          # hunk boundaries into pieces of at most the budget, each under the
+          # file's own header (its lines before the first hunk), in order, and
+          # the split reads the cut diff; sliced.txt lists each cut file's
+          # header. A file with a hunk over the budget with its header is not
+          # cut, so the split refuses it and the review stays partial. A diff
+          # with no section over the budget reaches the split as it was.
+          sliced="$CHUNK_DIR/sliced.txt"
+          : >"$sliced"
+          # A diff whose last line has no newline is a byte shorter than awk counts it.
+          open=0
+          if [ -n "$(tail -c 1 "$input")" ]; then
+            open=1
+          fi
+          LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
+            function named(header,   rest, p) {
+              rest = substr(header, 12)
+              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
+              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+              if (n == 0) return
+              if (bytes > budget) {
+                h = 0
+                head = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                hunks = 0
+                for (i = h + 1; i <= n; i++) {
+                  if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
+                  size[hunks] += length(line[i]) + 1
+                }
+                size[hunks] -= size_end
+                big = 0
+                for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
+                if (big > budget) {
+                  print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
+                } else if (hunks > 1) {
+                  print line[1] > list
+                  piece = budget
+                  for (k = 1; k <= hunks; k++) {
+                    if (piece + size[k] > budget) {
+                      for (i = 1; i <= h; i++) print line[i] > cut
+                      piece = head
+                    }
+                    last = k < hunks ? start[k + 1] - 1 : n
+                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    piece += size[k]
+                  }
+                  n = 0
+                  bytes = 0
+                  return
+                }
+              }
+              for (i = 1; i <= n; i++) print line[i] > cut
+              n = 0
+              bytes = 0
+            }
+            /^diff --git / { flush() }
+            { line[++n] = $0; bytes += length($0) + 1 }
+            END { bytes -= open; size_end = open; flush() }' "$input"
+          slices=$(wc -l <"$sliced" | tr -d ' ')
+          cut_note=
+          if [ "$slices" -gt 0 ]; then
+            input="$CHUNK_DIR/sliced.diff"
+            cut_note=" sliced=$slices"
+          else
+            rm -f "$CHUNK_DIR/sliced.diff"
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -4501,10 +4654,19 @@ jobs:
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
           # A chunk over the file cap (a split-diff.py that ignored it) is one
-          # review, which the extract step then calls partial.
+          # review, which the extract step then calls partial. A cut file
+          # counts once, in the chunk holding its last piece, so the chunks'
+          # counts add up to the files in scope.
           files=
           for k in $(seq "$chunks"); do
-            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            later=
+            if [ "$slices" -gt 0 ] && [ "$k" -lt "$chunks" ]; then
+              later="$CHUNK_DIR/later-$k.txt"
+              for j in $(seq $((k + 1)) "$chunks"); do
+                grep -Fx -f "$sliced" "$CHUNK_DIR/chunk-$j.patch" || true
+              done >"$later"
+            fi
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch" "$later")
             if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
               echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
               unsplit
@@ -4512,7 +4674,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
@@ -6821,8 +6983,10 @@ jobs:
           echo /.lane/ >>.git/info/exclude
 
       # A diff in scope over one review's read budget, or with more than
-      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole,
-      # into chunks of at most that budget and that many files by
+      # MAX_CHUNK_FILES files, is split at file boundaries, each file whole
+      # unless its own section is over the budget (then cut at its hunks, each
+      # piece under its header), into chunks of at most that budget and that
+      # many files by
       # claude-code-plugins' split-diff.py from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
@@ -6834,7 +6998,7 @@ jobs:
       # the rest is split; otherwise the
       # whole diff is split, copies and renames included. chunks=1 with no excluded= is
       # one review of the whole diff in scope, as before: a diff that fits, or
-      # one the split refuses (a file over the budget, more than MAX_CHUNKS
+      # one the split refuses (a file with a hunk over the budget, more than MAX_CHUNKS
       # chunks, or a chunk over MAX_CHUNK_FILES files), which the extract step
       # then calls partial. The chunk directory must be new, so the head cannot
       # plant a file or symlink in it; any failure here reviews unsplit, as a
@@ -6861,11 +7025,13 @@ jobs:
           # which the full-diff step's file count counts once. A section that
           # deletes a file whole (git's deleted file mode, the scope step's
           # status: removed) counts no file, as in the full-diff and scope
-          # steps' counts, so a chunk of deletions alone counts 0.
+          # steps' counts, so a chunk of deletions alone counts 0. A section
+          # header listed in the optional second file counts no file.
           count_files() {
-            awk '/^diff --git /{ if (h != "" && !d) n[h] = 1; h = $0; d = 0; next }
+            SKIP="${2:-}" awk 'FILENAME == ENVIRON["SKIP"] { s[$0] = 1; next }
+              /^diff --git /{ if (h != "" && !d && !(h in s)) n[h] = 1; h = $0; d = 0; next }
               /^(deleted file mode |status: removed$)/{ d = 1 }
-              END { if (h != "" && !d) n[h] = 1; for (k in n) c++; print c + 0 }' "$1"
+              END { if (h != "" && !d && !(h in s)) n[h] = 1; for (k in n) c++; print c + 0 }' ${2:+"$2"} "$1"
           }
           if ! [[ "$SCOPE_BYTES" =~ ^[0-9]{1,12}$ ]]; then
             unsplit
@@ -6926,6 +7092,74 @@ jobs:
               distinct_bytes=$measured_bytes
             fi
           fi
+          # A file whose section is over the read budget is cut at its `@@`
+          # hunk boundaries into pieces of at most the budget, each under the
+          # file's own header (its lines before the first hunk), in order, and
+          # the split reads the cut diff; sliced.txt lists each cut file's
+          # header. A file with a hunk over the budget with its header is not
+          # cut, so the split refuses it and the review stays partial. A diff
+          # with no section over the budget reaches the split as it was.
+          sliced="$CHUNK_DIR/sliced.txt"
+          : >"$sliced"
+          # A diff whose last line has no newline is a byte shorter than awk counts it.
+          open=0
+          if [ -n "$(tail -c 1 "$input")" ]; then
+            open=1
+          fi
+          LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
+            function named(header,   rest, p) {
+              rest = substr(header, 12)
+              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
+              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+              if (n == 0) return
+              if (bytes > budget) {
+                h = 0
+                head = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                hunks = 0
+                for (i = h + 1; i <= n; i++) {
+                  if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
+                  size[hunks] += length(line[i]) + 1
+                }
+                size[hunks] -= size_end
+                big = 0
+                for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
+                if (big > budget) {
+                  print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
+                } else if (hunks > 1) {
+                  print line[1] > list
+                  piece = budget
+                  for (k = 1; k <= hunks; k++) {
+                    if (piece + size[k] > budget) {
+                      for (i = 1; i <= h; i++) print line[i] > cut
+                      piece = head
+                    }
+                    last = k < hunks ? start[k + 1] - 1 : n
+                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    piece += size[k]
+                  }
+                  n = 0
+                  bytes = 0
+                  return
+                }
+              }
+              for (i = 1; i <= n; i++) print line[i] > cut
+              n = 0
+              bytes = 0
+            }
+            /^diff --git / { flush() }
+            { line[++n] = $0; bytes += length($0) + 1 }
+            END { bytes -= open; size_end = open; flush() }' "$input"
+          slices=$(wc -l <"$sliced" | tr -d ' ')
+          cut_note=
+          if [ "$slices" -gt 0 ]; then
+            input="$CHUNK_DIR/sliced.diff"
+            cut_note=" sliced=$slices"
+          else
+            rm -f "$CHUNK_DIR/sliced.diff"
+          fi
           status=0
           python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -6942,10 +7176,19 @@ jobs:
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
           # A chunk over the file cap (a split-diff.py that ignored it) is one
-          # review, which the extract step then calls partial.
+          # review, which the extract step then calls partial. A cut file
+          # counts once, in the chunk holding its last piece, so the chunks'
+          # counts add up to the files in scope.
           files=
           for k in $(seq "$chunks"); do
-            n=$(count_files "$CHUNK_DIR/chunk-$k.patch")
+            later=
+            if [ "$slices" -gt 0 ] && [ "$k" -lt "$chunks" ]; then
+              later="$CHUNK_DIR/later-$k.txt"
+              for j in $(seq $((k + 1)) "$chunks"); do
+                grep -Fx -f "$sliced" "$CHUNK_DIR/chunk-$j.patch" || true
+              done >"$later"
+            fi
+            n=$(count_files "$CHUNK_DIR/chunk-$k.patch" "$later")
             if [ "$n" -gt "$MAX_CHUNK_FILES" ]; then
               echo "::warning::chunk $k holds $n files, over $MAX_CHUNK_FILES; the diff is reviewed unsplit, as a partial review"
               unsplit
@@ -6953,7 +7196,7 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
-          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded"
+          echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
