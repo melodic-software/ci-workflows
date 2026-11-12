@@ -307,9 +307,18 @@ test("with verified renames left out, the splitter gets the distinct diff byte f
 const { isPartial } = require("../actions/publish-review/publish.cjs");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
-// The extract step of `job` over the chunks `cut` wrote, chunk k's review
-// returning files_read `filesRead[k - 1]`.
-async function extract(job, cut, filesRead, wholeFiles) {
+// The extract step of `job` over the chunks `cut` wrote, with the counts
+// and piece names the compose step passes on (`composed`, its outputs; none
+// when omitted) and a read budget of `budget`, chunk k's review returning files_read `filesRead[k - 1]`.
+// Returns its outputs and the warnings it wrote.
+async function extract(
+  job,
+  cut,
+  filesRead,
+  wholeFiles,
+  composed = {},
+  budget = "1000",
+) {
   const dir = makeTemporaryDirectory("pr-review-cli-slices-extract-");
   const log = JSON.stringify({
     num_turns: 1,
@@ -348,7 +357,9 @@ async function extract(job, cut, filesRead, wholeFiles) {
       fs.statSync(path.join(cut.work, ".claude-lane", "pr.diff")).size,
     ),
     CHUNKS: cut.outputs.chunks,
-    CHUNK_FILES: cut.outputs.files,
+    CHUNK_FILES: composed["chunk-files"] ?? cut.outputs.files,
+    CHUNK_PIECES: composed["chunk-pieces"] ?? "",
+    PIECE_NAMES: composed["chunk-piece-names"] ?? "",
     CHUNK_DIR: cut.chunkDir,
     CHUNK_OUTCOMES: Array(filesRead.length).fill("success").join(","),
     EXCLUDED: cut.outputs.excluded,
@@ -358,9 +369,10 @@ async function extract(job, cut, filesRead, wholeFiles) {
         workflow.env[name],
       ]),
     ),
-    READ_BUDGET: "1000",
+    READ_BUDGET: budget,
   };
   const outputs = {};
+  const warnings = [];
   const saved = Object.fromEntries(
     Object.keys(values).map((k) => [k, process.env[k]]),
   );
@@ -379,7 +391,7 @@ async function extract(job, cut, filesRead, wholeFiles) {
         throw new Error(m);
       },
       info: () => {},
-      warning: () => {},
+      warning: (m) => warnings.push(m),
       summary,
     });
   } finally {
@@ -388,28 +400,99 @@ async function extract(job, cut, filesRead, wholeFiles) {
       else process.env[k] = v;
     }
   }
-  return outputs;
+  return { ...outputs, warnings };
 }
 
-test("a review of a sliced file is complete only when the chunk holding its last piece read every file it counts", async () => {
+test("a review of a cut file is complete only when every chunk holding a piece reports it read", async () => {
   // Chunk 1: the first two hunks of the big file; chunk 2: its last hunk and
-  // the small file. Two files in scope.
+  // the small file. Two files in scope; chunk 1 has one piece to read, chunk
+  // 2 one piece and one file.
   const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
   const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
     const cut = split(job, diff, { READ_BUDGET: "1000" });
     assert.equal(cut.outputs.files, "0,2");
-    const all = await extract(job, cut, [0, 2], 2);
+    const composed = (await compose(job, cut, cut.chunkDir)).outputs;
+    assert.equal(composed["chunk-pieces"], "1,0");
+    assert.deepEqual(JSON.parse(composed["chunk-piece-names"]), [
+      [`piece 1 of 2 of ${BIG}`],
+      [`piece 2 of 2 of ${BIG}`],
+    ]);
+    const all = await extract(job, cut, [1, 2], 2, composed);
     assert.equal(all.verdict, "complete", job.name);
-    assert.deepEqual(JSON.parse(all.review).coverage, { read: 2, changed: 2 });
-    assert.equal(isPartial(JSON.parse(all.review).coverage), false);
-    // Chunk 2 skipped the small file; chunk 1 claiming a file cannot make up for it.
-    const short = await extract(job, cut, [1, 1], 2);
-    assert.deepEqual(JSON.parse(short.review).coverage, {
+    const whole = JSON.parse(all.review);
+    assert.deepEqual(whole.coverage, { read: 2, changed: 2 });
+    assert.equal(isPartial(whole.coverage), false);
+    assert.doesNotMatch(whole.summary, /Cut files/u);
+    assert.deepEqual(all.warnings, []);
+    // Chunk 1 did not read the first piece: the last piece's chunk reading
+    // everything cannot make the review complete.
+    const first = await extract(job, cut, [0, 2], 2, composed);
+    const firstReview = JSON.parse(first.review);
+    assert.deepEqual(firstReview.coverage, { read: 1, changed: 2 });
+    assert.equal(isPartial(firstReview.coverage), true);
+    const named = `chunk 1 of 2 reported files_read 0 of 1 and holds piece 1 of 2 of ${BIG}`;
+    assert.deepEqual(first.warnings, [`cut files not read whole: ${named}`]);
+    assert.ok(
+      firstReview.summary.endsWith(`\n\nCut files not read whole: ${named}.`),
+      firstReview.summary,
+    );
+    // Chunk 2 read one of its two: partial, naming the piece it holds.
+    const second = await extract(job, cut, [1, 1], 2, composed);
+    assert.deepEqual(JSON.parse(second.review).coverage, {
       read: 1,
       changed: 2,
     });
-    assert.equal(isPartial(JSON.parse(short.review).coverage), true);
+    assert.deepEqual(second.warnings, [
+      `cut files not read whole: chunk 2 of 2 reported files_read 1 of 2 and holds piece 2 of 2 of ${BIG}`,
+    ]);
+  }
+});
+
+test("a malformed piece count leaves no completed review", async () => {
+  const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
+  const out = await extract(LEGS[0], cut, [1, 2], 2, {
+    "chunk-pieces": "1",
+    "chunk-piece-names": "[]",
+  });
+  assert.equal(
+    out.verdict,
+    "the job could not read how many cut-file pieces each chunk holds",
+  );
+  assert.equal(out.review, undefined);
+});
+
+test("with no cut file the extract step's result is as before, whatever the piece inputs hold when empty", async () => {
+  const many = Array.from(
+    { length: 50 },
+    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
+  ).join("");
+  for (const job of LEGS) {
+    const cut = split(job, many);
+    assert.equal(cut.outputs.files, "40,10");
+    const composed = (await compose(job, cut, cut.chunkDir)).outputs;
+    assert.equal(composed["chunk-pieces"], undefined);
+    assert.equal(composed["chunk-piece-names"], undefined);
+    for (const reads of [
+      [40, 10],
+      [39, 10],
+    ]) {
+      const out = await extract(
+        job,
+        cut,
+        reads,
+        50,
+        composed,
+        workflow.env.READ_BUDGET,
+      );
+      assert.ok(out.review, out.verdict);
+      assert.deepEqual(JSON.parse(out.review).coverage, {
+        read: reads[0] + reads[1],
+        changed: 50,
+      });
+      assert.deepEqual(out.warnings, []);
+    }
   }
 });
 
@@ -587,7 +670,7 @@ async function compose(job, cut, chunkDir) {
       else process.env[k] = v;
     }
   }
-  return Array.from({ length: Number(outputs.chunks) }, (_, i) =>
+  const prompts = Array.from({ length: Number(outputs.chunks) }, (_, i) =>
     fs.readFileSync(
       path.join(
         outputs["prompt-dir"],
@@ -596,6 +679,8 @@ async function compose(job, cut, chunkDir) {
       "utf8",
     ),
   );
+  prompts.outputs = outputs;
+  return prompts;
 }
 
 // Chunk 1: the big file's hunks 1 and 2; chunk 2: its hunk 3 and the small
@@ -617,7 +702,7 @@ test("a chunk holding a piece of a cut file names the path, the piece and its hu
       prompts[0].includes(
         [
           `PIECE 1 OF 2 of ${BIG}: this chunk holds 2 hunks, from @@ -10,1 +10,1 @@ to @@ -20,1 +20,1 @@, under the file's own diff --git header; its other hunks are in other chunks.`,
-          "Read every hunk of this piece. It is not counted in this chunk's files_read: the chunk holding its last piece counts the file.",
+          "Read every hunk of this piece, and count it as one in files_read once you have.",
         ].join("\n"),
       ),
       prompts[0],
@@ -626,13 +711,27 @@ test("a chunk holding a piece of a cut file names the path, the piece and its hu
       prompts[1].includes(
         [
           `PIECE 2 OF 2 of ${BIG}: this chunk holds the hunk @@ -30,1 +30,1 @@, under the file's own diff --git header; its other hunks are in other chunks.`,
-          "Read every hunk of this piece. It is one of the files to read here: count it once you read every hunk of this piece.",
+          "Read every hunk of this piece, and count it as one in files_read once you have.",
         ].join("\n"),
       ),
       prompts[1],
     );
     for (const prompt of prompts.slice(0, 2))
       assert.doesNotMatch(prompt, /each file whole, into/u);
+    // Each piece counts as one in its own chunk's files_read.
+    for (const [k, units] of [
+      [0, 1],
+      [1, 2],
+    ])
+      assert.ok(
+        prompts[k].includes(
+          [
+            `TO READ: ${units} in this chunk, each counted once you read every hunk of it: each file of the scope's file list it holds whole, and each piece of a cut file.`,
+            `A review that read all of them returns files_read ${units}. The other listed files are context, never counted.`,
+          ].join("\n"),
+        ),
+        prompts[k],
+      );
   }
 });
 
