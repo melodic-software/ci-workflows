@@ -49,19 +49,62 @@ function selectMode(pr) {
 
 class GroupError extends Error {}
 
-async function getPull({ github, owner, repo }, number) {
-  try {
-    const { data } = await github.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: number,
-    });
-    return data;
-  } catch (error) {
-    throw new GroupError(
-      `could not read pull request #${number}: ${error.message}`,
-    );
+// A read answered with a server error, or a network failure (Octokit reports
+// one as status 500), is tried again. Client errors and rate limits (403,
+// 429) are not: a retry cannot fix them, and a loop would spend the pool.
+const RETRY_STATUSES = new Set([500, 502, 503, 504]);
+const BACKOFF_MS = [2000, 5000];
+const MAX_WAIT_MS = 30_000;
+const WAIT_BUDGET_MS = 59_000;
+
+const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function retryAfterMs(error) {
+  const value = error.response?.headers?.["retry-after"];
+  if (value === undefined) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+// Runs read() up to BACKOFF_MS.length + 1 times. The thrown GroupError names
+// the attempts made, so a persistent outage reads differently from one blip.
+async function withRetry(read, describe, sleep = realSleep) {
+  let waited = 0;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      const tries = `${attempt} attempt${attempt === 1 ? "" : "s"}`;
+      const fail = (why = "") =>
+        new GroupError(`${describe}: ${error.message} (${tries}${why})`);
+      if (!RETRY_STATUSES.has(error.status) || attempt > BACKOFF_MS.length) {
+        throw fail();
+      }
+      const asked = retryAfterMs(error);
+      if (asked > MAX_WAIT_MS) {
+        throw fail(
+          `; Retry-After ${asked / 1000} s exceeds the ${MAX_WAIT_MS / 1000} s cap`,
+        );
+      }
+      const wait = asked ?? BACKOFF_MS[attempt - 1];
+      if (waited + wait > WAIT_BUDGET_MS) {
+        throw fail(`; the next wait would pass ${WAIT_BUDGET_MS / 1000} s`);
+      }
+      waited += wait;
+      await sleep(wait);
+    }
   }
+}
+
+async function getPull({ github, owner, repo, sleep }, number) {
+  const { data } = await withRetry(
+    () => github.rest.pulls.get({ owner, repo, pull_number: number }),
+    `could not read pull request #${number}`,
+    sleep,
+  );
+  return data;
 }
 
 // The queued pull request and, for a stack, each pull request below it,
@@ -105,20 +148,20 @@ async function groupPulls(args, number, target) {
   }
 }
 
-async function pullFiles({ github, owner, repo }, number) {
-  let files;
-  try {
-    files = await github.paginate(github.rest.pulls.listFiles, {
-      owner,
-      repo,
-      pull_number: number,
-      per_page: 100,
-    });
-  } catch (error) {
-    throw new GroupError(
-      `could not list the files of pull request #${number}: ${error.message}`,
-    );
-  }
+// A retry restarts the listing from page 1, so no page is kept from a failed
+// pass.
+async function pullFiles({ github, owner, repo, sleep }, number) {
+  const files = await withRetry(
+    () =>
+      github.paginate(github.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: number,
+        per_page: 100,
+      }),
+    `could not list the files of pull request #${number}`,
+    sleep,
+  );
   if (files.length >= FILE_LIST_CAP) {
     throw new GroupError(
       `pull request #${number} lists ${files.length} files, the API cap, so the list may be incomplete`,
