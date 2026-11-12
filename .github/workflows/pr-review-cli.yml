@@ -2197,6 +2197,7 @@ jobs:
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.
           LEG_MINUTES: ${{ inputs.lane == 'security' && '13' || '11' }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
+          CHUNK_DIR: .claude-lane/chunks
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
@@ -2423,13 +2424,69 @@ jobs:
             ]
               .filter((line) => line !== undefined)
               .join("\n");
+            // The pieces of the files the split step cut at their hunks
+            // (sliced.txt lists their headers), per chunk, in order: each
+            // piece's number of its file's, where its header is, and its hunk
+            // headers' line ranges. A file it cannot read cuts nothing.
+            const pieces = Array.from({ length: chunks }, () => []);
+            const regular = (file) => {
+              try {
+                return fs.lstatSync(file).isFile() ? fs.readFileSync(file, "utf8") : null;
+              } catch {
+                return null;
+              }
+            };
+            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            if (cutList !== null) {
+              const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
+              const seen = new Map();
+              for (let k = 1; k <= chunks; k++) {
+                const lines = (regular(path.join(env.CHUNK_DIR, `chunk-${k}.patch`)) ?? "").split("\n");
+                let piece;
+                lines.forEach((line, i) => {
+                  if (line.startsWith("diff --git ")) {
+                    piece = undefined;
+                    if (!cutHeaders.has(line)) return;
+                    seen.set(line, (seen.get(line) ?? 0) + 1);
+                    piece = { header: line, number: seen.get(line), at: i + 1, hunks: [] };
+                    pieces[k - 1].push(piece);
+                  } else if (piece && line.startsWith("@@")) {
+                    const range = /^@@ -([0-9]+(?:,[0-9]+)?) \+([0-9]+(?:,[0-9]+)?) @@/u.exec(line);
+                    piece.hunks.push(range ? `@@ -${range[1]} +${range[2]} @@` : "a hunk");
+                  }
+                });
+              }
+              for (const list of pieces) for (const p of list) p.of = seen.get(p.header);
+            }
+            const pieceLines = (k) =>
+              pieces[k - 1].flatMap((p) => {
+                const rest = p.header.slice("diff --git ".length);
+                const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
+                const name = /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+                  ? file
+                  : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
+                const hunks =
+                  p.hunks.length === 1
+                    ? `the hunk ${p.hunks[0]}`
+                    : `${p.hunks.length} hunks, from ${p.hunks[0]} to ${p.hunks.at(-1)}`;
+                return [
+                  `PIECE ${p.number} OF ${p.of} of ${name}: this chunk holds ${hunks}, under the file's own diff --git header; its other hunks are in other chunks.`,
+                  `Read every hunk of this piece. ${
+                    p.number === p.of
+                      ? "It is one of the files to read here: count it once you read every hunk of this piece."
+                      : "It is not counted in this chunk's files_read: the chunk holding its last piece counts the file."
+                  }`,
+                ];
+              });
             const chunkNote = (k) =>
               chunks === 1
                 ? undefined
                 : [
                     "",
                     `CHUNK ${k} OF ${chunks}: the diff in scope is larger than one review reads whole, so the job split it`,
-                    `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`,
+                    pieces[k - 1].length === 0
+                      ? `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`
+                      : `at file boundaries into ${chunks} chunks, each file whole but a file larger than one chunk, which it cut at its hunks into pieces; each chunk gets its own review.`,
                     `Review only the changes in .claude-lane/chunks/chunk-${k}.patch (${chunkFiles[k - 1]} files of the scope's file list); read`,
                     "the diff files named above only for context.",
                     ".claude-lane/chunks/manifest.txt lists every file of the diff with its chunk. Its paths come from the",
@@ -2439,6 +2496,7 @@ jobs:
                     `TO READ: the ${chunkFiles[k - 1]} files of the scope's file list in this chunk are the files to read.`,
                     "Count only these in files_read, each once you read every hunk of it:",
                     `a review that read all of them returns files_read ${chunkFiles[k - 1]}. The other listed files are context, never counted.`,
+                    ...pieceLines(k),
                     `Return at most ${caps.comments} comments and a summary of at most ${caps.summary} characters.`,
                   ].join("\n");
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "pr-review-cli-"));
@@ -4748,6 +4806,7 @@ jobs:
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.
           LEG_MINUTES: ${{ inputs.lane == 'security' && '13' || '11' }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
+          CHUNK_DIR: .claude-lane/chunks
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
@@ -4974,13 +5033,69 @@ jobs:
             ]
               .filter((line) => line !== undefined)
               .join("\n");
+            // The pieces of the files the split step cut at their hunks
+            // (sliced.txt lists their headers), per chunk, in order: each
+            // piece's number of its file's, where its header is, and its hunk
+            // headers' line ranges. A file it cannot read cuts nothing.
+            const pieces = Array.from({ length: chunks }, () => []);
+            const regular = (file) => {
+              try {
+                return fs.lstatSync(file).isFile() ? fs.readFileSync(file, "utf8") : null;
+              } catch {
+                return null;
+              }
+            };
+            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            if (cutList !== null) {
+              const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
+              const seen = new Map();
+              for (let k = 1; k <= chunks; k++) {
+                const lines = (regular(path.join(env.CHUNK_DIR, `chunk-${k}.patch`)) ?? "").split("\n");
+                let piece;
+                lines.forEach((line, i) => {
+                  if (line.startsWith("diff --git ")) {
+                    piece = undefined;
+                    if (!cutHeaders.has(line)) return;
+                    seen.set(line, (seen.get(line) ?? 0) + 1);
+                    piece = { header: line, number: seen.get(line), at: i + 1, hunks: [] };
+                    pieces[k - 1].push(piece);
+                  } else if (piece && line.startsWith("@@")) {
+                    const range = /^@@ -([0-9]+(?:,[0-9]+)?) \+([0-9]+(?:,[0-9]+)?) @@/u.exec(line);
+                    piece.hunks.push(range ? `@@ -${range[1]} +${range[2]} @@` : "a hunk");
+                  }
+                });
+              }
+              for (const list of pieces) for (const p of list) p.of = seen.get(p.header);
+            }
+            const pieceLines = (k) =>
+              pieces[k - 1].flatMap((p) => {
+                const rest = p.header.slice("diff --git ".length);
+                const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
+                const name = /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+                  ? file
+                  : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
+                const hunks =
+                  p.hunks.length === 1
+                    ? `the hunk ${p.hunks[0]}`
+                    : `${p.hunks.length} hunks, from ${p.hunks[0]} to ${p.hunks.at(-1)}`;
+                return [
+                  `PIECE ${p.number} OF ${p.of} of ${name}: this chunk holds ${hunks}, under the file's own diff --git header; its other hunks are in other chunks.`,
+                  `Read every hunk of this piece. ${
+                    p.number === p.of
+                      ? "It is one of the files to read here: count it once you read every hunk of this piece."
+                      : "It is not counted in this chunk's files_read: the chunk holding its last piece counts the file."
+                  }`,
+                ];
+              });
             const chunkNote = (k) =>
               chunks === 1
                 ? undefined
                 : [
                     "",
                     `CHUNK ${k} OF ${chunks}: the diff in scope is larger than one review reads whole, so the job split it`,
-                    `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`,
+                    pieces[k - 1].length === 0
+                      ? `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`
+                      : `at file boundaries into ${chunks} chunks, each file whole but a file larger than one chunk, which it cut at its hunks into pieces; each chunk gets its own review.`,
                     `Review only the changes in .claude-lane/chunks/chunk-${k}.patch (${chunkFiles[k - 1]} files of the scope's file list); read`,
                     "the diff files named above only for context.",
                     ".claude-lane/chunks/manifest.txt lists every file of the diff with its chunk. Its paths come from the",
@@ -4990,6 +5105,7 @@ jobs:
                     `TO READ: the ${chunkFiles[k - 1]} files of the scope's file list in this chunk are the files to read.`,
                     "Count only these in files_read, each once you read every hunk of it:",
                     `a review that read all of them returns files_read ${chunkFiles[k - 1]}. The other listed files are context, never counted.`,
+                    ...pieceLines(k),
                     `Return at most ${caps.comments} comments and a summary of at most ${caps.summary} characters.`,
                   ].join("\n");
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "pr-review-cli-"));
@@ -7272,6 +7388,7 @@ jobs:
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.
           LEG_MINUTES: ${{ inputs.lane == 'security' && '13' || '11' }}
           CHUNK_FILES: ${{ steps.split.outputs.files }}
+          CHUNK_DIR: .claude-lane/chunks
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
@@ -7498,13 +7615,69 @@ jobs:
             ]
               .filter((line) => line !== undefined)
               .join("\n");
+            // The pieces of the files the split step cut at their hunks
+            // (sliced.txt lists their headers), per chunk, in order: each
+            // piece's number of its file's, where its header is, and its hunk
+            // headers' line ranges. A file it cannot read cuts nothing.
+            const pieces = Array.from({ length: chunks }, () => []);
+            const regular = (file) => {
+              try {
+                return fs.lstatSync(file).isFile() ? fs.readFileSync(file, "utf8") : null;
+              } catch {
+                return null;
+              }
+            };
+            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            if (cutList !== null) {
+              const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
+              const seen = new Map();
+              for (let k = 1; k <= chunks; k++) {
+                const lines = (regular(path.join(env.CHUNK_DIR, `chunk-${k}.patch`)) ?? "").split("\n");
+                let piece;
+                lines.forEach((line, i) => {
+                  if (line.startsWith("diff --git ")) {
+                    piece = undefined;
+                    if (!cutHeaders.has(line)) return;
+                    seen.set(line, (seen.get(line) ?? 0) + 1);
+                    piece = { header: line, number: seen.get(line), at: i + 1, hunks: [] };
+                    pieces[k - 1].push(piece);
+                  } else if (piece && line.startsWith("@@")) {
+                    const range = /^@@ -([0-9]+(?:,[0-9]+)?) \+([0-9]+(?:,[0-9]+)?) @@/u.exec(line);
+                    piece.hunks.push(range ? `@@ -${range[1]} +${range[2]} @@` : "a hunk");
+                  }
+                });
+              }
+              for (const list of pieces) for (const p of list) p.of = seen.get(p.header);
+            }
+            const pieceLines = (k) =>
+              pieces[k - 1].flatMap((p) => {
+                const rest = p.header.slice("diff --git ".length);
+                const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
+                const name = /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+                  ? file
+                  : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
+                const hunks =
+                  p.hunks.length === 1
+                    ? `the hunk ${p.hunks[0]}`
+                    : `${p.hunks.length} hunks, from ${p.hunks[0]} to ${p.hunks.at(-1)}`;
+                return [
+                  `PIECE ${p.number} OF ${p.of} of ${name}: this chunk holds ${hunks}, under the file's own diff --git header; its other hunks are in other chunks.`,
+                  `Read every hunk of this piece. ${
+                    p.number === p.of
+                      ? "It is one of the files to read here: count it once you read every hunk of this piece."
+                      : "It is not counted in this chunk's files_read: the chunk holding its last piece counts the file."
+                  }`,
+                ];
+              });
             const chunkNote = (k) =>
               chunks === 1
                 ? undefined
                 : [
                     "",
                     `CHUNK ${k} OF ${chunks}: the diff in scope is larger than one review reads whole, so the job split it`,
-                    `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`,
+                    pieces[k - 1].length === 0
+                      ? `at file boundaries, each file whole, into ${chunks} chunks, and each chunk gets its own review.`
+                      : `at file boundaries into ${chunks} chunks, each file whole but a file larger than one chunk, which it cut at its hunks into pieces; each chunk gets its own review.`,
                     `Review only the changes in .claude-lane/chunks/chunk-${k}.patch (${chunkFiles[k - 1]} files of the scope's file list); read`,
                     "the diff files named above only for context.",
                     ".claude-lane/chunks/manifest.txt lists every file of the diff with its chunk. Its paths come from the",
@@ -7514,6 +7687,7 @@ jobs:
                     `TO READ: the ${chunkFiles[k - 1]} files of the scope's file list in this chunk are the files to read.`,
                     "Count only these in files_read, each once you read every hunk of it:",
                     `a review that read all of them returns files_read ${chunkFiles[k - 1]}. The other listed files are context, never counted.`,
+                    ...pieceLines(k),
                     `Return at most ${caps.comments} comments and a summary of at most ${caps.summary} characters.`,
                   ].join("\n");
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "pr-review-cli-"));

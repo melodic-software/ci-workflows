@@ -415,8 +415,9 @@ test("a review of a sliced file is complete only when the chunk holding its last
 
 // --- the per-file read check over a sliced file ---
 
-// A Read result of every line of `file`, numbered as the CLI prints them.
-function readAll(id, file) {
+// A Read result of every line of `file` but the 1-based line `skip`,
+// numbered as the CLI prints them.
+function readAll(id, file, skip = 0) {
   const lines = fs.readFileSync(file, "utf8").replace(/\n$/u, "").split("\n");
   return [
     {
@@ -436,6 +437,7 @@ function readAll(id, file) {
             tool_use_id: id,
             content: lines
               .map((line, i) => `${String(i + 1).padStart(6)}\t${line}`)
+              .filter((_, i) => i + 1 !== skip)
               .join("\n"),
           },
         ],
@@ -444,7 +446,11 @@ function readAll(id, file) {
   ];
 }
 
-test("the reads check lists a sliced file as unread even when every piece was read, and reads the other files", () => {
+// The reads check in report mode over the cut-file fixture's two chunks:
+// chunk 1 the big file's first piece, chunk 2 its second piece and the small
+// file. `skip` drops one line of a chunk's Read; `tamper` edits the chunks
+// first. Returns the lines the check wrote.
+function checkCut({ skip = {}, tamper = () => {} } = {}) {
   const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
   const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
   const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
@@ -453,15 +459,16 @@ test("the reads check lists a sliced file as unread even when every piece was re
     path.join(work, ".claude-lane", "files.txt"),
     `${BIG}\n${SMALL}\n`,
   );
+  tamper(cut.chunkDir);
   const chunk1 = path.join(cut.chunkDir, "chunk-1.patch");
   const chunk2 = path.join(cut.chunkDir, "chunk-2.patch");
   const results = path.join(work, "results");
   fs.mkdirSync(path.join(results, "chunk-2"), { recursive: true });
   const first = path.join(work, "execution-1.json");
-  fs.writeFileSync(first, JSON.stringify(readAll("r1", chunk1)));
+  fs.writeFileSync(first, JSON.stringify(readAll("r1", chunk1, skip[1])));
   fs.writeFileSync(
     path.join(results, "chunk-2", "execution.json"),
-    JSON.stringify(readAll("r2", chunk2)),
+    JSON.stringify(readAll("r2", chunk2, skip[2])),
   );
   const output = path.join(work, "reads-output");
   fs.writeFileSync(output, "");
@@ -482,17 +489,180 @@ test("the reads check lists a sliced file as unread even when every piece was re
       RESULTS_DIR: results,
       SCOPE_DIFF: ".claude-lane/pr.diff",
       FILE_LIST: ".claude-lane/files.txt",
-      CHUNK_DIR: path.join(work, ".claude-lane", "chunks"),
+      CHUNK_DIR: ".claude-lane/chunks",
       EXCLUDED: "0",
       GITHUB_OUTPUT: output,
       GITHUB_WORKSPACE: work,
     },
     { write: (line) => lines.push(line) },
   );
-  assert.deepEqual(lines, [
-    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
-    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
-  ]);
   // Report mode passes the extract step's verdict on unchanged.
   assert.match(fs.readFileSync(output, "utf8"), /^verdict=complete$/mu);
+  return lines;
+}
+
+test("the reads check counts a cut file read when every piece was fully Read in the chunk that holds it", () => {
+  assert.deepEqual(checkCut(), [
+    "::notice title=pr-review-cli reads::listed=2 unread=0 mode=report",
+  ]);
+});
+
+test("a piece Read short lists the cut file unread and names the piece", () => {
+  // Line 7 of chunk 1 is its first hunk's added line.
+  assert.deepEqual(checkCut({ skip: { 1: 7 } }), [
+    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+    `::warning title=pr-review-cli reads::cut files not read whole: piece 1 of 2 of ${BIG} (chunk 1)`,
+  ]);
+  // The last piece short: its own name.
+  assert.deepEqual(checkCut({ skip: { 2: 6 } }).slice(1), [
+    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+    `::warning title=pr-review-cli reads::cut files not read whole: piece 2 of 2 of ${BIG} (chunk 2)`,
+  ]);
+  // The small file short is an uncut file's result, as before.
+  assert.deepEqual(checkCut({ skip: { 2: 9 } }), [
+    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${SMALL}`,
+  ]);
+});
+
+test("a piece no chunk holds lists the cut file unread, saying its pieces do not rebuild its change", () => {
+  const drop = (dir) => {
+    const file = path.join(dir, "chunk-2.patch");
+    fs.writeFileSync(file, SMALL_DIFF);
+  };
+  assert.deepEqual(checkCut({ tamper: drop }), [
+    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+    `::warning title=pr-review-cli reads::cut files not read whole: ${BIG} (its pieces do not rebuild its change)`,
+  ]);
+});
+
+// --- the chunk notes the compose step writes ---
+
+// The compose step of `job` over the split `cut` (its chunk directory
+// `chunkDir`); returns each chunk's prompt.
+async function compose(job, cut, chunkDir) {
+  const values = {
+    LANE: "code",
+    MODEL: "sonnet",
+    EFFORT: "high",
+    MAX_TURNS: "30",
+    MODEL_ARGS: "",
+    CLI_VERSION: "latest",
+    REPOSITORY: "o/r",
+    PR_NUMBER: "7",
+    HEAD_SHA: "a".repeat(40),
+    HOLD_PATHS: "",
+    RUNNER_TEMP: makeTemporaryDirectory("pr-review-cli-slices-compose-"),
+    CHUNKS: cut.outputs.chunks,
+    CHUNK_FILES: cut.outputs.files,
+    CHUNK_DIR: chunkDir,
+    LEG_MINUTES: "11",
+    MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+  };
+  const outputs = {};
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    await new AsyncFunction(
+      "require",
+      "core",
+      job.steps.find((s) => s.id === "compose").with.script,
+    )(require, {
+      setOutput: (k, v) => {
+        outputs[k] = v;
+      },
+      setFailed: (m) => {
+        throw new Error(m);
+      },
+    });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  return Array.from({ length: Number(outputs.chunks) }, (_, i) =>
+    fs.readFileSync(
+      path.join(
+        outputs["prompt-dir"],
+        i === 0 ? "prompt.md" : `prompt-${i + 1}.md`,
+      ),
+      "utf8",
+    ),
+  );
+}
+
+// Chunk 1: the big file's hunks 1 and 2; chunk 2: its hunk 3 and the small
+// file; chunk 3: a file of about 600 bytes alone.
+const MEDIUM = "src/medium.js";
+const cutDiff = () =>
+  `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}${HEADER(MEDIUM)}${HUNK(1, 500)}`;
+
+test("a chunk holding a piece of a cut file names the path, the piece and its hunks, and asks for every hunk", async () => {
+  for (const job of LEGS) {
+    const cut = split(job, cutDiff(), { READ_BUDGET: "1000" });
+    assert.equal(cut.outputs.files, "0,2,1", job.name);
+    const prompts = await compose(job, cut, cut.chunkDir);
+    const cutLine =
+      "at file boundaries into 3 chunks, each file whole but a file larger than one chunk, which it cut at its hunks into pieces; each chunk gets its own review.";
+    assert.ok(prompts[0].includes(cutLine), job.name);
+    assert.ok(prompts[1].includes(cutLine), job.name);
+    assert.ok(
+      prompts[0].includes(
+        [
+          `PIECE 1 OF 2 of ${BIG}: this chunk holds 2 hunks, from @@ -10,1 +10,1 @@ to @@ -20,1 +20,1 @@, under the file's own diff --git header; its other hunks are in other chunks.`,
+          "Read every hunk of this piece. It is not counted in this chunk's files_read: the chunk holding its last piece counts the file.",
+        ].join("\n"),
+      ),
+      prompts[0],
+    );
+    assert.ok(
+      prompts[1].includes(
+        [
+          `PIECE 2 OF 2 of ${BIG}: this chunk holds the hunk @@ -30,1 +30,1 @@, under the file's own diff --git header; its other hunks are in other chunks.`,
+          "Read every hunk of this piece. It is one of the files to read here: count it once you read every hunk of this piece.",
+        ].join("\n"),
+      ),
+      prompts[1],
+    );
+    for (const prompt of prompts.slice(0, 2))
+      assert.doesNotMatch(prompt, /each file whole, into/u);
+  }
+});
+
+test("a chunk with no piece keeps today's note, byte for byte", async () => {
+  for (const job of LEGS) {
+    const cut = split(job, cutDiff(), { READ_BUDGET: "1000" });
+    // The same chunk counts with no cut file: today's notes.
+    const plain = await compose(
+      job,
+      cut,
+      makeTemporaryDirectory("pr-review-cli-slices-none-"),
+    );
+    const prompts = await compose(job, cut, cut.chunkDir);
+    assert.equal(prompts[2], plain[2], job.name);
+    assert.match(
+      prompts[2],
+      /^at file boundaries, each file whole, into 3 chunks, and each chunk gets its own review\.$/mu,
+    );
+    assert.doesNotMatch(prompts[2], /PIECE/u);
+  }
+});
+
+test("a cut file's path that is not plain is named by its header's line", async () => {
+  const odd = "src/we ird.js";
+  const diff = `${HEADER(odd)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
+  const prompts = await compose(LEGS[0], cut, cut.chunkDir);
+  assert.match(
+    prompts[0],
+    /^PIECE 1 OF 2 of the file whose diff --git line is line 1 of chunk-1\.patch: /mu,
+  );
+  assert.doesNotMatch(prompts[0], /we ird/u);
 });
