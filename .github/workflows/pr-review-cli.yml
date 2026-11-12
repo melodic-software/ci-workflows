@@ -454,11 +454,18 @@ env:
   # not copies partial. claude-code-plugins#12052's reviews read 50 and 68 of
   # a 195-file chunk whole, and every file of a 3- and a 4-file chunk.
   MAX_CHUNK_FILES: "40"
+  # One review's read budget in bytes: the split step cuts chunks of at most
+  # this size, and the extract step calls one review of a larger diff
+  # partial (pr-verify's chunk size, claude-code-plugins
+  # .github/scripts/pr-verify/chunk-diff.sh).
+  READ_BUDGET: "300000"
+  # The most chunks one leg reviews. A diff that needs more is reviewed
+  # unsplit, as a partial review, with the count and this ceiling named.
+  MAX_CHUNKS: "4"
   # The size a declared generated data file's diff section must exceed to
-  # leave the review: one file's even share of one review's read budget
-  # (300000 bytes, the split and extract steps' READ_BUDGET) over the files it
-  # reads whole (MAX_CHUNK_FILES, 40). A smaller change, such as one deleted
-  # record, still fits a review and is reviewed.
+  # leave the review: one file's even share of READ_BUDGET over
+  # MAX_CHUNK_FILES. A smaller change, such as one deleted record, still fits
+  # a review and is reviewed.
   DATA_FLOOR_BYTES: "7500"
   # Paths where a changed file never groups as an identical copy, globbed as
   # hold-paths: the same content can act differently there, so each is
@@ -1830,11 +1837,6 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
-          # One review's read budget, the extract step's READ_BUDGET.
-          READ_BUDGET: "300000"
-          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
-          # workflow's.
-          MAX_CHUNKS: "4"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
@@ -1910,9 +1912,17 @@ jobs:
             fi
           fi
           status=0
-          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" || status=$?
+          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
-            echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            cat "$CHUNK_DIR/split-error.txt" >&2
+            # split-diff.py's refusal of a diff over the ceiling names its chunk count.
+            needed=$(grep -oE '^split-diff: the diff needs [0-9]{1,6} chunks, more than [0-9]+$' "$CHUNK_DIR/split-error.txt" | grep -oE '[0-9]+' | head -n 1) || needed=
+            if [ -n "$needed" ]; then
+              echo "over-chunks=$needed" >>"$GITHUB_OUTPUT"
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) needs $needed chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files, more than the ceiling of $MAX_CHUNKS; it is reviewed unsplit, as a partial review"
+            else
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            fi
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
@@ -2045,7 +2055,9 @@ jobs:
             // combined review fits what one review may pass on.
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -2558,6 +2570,7 @@ jobs:
           RENAMES: ${{ steps.full-diff.outputs.renames }}
           EXCLUDED: ${{ steps.split.outputs.excluded }}
           DISTINCT_BYTES: ${{ steps.split.outputs.distinct-bytes }}
+          OVER_CHUNKS: ${{ steps.split.outputs.over-chunks }}
           DATA: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.data || steps.full-diff.outputs.data }}
           DATA_LIST: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-data-files.txt' || '.claude-lane/data-files.txt' }}
           BINARY: ${{ steps.full-diff.outputs.binary }}
@@ -2570,7 +2583,9 @@ jobs:
             // (its check, repeated: anything else is one review).
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -2705,12 +2720,12 @@ jobs:
             // count in scope and the diff's size come from this job; the model
             // supplies only how many it read, capped at that count (per chunk,
             // at the files the split step counted in it). A diff over one
-            // review's read budget (pr-verify's 300000-byte chunk,
-            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // review's read budget (READ_BUDGET) is
             // partial whatever the model reports, unless each of its chunks,
             // each within the budget, was reviewed. So is one review of more
             // files that are not copies than MAX_CHUNK_FILES.
-            const READ_BUDGET = 300000;
+            if (!/^[1-9][0-9]{0,8}$/u.test(env.READ_BUDGET ?? "")) return incomplete("the job could not read one review's read budget");
+            const READ_BUDGET = Number(env.READ_BUDGET);
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             // The size the writing step measured; the file must be a regular
@@ -2803,7 +2818,11 @@ jobs:
             const summary =
               (chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) + moved;
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
+              moved +
+              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+                ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
+                : "");
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0
@@ -4169,11 +4188,6 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
-          # One review's read budget, the extract step's READ_BUDGET.
-          READ_BUDGET: "300000"
-          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
-          # workflow's.
-          MAX_CHUNKS: "4"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
@@ -4249,9 +4263,17 @@ jobs:
             fi
           fi
           status=0
-          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" || status=$?
+          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
-            echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            cat "$CHUNK_DIR/split-error.txt" >&2
+            # split-diff.py's refusal of a diff over the ceiling names its chunk count.
+            needed=$(grep -oE '^split-diff: the diff needs [0-9]{1,6} chunks, more than [0-9]+$' "$CHUNK_DIR/split-error.txt" | grep -oE '[0-9]+' | head -n 1) || needed=
+            if [ -n "$needed" ]; then
+              echo "over-chunks=$needed" >>"$GITHUB_OUTPUT"
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) needs $needed chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files, more than the ceiling of $MAX_CHUNKS; it is reviewed unsplit, as a partial review"
+            else
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            fi
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
@@ -4384,7 +4406,9 @@ jobs:
             // combined review fits what one review may pass on.
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -4865,6 +4889,7 @@ jobs:
           RENAMES: ${{ steps.full-diff.outputs.renames }}
           EXCLUDED: ${{ steps.split.outputs.excluded }}
           DISTINCT_BYTES: ${{ steps.split.outputs.distinct-bytes }}
+          OVER_CHUNKS: ${{ steps.split.outputs.over-chunks }}
           DATA: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.data || steps.full-diff.outputs.data }}
           DATA_LIST: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-data-files.txt' || '.claude-lane/data-files.txt' }}
           BINARY: ${{ steps.full-diff.outputs.binary }}
@@ -4877,7 +4902,9 @@ jobs:
             // (its check, repeated: anything else is one review).
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -5012,12 +5039,12 @@ jobs:
             // count in scope and the diff's size come from this job; the model
             // supplies only how many it read, capped at that count (per chunk,
             // at the files the split step counted in it). A diff over one
-            // review's read budget (pr-verify's 300000-byte chunk,
-            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // review's read budget (READ_BUDGET) is
             // partial whatever the model reports, unless each of its chunks,
             // each within the budget, was reviewed. So is one review of more
             // files that are not copies than MAX_CHUNK_FILES.
-            const READ_BUDGET = 300000;
+            if (!/^[1-9][0-9]{0,8}$/u.test(env.READ_BUDGET ?? "")) return incomplete("the job could not read one review's read budget");
+            const READ_BUDGET = Number(env.READ_BUDGET);
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             // The size the writing step measured; the file must be a regular
@@ -5110,7 +5137,11 @@ jobs:
             const summary =
               (chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) + moved;
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
+              moved +
+              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+                ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
+                : "");
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0
@@ -6481,11 +6512,6 @@ jobs:
           SCOPE: ${{ steps.scope.outputs.scope }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
           RENAMES: ${{ steps.full-diff.outputs.renames }}
-          # One review's read budget, the extract step's READ_BUDGET.
-          READ_BUDGET: "300000"
-          # The chunk review steps each leg has. MAX_CHUNK_FILES is the
-          # workflow's.
-          MAX_CHUNKS: "4"
         run: |
           unsplit() {
             echo "chunks=1" >>"$GITHUB_OUTPUT"
@@ -6561,9 +6587,17 @@ jobs:
             fi
           fi
           status=0
-          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" || status=$?
+          python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
           if [ "$status" -ne 0 ]; then
-            echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            cat "$CHUNK_DIR/split-error.txt" >&2
+            # split-diff.py's refusal of a diff over the ceiling names its chunk count.
+            needed=$(grep -oE '^split-diff: the diff needs [0-9]{1,6} chunks, more than [0-9]+$' "$CHUNK_DIR/split-error.txt" | grep -oE '[0-9]+' | head -n 1) || needed=
+            if [ -n "$needed" ]; then
+              echo "over-chunks=$needed" >>"$GITHUB_OUTPUT"
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) needs $needed chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files, more than the ceiling of $MAX_CHUNKS; it is reviewed unsplit, as a partial review"
+            else
+              echo "::warning::the diff in scope ($SCOPE_BYTES bytes, $scope_files files, $excluded copies and renames left out) did not split into at most $MAX_CHUNKS chunks of $READ_BUDGET bytes and $MAX_CHUNK_FILES files (exit $status); it is reviewed unsplit, as a partial review"
+            fi
             unsplit
           fi
           chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
@@ -6696,7 +6730,9 @@ jobs:
             // combined review fits what one review may pass on.
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -7175,6 +7211,7 @@ jobs:
           RENAMES: ${{ steps.full-diff.outputs.renames }}
           EXCLUDED: ${{ steps.split.outputs.excluded }}
           DISTINCT_BYTES: ${{ steps.split.outputs.distinct-bytes }}
+          OVER_CHUNKS: ${{ steps.split.outputs.over-chunks }}
           DATA: ${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.data || steps.full-diff.outputs.data }}
           DATA_LIST: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-data-files.txt' || '.claude-lane/data-files.txt' }}
           BINARY: ${{ steps.full-diff.outputs.binary }}
@@ -7187,7 +7224,9 @@ jobs:
             // (its check, repeated: anything else is one review).
             const chunkFiles = String(env.CHUNK_FILES ?? "").split(",");
             const chunks =
-              /^[2-4]$/u.test(env.CHUNKS ?? "") &&
+              /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "") &&
+              Number(env.CHUNKS) >= 2 &&
+              Number(env.CHUNKS) <= Number(env.MAX_CHUNKS) &&
               chunkFiles.length === Number(env.CHUNKS) &&
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
@@ -7322,12 +7361,12 @@ jobs:
             // count in scope and the diff's size come from this job; the model
             // supplies only how many it read, capped at that count (per chunk,
             // at the files the split step counted in it). A diff over one
-            // review's read budget (pr-verify's 300000-byte chunk,
-            // claude-code-plugins .github/scripts/pr-verify/chunk-diff.sh) is
+            // review's read budget (READ_BUDGET) is
             // partial whatever the model reports, unless each of its chunks,
             // each within the budget, was reviewed. So is one review of more
             // files that are not copies than MAX_CHUNK_FILES.
-            const READ_BUDGET = 300000;
+            if (!/^[1-9][0-9]{0,8}$/u.test(env.READ_BUDGET ?? "")) return incomplete("the job could not read one review's read budget");
+            const READ_BUDGET = Number(env.READ_BUDGET);
             const counted = env.SCOPE === "incremental" ? env.SCOPE_FILES : env.WHOLE_FILES;
             if (!/^[0-9]{1,6}$/u.test(counted ?? "")) return incomplete("the job could not count the changed files in scope");
             // The size the writing step measured; the file must be a regular
@@ -7420,7 +7459,11 @@ jobs:
             const summary =
               (chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) + moved;
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
+              moved +
+              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+                ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
+                : "");
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0

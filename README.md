@@ -1748,7 +1748,10 @@ the file list and the file total, so a review that leaves them unread is still
 `partial`; its reason names the first 10
 (`; <n> binary file(s) not reviewable as text: <path>, ... and <m> more`).
 
-**Chunks.** A diff in scope over the read budget, or with more than 40 files,
+**Chunks.** Three limits in the workflow's `env`, each defined there once and
+read by every leg's shell and script steps, size a review: `READ_BUDGET`
+(300000 bytes), `MAX_CHUNK_FILES` (40 files) and the chunk ceiling
+`MAX_CHUNKS` (4). A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 4 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
@@ -1766,7 +1769,9 @@ it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
 file over the budget, more than 4 chunks, so more than 160 files that are not
-copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`.
+copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`;
+when the refusal is the ceiling, the step's warning and the review's summary
+name the chunk count the diff needs and the ceiling.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to

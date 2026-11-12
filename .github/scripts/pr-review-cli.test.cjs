@@ -1811,6 +1811,8 @@ async function extract(files, env = {}, job = key) {
     SCOPE_DIFF: diff,
     SCOPE_BYTES: "24",
     MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
+    READ_BUDGET: workflow.env.READ_BUDGET,
+    MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     ...env,
   };
   const saved = Object.fromEntries(
@@ -2124,6 +2126,7 @@ async function composeOutputs(env, job = key) {
     CONTEXT_NOTE: "",
     HOLD_PATHS: "",
     RUNNER_TEMP: dir,
+    MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     ...env,
   };
   const saved = Object.fromEntries(
@@ -3387,8 +3390,8 @@ async function incrementalReview(
       SCOPE_DIFF: ".claude-lane/incremental.diff",
       SCOPE_BYTES: scope.bytes,
       CHUNK_DIR: splitStep.env.CHUNK_DIR,
-      READ_BUDGET: splitStep.env.READ_BUDGET,
-      MAX_CHUNKS: splitStep.env.MAX_CHUNKS,
+      READ_BUDGET: workflow.env.READ_BUDGET,
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
       SCOPE: scope.scope,
       COPIES: copies,
     },
@@ -3782,8 +3785,8 @@ function split(env = {}, prepare = () => {}) {
         SCOPE_DIFF: ".claude-lane/pr.diff",
         SCOPE_BYTES: "700000",
         CHUNK_DIR: s.env.CHUNK_DIR,
-        READ_BUDGET: s.env.READ_BUDGET,
-        MAX_CHUNKS: s.env.MAX_CHUNKS,
+        READ_BUDGET: workflow.env.READ_BUDGET,
+        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
         MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
         SCOPE: "whole",
         COPIES: "0",
@@ -3802,14 +3805,14 @@ function split(env = {}, prepare = () => {}) {
 
 test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
   const s = step(key, "split");
-  assert.equal(s.env.READ_BUDGET, "300000");
+  assert.equal(workflow.env.READ_BUDGET, "300000");
   assert.match(
     s.run,
     /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
   );
   assert.match(
     s.run,
-    /"\$CHUNK_DIR\/manifest\.txt" "\$READ_BUDGET" "\$MAX_CHUNK_FILES" \|\| status=\$\?$/mu,
+    /"\$CHUNK_DIR\/manifest\.txt" "\$READ_BUDGET" "\$MAX_CHUNK_FILES" 2>"\$CHUNK_DIR\/split-error\.txt" \|\| status=\$\?$/mu,
   );
   const cut = split();
   assert.equal(cut.status, 0);
@@ -4246,8 +4249,8 @@ test("a diff of many small added files, some identical, is chunked without its c
     SCOPE_DIFF: ".claude-lane/pr.diff",
     SCOPE_BYTES: fullDiff.bytes,
     CHUNK_DIR: s.env.CHUNK_DIR,
-    READ_BUDGET: s.env.READ_BUDGET,
-    MAX_CHUNKS: s.env.MAX_CHUNKS,
+    READ_BUDGET: workflow.env.READ_BUDGET,
+    MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     SCOPE: "whole",
     COPIES: fullDiff.copies,
@@ -4433,8 +4436,8 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
       SCOPE_DIFF: ".claude-lane/pr.diff",
       SCOPE_BYTES: fullDiff.bytes,
       CHUNK_DIR: s.env.CHUNK_DIR,
-      READ_BUDGET: s.env.READ_BUDGET,
-      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      READ_BUDGET: workflow.env.READ_BUDGET,
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
       SCOPE: "whole",
       COPIES: fullDiff.copies,
     });
@@ -4608,8 +4611,8 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
       SCOPE_DIFF: ".claude-lane/pr.diff",
       SCOPE_BYTES: "700000",
       CHUNK_DIR: s.env.CHUNK_DIR,
-      READ_BUDGET: s.env.READ_BUDGET,
-      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      READ_BUDGET: workflow.env.READ_BUDGET,
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
       SCOPE: "whole",
       COPIES: fullDiff.copies,
     });
@@ -4720,8 +4723,8 @@ test("a whole-file deletion counts in no diff size, so deletions alone put no re
       SCOPE_DIFF: ".claude-lane/pr.diff",
       SCOPE_BYTES: fullDiff.bytes,
       CHUNK_DIR: s.env.CHUNK_DIR,
-      READ_BUDGET: s.env.READ_BUDGET,
-      MAX_CHUNKS: s.env.MAX_CHUNKS,
+      READ_BUDGET: workflow.env.READ_BUDGET,
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
       SCOPE: "whole",
       COPIES: fullDiff.copies,
     });
@@ -4908,8 +4911,8 @@ test("an incremental review leaves a file the push deleted out of its file count
           SCOPE_DIFF: ".claude-lane/incremental.diff",
           SCOPE_BYTES: "700000",
           CHUNK_DIR: s.env.CHUNK_DIR,
-          READ_BUDGET: s.env.READ_BUDGET,
-          MAX_CHUNKS: s.env.MAX_CHUNKS,
+          READ_BUDGET: workflow.env.READ_BUDGET,
+          MAX_CHUNKS: workflow.env.MAX_CHUNKS,
           SCOPE: "incremental",
           COPIES: "0",
         },
@@ -6169,8 +6172,8 @@ const splitEnv = (source, fullDiff) => ({
   SCOPE_DIFF: ".claude-lane/pr.diff",
   SCOPE_BYTES: fullDiff.bytes,
   CHUNK_DIR: step(key, "split").env.CHUNK_DIR,
-  READ_BUDGET: step(key, "split").env.READ_BUDGET,
-  MAX_CHUNKS: step(key, "split").env.MAX_CHUNKS,
+  READ_BUDGET: workflow.env.READ_BUDGET,
+  MAX_CHUNKS: workflow.env.MAX_CHUNKS,
   SCOPE: "whole",
   COPIES: fullDiff.copies,
   RENAMES: fullDiff.renames,
