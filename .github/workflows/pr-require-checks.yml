@@ -438,14 +438,14 @@ jobs:
       - name: Check workflow and action naming
         uses: $/.github/actions/check-workflow-naming
         with:
-          standards-ref: 846528ba34a036ebbe8b22db6afaee79d017b67f
+          standards-ref: eef7cec74c88a30d287f9e15a28555126e74f9cd
       - name: Run a misnamed workflow fixture in enforcing mode
         id: bad-enforcing
         continue-on-error: true
         uses: $/.github/actions/check-workflow-naming
         with:
           root: fixtures/workflow-naming/bad
-          standards-ref: 846528ba34a036ebbe8b22db6afaee79d017b67f
+          standards-ref: eef7cec74c88a30d287f9e15a28555126e74f9cd
       - name: Prove the misnamed workflow fixture failed
         env:
           OUTCOME: ${{ steps.bad-enforcing.outcome }}
