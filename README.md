@@ -1269,7 +1269,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   commit's Dependabot metadata, runs the same gate with the reusable's
   default inputs (a synced dependabot-policy copy in the checked-out main
   would set the publishers the same way; this repository has none yet), and
-  requires a `ci-status` check run that succeeded on the head. It then arms each passing PR with the melodic-release App token from
+  requires a `ci-status` check run that succeeded on the head. Every package
+  `check-dependabot-policy/package-lock.json` installs, transitive ones
+  included, is review-only, since consumers run that checker. It then arms each passing PR with the melodic-release App token from
   the `plugin-release` environment, at the verified head and with no merge
   method, so the merge queue takes it. Out-of-tier PRs are left alone with a
   notice, and one armed on an earlier head is disarmed. Arming a PR that changes a workflow file needs the App's

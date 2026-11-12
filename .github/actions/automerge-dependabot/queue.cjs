@@ -30,6 +30,22 @@ function readWorkspacePolicy(workspace) {
   }
 }
 
+// Every non-dev package an npm lockfile installs, nested and scoped ones
+// included: { names }, {} when no lockfile is named, or { failure } when the
+// named one cannot be read, so a missing runtime list never arms anything.
+function readLockedRuntime(workspace, lockfile) {
+  if (!lockfile) return {};
+  try {
+    const { packages } = JSON.parse(fs.readFileSync(path.join(workspace, lockfile), "utf8"));
+    const names = Object.entries(packages)
+      .filter(([key, entry]) => key && !entry.dev)
+      .map(([key]) => key.split("node_modules/").pop());
+    return { names };
+  } catch (error) {
+    return { failure: `${lockfile} is not a readable npm lockfile: ${error.message}` };
+  }
+}
+
 const CI_STATUS = "ci-status";
 const MISSING_WORKFLOWS = /without `?workflows`? permission/iu;
 const ALREADY_MERGEABLE = /is in (clean|unstable) status/iu;
@@ -149,13 +165,17 @@ async function queueOne({ github, app, repo, core, pr, inputs, policyFailure, ap
 async function runQueue({ github, app, context, core, env }) {
   const repo = context.repo;
   const policy = readWorkspacePolicy(env.GITHUB_WORKSPACE);
+  // REVIEW_ONLY_LOCKFILE, when set, holds that lockfile's whole runtime tree
+  // for review in place of REVIEW_ONLY_DEPENDENCIES.
+  const locked = readLockedRuntime(env.GITHUB_WORKSPACE, env.REVIEW_ONLY_LOCKFILE);
   const callerInputs = {
     publisherAllowlist: env.PUBLISHER_ALLOWLIST,
     packageAutoMerge: env.PACKAGE_AUTO_MERGE,
-    reviewOnly: env.REVIEW_ONLY_DEPENDENCIES,
+    reviewOnly: locked.names ? JSON.stringify(locked.names) : env.REVIEW_ONLY_DEPENDENCIES,
   };
-  const resolved = policy.failure
-    ? { failure: policy.failure }
+  const readFailure = policy.failure ?? locked.failure;
+  const resolved = readFailure
+    ? { failure: readFailure }
     : resolvePolicyInputs(callerInputs, policy.text, `${repo.owner}/${repo.repo}`);
   const policyFailure = resolved.failure ?? "";
   const inputs = resolved.inputs ?? callerInputs;

@@ -206,6 +206,9 @@ async function runWithFakes({
   policy = undefined,
   // A directory at the policy path, so the read fails with something other than ENOENT.
   policyIsDirectory = false,
+  // REVIEW_ONLY_LOCKFILE, and the text written there when given.
+  reviewOnlyLockfile = undefined,
+  lockfileText = undefined,
 } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "queue-workspace-"));
   const policyFile = path.join(workspace, POLICY_PATH);
@@ -213,6 +216,11 @@ async function runWithFakes({
   if (policy !== undefined) {
     fs.mkdirSync(path.dirname(policyFile), { recursive: true });
     fs.writeFileSync(policyFile, policy);
+  }
+  if (lockfileText !== undefined) {
+    const lockfile = path.join(workspace, reviewOnlyLockfile);
+    fs.mkdirSync(path.dirname(lockfile), { recursive: true });
+    fs.writeFileSync(lockfile, lockfileText);
   }
   const reads = [];
   const appCalls = [];
@@ -276,6 +284,7 @@ async function runWithFakes({
       PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]',
       PACKAGE_AUTO_MERGE: "true",
       REVIEW_ONLY_DEPENDENCIES: "[]",
+      REVIEW_ONLY_LOCKFILE: reviewOnlyLockfile,
     },
   });
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -682,25 +691,83 @@ test("the queue's tier inputs are the reusable's defaults", () => {
   );
 });
 
-test("the queue holds every runtime dependency of the policy checker for review", () => {
-  const env = step("Queue in-tier Dependabot pull requests").env;
-  const manifest = JSON.parse(
-    fs.readFileSync(
-      path.join(
-        __dirname,
-        "..",
-        "actions",
-        "check-dependabot-policy",
-        "package.json",
-      ),
+// A Dependabot npm patch update to one package, as the scheduled path reads it.
+const npmPull = (name, number = 7) => {
+  const title = `build: bump ${name} from 3.1.9 to 3.1.10 in /.github/actions/check-dependabot-policy`;
+  const message = `${title}
+
+Bumps [${name}](https://example.com) from 3.1.9 to 3.1.10.
+
+---
+updated-dependencies:
+- dependency-name: ${name}
+  dependency-version: 3.1.10
+  dependency-type: indirect
+  update-type: version-update:semver-patch
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>`;
+  return {
+    pull: dependabotPull(number, {
+      title,
+      body: `Bumps [${name}](https://example.com) from 3.1.9 to 3.1.10.`,
+      head: { sha: HEAD, ref: `dependabot/npm_and_yarn/${name}-3.1.10` },
+    }),
+    commits: { [number]: [dependabotCommit(message)] },
+  };
+};
+
+test("the queue holds a transitive package of the policy checker's lockfile for review", async () => {
+  const lockfile = step("Queue in-tier Dependabot pull requests").env
+    .REVIEW_ONLY_LOCKFILE;
+  const { pull, commits } = npmPull("fast-uri");
+  const held = await runWithFakes({
+    pulls: [pull],
+    commits,
+    reviewOnlyLockfile: lockfile,
+    lockfileText: fs.readFileSync(
+      path.join(__dirname, "..", "..", lockfile),
       "utf8",
     ),
-  );
-  assert.deepEqual(
-    JSON.parse(env.REVIEW_ONLY_DEPENDENCIES).sort(),
-    Object.keys(manifest.dependencies).sort(),
-    "consumers run the checker in ci-status, so its runtime is never auto-merged",
-  );
+  });
+  assert.deepEqual(held.counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.match(held.notices[0], /fast-uri is a review-only dependency/u);
+  const unheld = await runWithFakes({ pulls: [pull], commits });
+  assert.deepEqual(unheld.counts, { queued: 1, skipped: 0, failed: 0 });
+});
+
+test("the lockfile hold covers nested and scoped packages but not dev ones", async () => {
+  const lockfileText = JSON.stringify({
+    packages: {
+      "": { dependencies: { a: "1.0.0" } },
+      "node_modules/a": {},
+      "node_modules/a/node_modules/nested": {},
+      "node_modules/@scope/pkg": {},
+      "node_modules/devonly": { dev: true },
+    },
+  });
+  const outcome = async (name) => {
+    const { pull, commits } = npmPull(name);
+    const { counts } = await runWithFakes({
+      pulls: [pull],
+      commits,
+      reviewOnlyLockfile: "package-lock.json",
+      lockfileText,
+    });
+    return counts.queued;
+  };
+  assert.equal(await outcome("nested"), 0);
+  assert.equal(await outcome("@scope/pkg"), 0);
+  assert.equal(await outcome("devonly"), 1);
+});
+
+test("a named lockfile that cannot be read leaves every pull request alone", async () => {
+  const { counts, appCalls, notices } = await runWithFakes({
+    reviewOnlyLockfile: "missing/package-lock.json",
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(appCalls, []);
+  assert.match(notices[0], /is not a readable npm lockfile/u);
 });
 
 test("both tokens' API calls are logged", () => {

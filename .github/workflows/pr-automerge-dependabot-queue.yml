@@ -84,9 +84,10 @@ jobs:
           # this repository receives one, sets the publishers instead.
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
           PACKAGE_AUTO_MERGE: "true"
-          # The check-dependabot-policy action's runtime: consumers run that
-          # checker in ci-status, so a bump to it waits for review.
-          REVIEW_ONLY_DEPENDENCIES: '["ajv","yaml"]'
+          # Every package the check-dependabot-policy action's lockfile
+          # installs, transitive ones included: consumers run that checker in
+          # ci-status, so a bump to any of them waits for review.
+          REVIEW_ONLY_LOCKFILE: .github/actions/check-dependabot-policy/package-lock.json
         with:
           script: |
             const path = require("node:path");
