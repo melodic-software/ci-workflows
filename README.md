@@ -1703,9 +1703,15 @@ only the files in its scope whose change since the last reviewed head is
 identical too; when the job cannot compare that head, nothing groups. The
 review reads each group's first path, and the job counts the copies as read.
 
-**Verified renames.** On a whole review, a file the pull request moves
-without changing it is listed in `.claude-lane/renames.txt` (old path, a tab,
-the new path) and counted as read, as an identical copy is. Only a rename git
+**Verified renames.** Only documentation and static media moves outside held
+paths are discounted; everything else is read. On a whole review, such a file
+the pull request moves without changing it is listed in
+`.claude-lane/renames.txt` (old path, a tab, the new path) and counted as
+read, as an identical copy is. Both paths must end in an extension of
+RENAME_INERT_EXTENSIONS, matched without case: `md`, `mdx`, `txt`, `rst`,
+`adoc`, `png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`, `pdf`, `woff`, `woff2`,
+`ttf` (not `svg`, which can carry script); a name with no extension is never
+discounted. Only a rename git
 pairs at 100% similarity (`git diff --find-renames`, passed explicitly so a
 runner's `diff.renames` cannot change it) whose blob is the same on both sides
 and whose mode is a non-executable regular file's on both counts. A rename
@@ -1719,7 +1725,8 @@ is run, loaded or published by where it sits (RENAME_HELD_PATHS: `SKILL.md`,
 `skills/`, `agents/`, `commands/`, `hooks/`, `.claude-plugin/`, `.claude/`,
 `CLAUDE.md`, `AGENTS.md`, `conftest.py`, `*.config.{js,mjs,cjs,ts}`, the root
 `.devcontainer/` and `.vscode/`, `.npmrc`, `Makefile`, `Dockerfile*`,
-`CODEOWNERS`, `package.json`, `pyproject.toml`). With an empty
+`CODEOWNERS`, `package.json`, `pyproject.toml`), which wins over the
+extension. With an empty
 SENSITIVE_PATHS list no rename is verified. The number of verified renames is
 not capped. The prompt names every listed rename and asks the review to check
 each new path for what still names the old one and to read a file whose new
