@@ -326,7 +326,10 @@ test("an armed pull request is disarmed when the synced policy is malformed", as
     appCalls.map((call) => [call.mutation, call.variables.id]),
     [["disablePullRequestAutoMerge", "PR_7"]],
   );
-  assert.match(notices[0], /#7 left alone: .*is not a readable dependabot policy/u);
+  assert.match(
+    notices[0],
+    /#7 left alone: .*is not a readable dependabot policy/u,
+  );
 });
 
 test("a synced policy path that cannot be read leaves pull requests alone and disarms armed ones", async () => {
@@ -344,7 +347,10 @@ test("a synced policy path that cannot be read leaves pull requests alone and di
     appCalls.map((call) => [call.mutation, call.variables.id]),
     [["disablePullRequestAutoMerge", "PR_7"]],
   );
-  assert.match(notices[0], /#7 left alone: .*policy\.json could not be read: EISDIR/u);
+  assert.match(
+    notices[0],
+    /#7 left alone: .*policy\.json could not be read: EISDIR/u,
+  );
 });
 
 test("an in-tier group with a green ci-status is queued at its head with the App token", async () => {
@@ -680,7 +686,13 @@ test("the queue holds every runtime dependency of the policy checker for review"
   const env = step("Queue in-tier Dependabot pull requests").env;
   const manifest = JSON.parse(
     fs.readFileSync(
-      path.join(__dirname, "..", "actions", "check-dependabot-policy", "package.json"),
+      path.join(
+        __dirname,
+        "..",
+        "actions",
+        "check-dependabot-policy",
+        "package.json",
+      ),
       "utf8",
     ),
   );
