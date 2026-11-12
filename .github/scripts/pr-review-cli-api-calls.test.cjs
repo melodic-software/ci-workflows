@@ -71,6 +71,7 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
     "pulls.listFiles": () => prFiles,
     "pulls.get": () => ({ head: { sha: HEAD }, changed_files: prFiles.length }),
     "pulls.listReviewComments": () => [],
+    "pulls.listCommentsForReview": () => [],
     "repos.compareCommitsWithBasehead": ({ basehead }) => {
       assert.ok(basehead in compares, `unexpected compare ${basehead}`);
       return compares[basehead];
@@ -566,13 +567,15 @@ test("each run shape spends the requests pinned here, reading the file list once
     ])
       assert.equal(counts[gone], undefined, `${name}: ${gone}`);
   }
+  // A posted review adds one read of its comments' ids for the lane's
+  // comment record.
   assert.deepEqual(totals, {
-    "a whole review with an inline comment": 8,
+    "a whole review with an inline comment": 9,
     "a whole review with no inline comment": 6,
-    "an incremental review with an inline comment": 10,
+    "an incremental review with an inline comment": 11,
     "a no-change skip after a base-branch merge": 8,
-    "a whole review that changes a hold-paths file and holds nothing": 8,
-    "a whole review that returns a critical-security hold": 11,
+    "a whole review that changes a hold-paths file and holds nothing": 9,
+    "a whole review that returns a critical-security hold": 12,
   });
 });
 
@@ -625,6 +628,7 @@ test("a whole review reads pulls.get in scope and once more in publish, and nowh
     "repos.compareCommitsWithBasehead": 1,
     "pulls.listReviewComments": 1,
     "pulls.createReview": 1,
+    "pulls.listCommentsForReview": 1,
     "issues.createComment": 1,
   });
 });

@@ -254,6 +254,18 @@ inputs:
       write lands, and a job concluding `success` was not cancelled or timed
       out. Any other conclusion with no steps listed fails closed.
     default: ''
+  alias-jobs:
+    description: >-
+      Newline- or space-separated display names of jobs that only mirror the
+      gate's conclusion under an older check name while a required-check
+      rename rolls out (a job that needs the gate and exits with its result).
+      Such a job runs on contract-only events too, so the run-shape reads
+      ignore it: a run whose only other non-skipped job is an alias still
+      reads as contract-only, and a failed contract-only run with a failed
+      alias is still re-run by `rerun-contract-only-siblings`. A carried
+      `success` written by a run from before the rename, whose gate job had
+      the alias's name, still finds its gate step under that name.
+    default: ''
   rate-limit-wait-seconds:
     description: >-
       Ceiling, in seconds, on the time this step spends waiting out GitHub API
@@ -308,6 +320,7 @@ runs:
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
         YIELD_WAIT_SECONDS: ${{ inputs.yield-wait-seconds }}
         STEP_NAME: ${{ inputs.step-name }}
+        ALIAS_JOBS: ${{ inputs.alias-jobs }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         GH_TOKEN: ${{ inputs.token }}
         REPOSITORY: ${{ inputs.repository }}

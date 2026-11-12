@@ -131,7 +131,21 @@ function fakeGithub({ head = HEAD, posted = [], throws = false } = {}) {
             data: [{ filename: "a.js", patch: PATCH }],
           }),
           listReviewComments: async () => ({ data: posted }),
-          createReview: call("createReview", {}),
+          createReview: call("createReview", (params) => ({
+            id: 501,
+            body: params.body,
+          })),
+          // The review's comments as GitHub stores them, ids from 601.
+          listCommentsForReview: async ({ review_id }) => ({
+            data: (
+              writes.find(([name]) => name === "createReview")?.[1].comments ??
+              []
+            ).map((c, i) => ({
+              id: 601 + i,
+              pull_request_review_id: review_id,
+              body: c.body,
+            })),
+          }),
         },
         issues: {
           updateComment: call("updateComment", {}),
@@ -847,4 +861,106 @@ test("summary mode reports a partial review in the shadow report and never fails
     log.notices.at(-1),
     /^shadow claude-review: failure-class=partial: /u,
   );
+});
+
+// The comment record a run writes at LANE_RECORD: one JSON line per comment.
+function readRecord(file) {
+  return fs.existsSync(file)
+    ? fs
+        .readFileSync(file, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+    : [];
+}
+
+const digest = (body) =>
+  require("node:crypto")
+    .createHash("sha256")
+    .update(body, "utf8")
+    .digest("hex");
+const BINDING = `<!-- claude-lane-run id=4242 sha=${HEAD} -->`;
+
+test("each comment carries the run's binding above its footer, and the record lists what the run posted", async () => {
+  const record = path.join(
+    makeTemporaryDirectory("lane-record-"),
+    "comments.jsonl",
+  );
+  const { writes, log } = await publish({
+    GITHUB_RUN_ID: "4242",
+    LANE_RECORD: record,
+  });
+  assert.deepEqual(log.failed, []);
+  const [review] = writes;
+  const body = `Off by one.\n${BINDING}\n\nclaude-lane: claude-review`;
+  assert.equal(review[1].comments[0].body, body);
+  assert.match(
+    review[1].body,
+    new RegExp(`\\n${BINDING}\\n\\nclaude-lane: claude-review$`, "u"),
+  );
+  const base = { lane: "claude-review", pr: 7, head: HEAD };
+  assert.deepEqual(readRecord(record), [
+    { ...base, kind: "review", id: 501, sha256: digest(review[1].body) },
+    { ...base, kind: "review_comment", id: 601, sha256: digest(body) },
+  ]);
+});
+
+test("a re-run records the comments its run already posted and posts nothing twice; another run's are neither reposted nor recorded", async () => {
+  const record = path.join(
+    makeTemporaryDirectory("lane-record-"),
+    "comments.jsonl",
+  );
+  const ours = `Off by one.\n${BINDING}\n\nclaude-lane: claude-review`;
+  const posted = [
+    {
+      id: 9,
+      user: { login: "github-actions[bot]" },
+      commit_id: HEAD,
+      path: "a.js",
+      line: 2,
+      side: "RIGHT",
+      body: ours,
+    },
+  ];
+  const rerun = await publish(
+    { GITHUB_RUN_ID: "4242", LANE_RECORD: record, MARKER_ID: "99" },
+    { posted },
+  );
+  assert.deepEqual(
+    rerun.writes.map(([name]) => name),
+    ["updateComment"],
+  );
+  assert.deepEqual(readRecord(record), [
+    {
+      lane: "claude-review",
+      pr: 7,
+      head: HEAD,
+      kind: "review_comment",
+      id: 9,
+      sha256: digest(ours),
+    },
+  ]);
+  const other = path.join(
+    makeTemporaryDirectory("lane-record-"),
+    "comments.jsonl",
+  );
+  const later = await publish(
+    { GITHUB_RUN_ID: "5000", LANE_RECORD: other, MARKER_ID: "99" },
+    { posted },
+  );
+  assert.deepEqual(
+    later.writes.map(([name]) => name),
+    ["updateComment"],
+  );
+  assert.deepEqual(readRecord(other), []);
+});
+
+test("a finding moved to the summary loses its binding and footer there", async () => {
+  const review = { ...REVIEW, comments: [{ ...REVIEW.comments[0], line: 9 }] };
+  const { writes } = await publish({
+    KEY_REVIEW: JSON.stringify(review),
+    GITHUB_RUN_ID: "4242",
+  });
+  assert.match(writes[0][1].body, /`a\.js:9` \(RIGHT\): Off by one\.$/mu);
+  assert.doesNotMatch(writes[0][1].body, /claude-lane-run|claude-lane: /u);
 });

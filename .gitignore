@@ -29,3 +29,6 @@ obj/
 # Repo-local .NET SDK installed by the cloud bootstrap on a fresh VM — a
 # multi-hundred-MB tool tree, not repository content.
 .dotnet/
+
+# Personal overrides beside tracked convention layers (docs/conventions/work-items.local.yaml)
+docs/conventions/**/*.local.*

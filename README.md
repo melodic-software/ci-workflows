@@ -472,6 +472,14 @@ consumer to audit it.
     longer for a runner. A polling contract-only run (a wait above `0`
     without yield) reads the success itself, so nothing waits for it, and
     neither does a holding one (`yield-wait-seconds` above `0`).
+  - `alias-jobs` on the `ci-status` step, while a repository renames its
+    required gate job: the display names of jobs that only mirror the gate's
+    conclusion under the old check name (a job that needs the gate, runs
+    `if: always()` and exits with its result). Such a job runs on every
+    event, so without this input a contract-only run reads as a full run,
+    and a failed contract-only run whose alias failed too is not re-run. A
+    carried `success` written before the rename is also found under the
+    old gate name. Remove the input with the alias job.
 
   A red contract-only check does not hold a merge in the meantime: GitHub's
   docs do not say how several same-name check runs on one SHA are judged, and
