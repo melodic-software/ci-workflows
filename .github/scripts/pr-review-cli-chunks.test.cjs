@@ -402,7 +402,10 @@ test("the chunk loop runs every later chunk in order and keeps each one's files 
     );
     // The legs' own outputs were taken back out of the step's file, which
     // holds what came before and one set of the loop's outputs.
-    const lines = fs.readFileSync(run.output, "utf8").split("\n").filter(Boolean);
+    const lines = fs
+      .readFileSync(run.output, "utf8")
+      .split("\n")
+      .filter(Boolean);
     assert.equal(lines[0], "earlier=1");
     const keys = lines.slice(1).map((line) => line.split("=")[0]);
     assert.deepEqual(keys, [...new Set(keys)]);
@@ -691,6 +694,20 @@ const listedLines = (summary) =>
   summary
     .split("\n")
     .filter((line) => /^- (CRITICAL|IMPORTANT|SUGGESTION) `/u.test(line));
+// Listed findings, one a line at an excerpt tier, several a line when grouped
+// by path at the last tier.
+const listedCount = (summary) =>
+  summary
+    .split("\n")
+    .filter((line) => /^- (?:(CRITICAL|IMPORTANT|SUGGESTION) )?`/u.test(line))
+    .reduce(
+      (sum, line) =>
+        sum +
+        (/^- `/u.test(line)
+          ? [...line.matchAll(/ line [0-9]+ \((RIGHT|LEFT)\)/gu)].length
+          : 1),
+      0,
+    );
 const criticalLines = (summary) =>
   [...summary.matchAll(/^critical-findings: ([0-9]+)$/gmu)].map((m) =>
     Number(m[1]),
@@ -713,26 +730,23 @@ test("two chunks reporting the same finding yield one comment", async () => {
   }
 });
 
-test("a finding repeated at the same line with other text, or with the same text elsewhere, is listed, not lost", async () => {
+test("two different findings on one line, and one text at two lines, all post inline whole", async () => {
   const first = finding("a.js", 3, "IMPORTANT", "Off by one.");
+  const sameLine = finding("a.js", 3, "SUGGESTION", "Rename this.");
+  const sameText = finding("b.js", 9, "IMPORTANT", "Off by one.");
   for (const job of LEGS) {
     const outputs = await extractChunked(job, 2, {
       reviews: {
         1: chunkReview([first]),
-        2: chunkReview([
-          finding("a.js", 3, "SUGGESTION", "Rename this."),
-          finding("b.js", 9, "IMPORTANT", "Off by one."),
-        ]),
+        2: chunkReview([sameLine, sameText]),
       },
     });
     const review = JSON.parse(outputs.review);
-    assert.deepEqual(review.comments, [first]);
+    assert.deepEqual(review.comments, [first, sameText, sameLine]);
     assert.equal(review.findings, 3);
-    assert.deepEqual(listedLines(review.summary), [
-      "- IMPORTANT `b.js:9` (RIGHT): severity: IMPORTANT Off by one.",
-      "- SUGGESTION `a.js:3` (RIGHT): severity: SUGGESTION Rename this.",
-    ]);
-    assert.deepEqual(criticalLines(review.summary), [0, 0, 0]);
+    assert.deepEqual(listedCount(review.summary), 0);
+    // The chunks' critical-findings lines merge into one.
+    assert.deepEqual(criticalLines(review.summary), [0]);
   }
 });
 
@@ -778,8 +792,8 @@ test("30 findings keep 25 inline, most severe first, and list the other 5 with t
     assert.equal(listed.length, 5);
     for (const line of listed)
       assert.match(line, /^- SUGGESTION `f(1[5-9])\.js:[0-9]+` \(RIGHT\): /u);
-    // Each chunk's own line, then the listed CRITICAL findings: none.
-    assert.deepEqual(criticalLines(review.summary), [0, 0, 0, 0]);
+    // One line: the chunks' lines and the listed CRITICAL findings, none.
+    assert.deepEqual(criticalLines(review.summary), [0]);
     // A listed CRITICAL finding is counted where a merge gate reads it.
     const severe = Array.from({ length: 27 }, (_, i) =>
       finding(`c${i}.js`, 1, "CRITICAL", `Severe ${i}.`),
@@ -797,7 +811,7 @@ test("30 findings keep 25 inline, most severe first, and list the other 5 with t
       listedLines(merged.summary).map((line) => line.split(":")[0]),
       ["- CRITICAL `c25.js", "- CRITICAL `c26.js"],
     );
-    assert.deepEqual(criticalLines(merged.summary), [0, 0, 0, 2]);
+    assert.deepEqual(criticalLines(merged.summary), [2]);
   }
 });
 
@@ -851,7 +865,7 @@ test("20 chunks every one at its caps merge into a review under 100 KB that list
     assert.ok(review.comments.length <= 25);
     // Every finding is inline or listed by its location.
     assert.equal(
-      review.comments.length + listedLines(review.summary).length,
+      review.comments.length + listedCount(review.summary),
       20 * comments,
     );
     assert.equal(review.findings, 20 * comments);
@@ -944,7 +958,10 @@ const outputsOf = (file) =>
       .readFileSync(file, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+      .map((line) => [
+        line.slice(0, line.indexOf("=")),
+        line.slice(line.indexOf("=") + 1),
+      ]),
   );
 
 test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it finished", () => {
@@ -960,7 +977,9 @@ test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it
   const outputs = outputsOf(killed.output);
   assert.equal(outputs["chunk-outcomes"], "success,success");
   assert.equal(outputs["last-chunk"], "3");
-  const messages = JSON.parse(fs.readFileSync(outputs["transcript-file"], "utf8"));
+  const messages = JSON.parse(
+    fs.readFileSync(outputs["transcript-file"], "utf8"),
+  );
   assert.deepEqual(
     messages.filter((m) => m.type === "result").map((m) => m.k),
     [2, 3],
@@ -971,6 +990,198 @@ test("a chunk that exits 0 with no structured result fails the loop before the n
   const run = loop(2, 6, { 3: { noStructured: true } });
   assert.equal(run.ok, false);
   assert.deepEqual(run.ran, [2, 3]);
-  assert.equal(run.outputs["chunk-outcomes"], "success,failure,skipped,skipped,skipped");
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "success,failure,skipped,skipped,skipped",
+  );
   assert.equal(run.outputs["lane-class"], "other");
+});
+
+test("comment 26 keeps its full text in the list while the budget allows", async () => {
+  const all = Array.from({ length: 26 }, (_, i) =>
+    finding(`f${i}.js`, 1, "SUGGESTION", `Finding ${i}: `, 900),
+  );
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 3, {
+      reviews: {
+        1: chunkReview(all.slice(0, 12)),
+        2: chunkReview(all.slice(12, 24)),
+        3: chunkReview(all.slice(24)),
+      },
+    });
+    const review = JSON.parse(outputs.review);
+    assert.equal(review.comments.length, 25);
+    assert.deepEqual(listedLines(review.summary), [
+      `- SUGGESTION \`f25.js:1\` (RIGHT): severity: SUGGESTION Finding 25: ${"x".repeat(900)}`,
+    ]);
+  }
+});
+
+const PUBLISH = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "publish-review",
+  "publish.cjs",
+);
+const publishReview = require(PUBLISH);
+const PUBLISH_MAX = Number(
+  /^const MAX_SUMMARY = ([0-9]+);$/mu.exec(fs.readFileSync(PUBLISH, "utf8"))[1],
+);
+
+// The summary publish-review posts when one bad anchor moves every inline
+// comment to it; it slices at its MAX_SUMMARY, so a shorter text lost nothing.
+function demotedSummary(review) {
+  const lane = "claude-review";
+  const unanchored = review.comments.map((c) => ({
+    ...c,
+    body: publishReview.commentBody(c.body, lane),
+  }));
+  return publishReview.summaryText(review, unanchored, lane);
+}
+
+test("the merge's summary limit is publish-review's, read from its file", () => {
+  for (const job of LEGS) {
+    const script = job.steps.find((s) => s.id === "extract").with.script;
+    assert.equal(
+      Number(/const PUBLISH_SUMMARY = ([0-9]+);/u.exec(script)?.[1]),
+      PUBLISH_MAX,
+    );
+  }
+});
+
+test("a merged review publish-review would demote whole still fits its summary limit, or is incomplete saying why", async () => {
+  // Two chunks of 12 comments of about 2900 characters: about 70000
+  // characters demoted, over the limit, so the least severe move to the list.
+  const big = (k) =>
+    Array.from({ length: 12 }, (_, i) =>
+      finding(
+        `c${k}.js`,
+        i + 1,
+        i < 2 ? "CRITICAL" : "IMPORTANT",
+        `Chunk ${k} finding ${i}: `,
+        2880,
+      ),
+    );
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 2, {
+      reviews: { 1: chunkReview(big(1)), 2: chunkReview(big(2)) },
+    });
+    assert.equal(outputs.verdict, "complete", job.name);
+    const review = JSON.parse(outputs.review);
+    assert.ok(demotedSummary(review).length < PUBLISH_MAX);
+    // Every CRITICAL finding stayed inline; every finding is inline or listed.
+    assert.equal(
+      review.comments.filter((c) => c.body.includes("CRITICAL")).length,
+      4,
+    );
+    assert.equal(review.comments.length + listedCount(review.summary), 24);
+  }
+});
+
+test("each chunk's summary cap is the larger of the fixed cap and its share of one review's, and a longer summary is incomplete", async () => {
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    for (const [n, cap] of [
+      [2, 10000],
+      [13, 1538],
+      [14, 1500],
+      [20, 1500],
+    ]) {
+      const dir = makeTemporaryDirectory("pr-review-cli-chunks-caps-");
+      const outputs = await runScript(compose, {
+        LANE: "code",
+        MODEL: "sonnet",
+        EFFORT: "high",
+        MAX_TURNS: "30",
+        MODEL_ARGS: "",
+        CLI_VERSION: "latest",
+        REPOSITORY: "o/r",
+        PR_NUMBER: "7",
+        HEAD_SHA: "a".repeat(40),
+        HOLD_PATHS: "",
+        RUNNER_TEMP: dir,
+        CHUNKS: String(n),
+        CHUNK_FILES: Array(n).fill("1").join(","),
+        LEG_MINUTES: "11",
+        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+        CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+        CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+      });
+      const schema = JSON.parse(
+        fs.readFileSync(outputs["schema-file"], "utf8"),
+      );
+      assert.equal(schema.properties.summary.maxLength, cap, `${n} chunks`);
+    }
+    const over = await extractChunked(job, 20, {
+      reviews: { 7: chunkReview([], { summary: "s".repeat(1501) }) },
+    });
+    assert.equal(
+      over.verdict,
+      "chunk 7 of 20: the review's summary is over its 1500-character cap",
+      job.name,
+    );
+    assert.equal(over.review, undefined);
+  }
+});
+
+test("the chunks' critical-findings lines merge into one line a merge gate reads", async () => {
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 3, {
+      reviews: {
+        1: chunkReview([], { summary: "One.\n\ncritical-findings: 1" }),
+        2: chunkReview([], { summary: "Two.\n\ncritical-findings: 2" }),
+        // No line: its one summary-only finding counts as CRITICAL.
+        3: chunkReview([], { summary: "Three.", findings: 1 }),
+      },
+    });
+    const review = JSON.parse(outputs.review);
+    assert.deepEqual(criticalLines(review.summary), [4]);
+  }
+});
+
+test("20 chunks at their caps with 120-character paths fit once the list groups by path, and never drop a finding", async () => {
+  const comments = Number(workflow.env.CHUNK_COMMENTS);
+  const chars = Number(workflow.env.CHUNK_SUMMARY_CHARS);
+  const long = (k, f) =>
+    `src/${"d".repeat(100)}/m${String(k).padStart(2, "0")}/f${f}.ts`.padEnd(
+      120,
+      "x",
+    );
+  const run = (job, fileOf) => {
+    const reviews = {};
+    for (let k = 1; k <= 20; k++) {
+      reviews[k] = chunkReview(
+        Array.from({ length: comments }, (_, i) =>
+          finding(
+            fileOf(k, i),
+            i + 1,
+            "IMPORTANT",
+            `Chunk ${k} finding ${i}: `,
+            2950,
+          ),
+        ),
+        { summary: `critical-findings: 0\n${"s".repeat(chars - 21)}` },
+      );
+    }
+    return extractChunked(job, 20, { reviews });
+  };
+  for (const job of LEGS) {
+    // Three files a chunk: the grouped list fits.
+    const grouped = await run(job, (k, i) => long(k, i % 3));
+    assert.equal(grouped.verdict, "complete", job.name);
+    const review = JSON.parse(grouped.review);
+    assert.equal(
+      review.comments.length + listedCount(review.summary),
+      20 * comments,
+    );
+    assert.ok(demotedSummary(review).length < PUBLISH_MAX);
+    // A file a comment: no grouping fits, so it is incomplete, saying so.
+    const unique = await run(job, (k, i) => long(k, i));
+    assert.match(
+      unique.verdict,
+      /^the merged review does not fit: 240 findings need [0-9]+ summary characters with every inline comment demoted, over the [0-9]+ publish-review keeps$/u,
+    );
+    assert.equal(unique.review, undefined);
+  }
 });

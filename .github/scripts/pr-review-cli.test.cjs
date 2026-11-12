@@ -4943,7 +4943,7 @@ test("an incremental review leaves a file the push deleted out of its file count
   }
 });
 
-test("the compose step writes one prompt per chunk, each with the fixed per-chunk caps", async () => {
+test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
   const outputs = await composeOutputs({ CHUNKS: "3", CHUNK_FILES: "2,1,4" });
   assert.equal(outputs.chunks, "3");
   assert.equal(outputs["chunk-files"], "2,1,4");
@@ -4960,13 +4960,13 @@ test("the compose step writes one prompt per chunk, each with the fixed per-chun
     );
     assert.match(
       prompt,
-      /at most 12 comments and a summary of at most 1500 characters/u,
+      /at most 12 comments and a summary of at most 6666 characters/u,
     );
   }
   assert.match(prompts[2], /\(4 files of the scope's file list\)/u);
   assert.equal(promptFile(outputs, 4), undefined);
   const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
-  assert.equal(schema.properties.summary.maxLength, 1500);
+  assert.equal(schema.properties.summary.maxLength, 6666);
   assert.equal(schema.properties.comments.maxItems, 12);
   // Without a well-formed count, one review with the whole caps.
   for (const env of [

@@ -2123,7 +2123,12 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -2613,7 +2618,14 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
+            // A comment body's length, the compose step's schema maxLength.
+            const MAX_BODY = 3000;
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -2623,9 +2635,12 @@ jobs:
                 return "the leg wrote no structured output";
               }
               const summary =
-                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, caps.summary) : "";
+                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
               if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return "the review returned no findings count";
               if (!summary) return "the review returned no summary";
+              // Never cut: a cut summary could lose a finding or its
+              // critical-findings line.
+              if (summary.length > caps.summary) return `the review's summary is over its ${caps.summary}-character cap`;
               if (!Array.isArray(raw.comments) || raw.comments.length > caps.comments) return "the review returned no comment list";
               // A comment with no body is dropped. One whose path, line, side or
               // start_line is malformed goes on in `malformed`, with its path and
@@ -2648,7 +2663,7 @@ jobs:
                   malformed.push({
                     ...(typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path) ? { path: c.path } : {}),
                     ...(Number.isSafeInteger(c.line) && c.line >= 1 ? { line: c.line } : {}),
-                    body: c.body.slice(0, 3000),
+                    body: c.body.slice(0, MAX_BODY),
                   });
                   continue;
                 }
@@ -2657,7 +2672,7 @@ jobs:
                   line: c.line,
                   side: c.side,
                   ...(c.start_line === undefined ? {} : { start_line: c.start_line }),
-                  body: c.body.slice(0, 3000),
+                  body: c.body.slice(0, MAX_BODY),
                 });
               }
               // An optional hold for a person: known criteria, each once, and a
@@ -2797,10 +2812,10 @@ jobs:
             };
             const malformed = reviews.flatMap((r) => r.malformed);
             // A chunked review's comments, merged across chunks. One another
-            // chunk made at the same line with the same text is dropped as a
-            // duplicate; one that repeats only the line or only the text, and
-            // every comment past the inline cap, most severe first, is listed
-            // in the summary instead, so no finding is lost. Severity is
+            // chunk made at the same line with the same text (whitespace and
+            // case aside) is dropped as a duplicate; any other is a finding of
+            // its own. Past the inline cap, most severe first, the rest are
+            // listed in the summary, so no finding is lost. Severity is
             // publish-review's reading: exactly one severity line, else
             // CRITICAL.
             const INLINE = 25;
@@ -2815,26 +2830,20 @@ jobs:
             let comments = reviews[0].comments;
             let overflow = [];
             if (chunks > 1) {
-              const lines = new Set();
-              const texts = new Set();
               const both = new Set();
               const kept = [];
               for (const c of reviews.flatMap((r) => r.comments)) {
-                const where = `${c.path}\0${c.line}\0${c.side}`;
-                const what = plain(c.body).toLowerCase();
-                if (both.has(`${where}\0${what}`)) {
+                const same = `${c.path}\0${c.line}\0${c.side}\0${plain(c.body).toLowerCase()}`;
+                if (both.has(same)) {
                   duplicates++;
                   continue;
                 }
-                both.add(`${where}\0${what}`);
-                const repeat = lines.has(where) || texts.has(what);
-                lines.add(where);
-                texts.add(what);
-                (repeat ? overflow : kept).push(c);
+                both.add(same);
+                kept.push(c);
               }
               kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
               comments = kept.slice(0, INLINE);
-              overflow = [...kept.slice(INLINE), ...overflow];
+              overflow = kept.slice(INLINE);
             }
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
@@ -2847,45 +2856,55 @@ jobs:
               chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
                 : "";
+            // publish-review's CRITICAL_LINE. Its gates read a summary's
+            // CRITICAL count only from exactly one such line:
+            // claude-code-plugins clear-escalations.mjs (:578, :924) clears
+            // only one line reading 0, babysit_review_evidence.py (:351)
+            // counts every finding CRITICAL without exactly one, and
+            // publish-review (countedSummary) adds its own demoted findings
+            // only to a lone line. So a chunked review's lines merge into one:
+            // each chunk's count (its one line, else its summary-only
+            // findings, as publish-review counts a summary with no line, or
+            // with several the larger of their sum and those findings), plus
+            // the listed CRITICAL comments.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+            const chunkCritical = reviews.reduce((sum, r) => {
+              const counts = [...r.summary.matchAll(CRITICAL_LINE)].map((m) => Number(m[2]));
+              const summaryOnly = Math.max(r.findings - r.comments.length - r.malformed.length, 0);
+              return sum + (counts.length === 1 ? counts[0] : Math.max(summaryOnly, counts.reduce((a, b) => a + b, 0)));
+            }, 0);
             const head =
               chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
-            // The summary listing the overflow comments, each with its first
-            // `excerpt` characters. Its critical-findings line counts the
-            // CRITICAL ones, which a merge gate would otherwise not see, and,
-            // when no chunk's summary has that line, the summary-only
-            // findings, which publish-review would otherwise count as
-            // CRITICAL.
-            // publish-review's CRITICAL_LINE: it adds its own demoted
-            // findings to the line only when the summary has exactly one, so
-            // the listed CRITICAL findings join a lone line rather than
-            // adding a second.
-            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+                : reviews
+                    .map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary.replace(CRITICAL_LINE, "").trim()}`)
+                    .join("\n\n");
+            // The summary listing the overflow comments, most severe first,
+            // each with its first `excerpt` characters; at excerpt 0, only
+            // their locations, grouped by path.
             const summaryOf = (excerpt) => {
-              if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow
-                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
-                .map((c) => {
+              if (chunks === 1) return head + moved + ceiling;
+              const ranked = overflow.toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              let entries;
+              if (excerpt > 0) {
+                entries = ranked.map((c) => {
                   const text = plain(c.body);
-                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side}): ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
                 });
-              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
-              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const lines = (head.match(CRITICAL_LINE) ?? []).length;
-              const counted =
-                lines === 1
-                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
-                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
+              } else {
+                const byPath = new Map();
+                for (const c of ranked) byPath.set(plain(c.path), [...(byPath.get(plain(c.path)) ?? []), c]);
+                entries = [...byPath].map(([where, list]) => `- \`${where}\`: ${list.map((c) => `${severity(c.body)} line ${c.line} (${c.side})`).join(", ")}`);
+              }
+              const critical = chunkCritical + overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               return (
                 [
-                  counted[0],
+                  head,
+                  ...(entries.length > 0
+                    ? ["", `Findings not posted inline (past the ${INLINE}-comment cap), most severe first:`, "", ...entries]
+                    : []),
                   "",
-                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
-                  "",
-                  ...entries,
-                  ...counted.slice(1),
+                  `critical-findings: ${critical}`,
                 ].join("\n") +
                 moved +
                 ceiling
@@ -2905,12 +2924,30 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
-            // 60000 characters of a summary. A merged review over 100 KB, or a
-            // summary over 50000 characters, lists its comments with shorter
-            // excerpts, then none, then moves the least severe inline comments
-            // to the list; one that still does not fit is not passed on.
-            const MAX_SUMMARY = 50000;
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
+            // not passed on.
+            //
+            // publish-review keeps PUBLISH_SUMMARY characters of the summary it
+            // posts (publish.cjs MAX_SUMMARY; a test holds the two equal), and
+            // when one inline anchor is bad it posts every inline comment in
+            // that summary instead (placeComments, summaryText). So a chunked
+            // review fits only when its summary plus every inline comment as
+            // publish-review would list it, `- \`path:line\` (side): body` and
+            // a newline, plus its malformed comments listed the same way, plus
+            // RESERVE for the two list headings and a longer critical count,
+            // stays within PUBLISH_SUMMARY. Each unclosed `<!--` counts 3 more,
+            // as publish-review escapes it. To fit, the listed comments first
+            // lose text (whole, then 300 and 120 characters, then locations
+            // only, grouped by path); then the least severe inline comment
+            // joins the list and the text tiers start again. A review that
+            // still does not fit is incomplete, saying why. One review of the
+            // whole diff is passed on as before.
+            const PUBLISH_SUMMARY = 60000;
+            const RESERVE = 200;
+            const posted = (text) => text.length + 3 * (text.split("<!--").length - 1);
+            const demoted = () =>
+              comments.reduce((n, c) => n + posted(`- \`${c.path}:${c.line}\` (${c.side}): ${c.body}`) + 1, 0) +
+              malformed.reduce((n, c) => n + posted(`- \`${c.path ?? ""}:${c.line ?? ""}\`: ${c.body}`) + 1, 0);
             const reviewOf = (excerpt) => {
               const summary = summaryOf(excerpt);
               const text = JSON.stringify({
@@ -2921,16 +2958,26 @@ jobs:
                 ...(malformed.length > 0 ? { malformed } : {}),
                 ...(hold ? { hold } : {}),
               });
-              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+              const need = posted(summary) + demoted() + RESERVE;
+              return { text, need, ok: Buffer.byteLength(text, "utf8") <= 100000 && (chunks === 1 || need <= PUBLISH_SUMMARY) };
             };
             let review;
-            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
-            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+            for (;;) {
+              for (const excerpt of chunks === 1 ? [0] : [MAX_BODY, 300, 120, 0]) {
+                review = reviewOf(excerpt);
+                if (review.ok) break;
+              }
+              if (review.ok || comments.length === 0 || chunks === 1) break;
               overflow = [comments.at(-1), ...overflow];
               comments = comments.slice(0, -1);
-              review = reviewOf(0);
             }
-            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            if (!review.ok) {
+              if (chunks === 1) return incomplete("the review is over 100,000 bytes, too large to pass on");
+              return incomplete(
+                `the merged review does not fit: ${comments.length + overflow.length} findings need ${review.need} summary characters with every inline comment demoted, over the ${PUBLISH_SUMMARY} publish-review keeps`,
+              );
+            }
+            review = review.text;
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
@@ -4506,7 +4553,12 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -4964,7 +5016,14 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
+            // A comment body's length, the compose step's schema maxLength.
+            const MAX_BODY = 3000;
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -4974,9 +5033,12 @@ jobs:
                 return "the leg wrote no structured output";
               }
               const summary =
-                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, caps.summary) : "";
+                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
               if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return "the review returned no findings count";
               if (!summary) return "the review returned no summary";
+              // Never cut: a cut summary could lose a finding or its
+              // critical-findings line.
+              if (summary.length > caps.summary) return `the review's summary is over its ${caps.summary}-character cap`;
               if (!Array.isArray(raw.comments) || raw.comments.length > caps.comments) return "the review returned no comment list";
               // A comment with no body is dropped. One whose path, line, side or
               // start_line is malformed goes on in `malformed`, with its path and
@@ -4999,7 +5061,7 @@ jobs:
                   malformed.push({
                     ...(typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path) ? { path: c.path } : {}),
                     ...(Number.isSafeInteger(c.line) && c.line >= 1 ? { line: c.line } : {}),
-                    body: c.body.slice(0, 3000),
+                    body: c.body.slice(0, MAX_BODY),
                   });
                   continue;
                 }
@@ -5008,7 +5070,7 @@ jobs:
                   line: c.line,
                   side: c.side,
                   ...(c.start_line === undefined ? {} : { start_line: c.start_line }),
-                  body: c.body.slice(0, 3000),
+                  body: c.body.slice(0, MAX_BODY),
                 });
               }
               // An optional hold for a person: known criteria, each once, and a
@@ -5148,10 +5210,10 @@ jobs:
             };
             const malformed = reviews.flatMap((r) => r.malformed);
             // A chunked review's comments, merged across chunks. One another
-            // chunk made at the same line with the same text is dropped as a
-            // duplicate; one that repeats only the line or only the text, and
-            // every comment past the inline cap, most severe first, is listed
-            // in the summary instead, so no finding is lost. Severity is
+            // chunk made at the same line with the same text (whitespace and
+            // case aside) is dropped as a duplicate; any other is a finding of
+            // its own. Past the inline cap, most severe first, the rest are
+            // listed in the summary, so no finding is lost. Severity is
             // publish-review's reading: exactly one severity line, else
             // CRITICAL.
             const INLINE = 25;
@@ -5166,26 +5228,20 @@ jobs:
             let comments = reviews[0].comments;
             let overflow = [];
             if (chunks > 1) {
-              const lines = new Set();
-              const texts = new Set();
               const both = new Set();
               const kept = [];
               for (const c of reviews.flatMap((r) => r.comments)) {
-                const where = `${c.path}\0${c.line}\0${c.side}`;
-                const what = plain(c.body).toLowerCase();
-                if (both.has(`${where}\0${what}`)) {
+                const same = `${c.path}\0${c.line}\0${c.side}\0${plain(c.body).toLowerCase()}`;
+                if (both.has(same)) {
                   duplicates++;
                   continue;
                 }
-                both.add(`${where}\0${what}`);
-                const repeat = lines.has(where) || texts.has(what);
-                lines.add(where);
-                texts.add(what);
-                (repeat ? overflow : kept).push(c);
+                both.add(same);
+                kept.push(c);
               }
               kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
               comments = kept.slice(0, INLINE);
-              overflow = [...kept.slice(INLINE), ...overflow];
+              overflow = kept.slice(INLINE);
             }
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
@@ -5198,45 +5254,55 @@ jobs:
               chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
                 : "";
+            // publish-review's CRITICAL_LINE. Its gates read a summary's
+            // CRITICAL count only from exactly one such line:
+            // claude-code-plugins clear-escalations.mjs (:578, :924) clears
+            // only one line reading 0, babysit_review_evidence.py (:351)
+            // counts every finding CRITICAL without exactly one, and
+            // publish-review (countedSummary) adds its own demoted findings
+            // only to a lone line. So a chunked review's lines merge into one:
+            // each chunk's count (its one line, else its summary-only
+            // findings, as publish-review counts a summary with no line, or
+            // with several the larger of their sum and those findings), plus
+            // the listed CRITICAL comments.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+            const chunkCritical = reviews.reduce((sum, r) => {
+              const counts = [...r.summary.matchAll(CRITICAL_LINE)].map((m) => Number(m[2]));
+              const summaryOnly = Math.max(r.findings - r.comments.length - r.malformed.length, 0);
+              return sum + (counts.length === 1 ? counts[0] : Math.max(summaryOnly, counts.reduce((a, b) => a + b, 0)));
+            }, 0);
             const head =
               chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
-            // The summary listing the overflow comments, each with its first
-            // `excerpt` characters. Its critical-findings line counts the
-            // CRITICAL ones, which a merge gate would otherwise not see, and,
-            // when no chunk's summary has that line, the summary-only
-            // findings, which publish-review would otherwise count as
-            // CRITICAL.
-            // publish-review's CRITICAL_LINE: it adds its own demoted
-            // findings to the line only when the summary has exactly one, so
-            // the listed CRITICAL findings join a lone line rather than
-            // adding a second.
-            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+                : reviews
+                    .map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary.replace(CRITICAL_LINE, "").trim()}`)
+                    .join("\n\n");
+            // The summary listing the overflow comments, most severe first,
+            // each with its first `excerpt` characters; at excerpt 0, only
+            // their locations, grouped by path.
             const summaryOf = (excerpt) => {
-              if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow
-                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
-                .map((c) => {
+              if (chunks === 1) return head + moved + ceiling;
+              const ranked = overflow.toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              let entries;
+              if (excerpt > 0) {
+                entries = ranked.map((c) => {
                   const text = plain(c.body);
-                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side}): ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
                 });
-              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
-              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const lines = (head.match(CRITICAL_LINE) ?? []).length;
-              const counted =
-                lines === 1
-                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
-                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
+              } else {
+                const byPath = new Map();
+                for (const c of ranked) byPath.set(plain(c.path), [...(byPath.get(plain(c.path)) ?? []), c]);
+                entries = [...byPath].map(([where, list]) => `- \`${where}\`: ${list.map((c) => `${severity(c.body)} line ${c.line} (${c.side})`).join(", ")}`);
+              }
+              const critical = chunkCritical + overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               return (
                 [
-                  counted[0],
+                  head,
+                  ...(entries.length > 0
+                    ? ["", `Findings not posted inline (past the ${INLINE}-comment cap), most severe first:`, "", ...entries]
+                    : []),
                   "",
-                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
-                  "",
-                  ...entries,
-                  ...counted.slice(1),
+                  `critical-findings: ${critical}`,
                 ].join("\n") +
                 moved +
                 ceiling
@@ -5256,12 +5322,30 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
-            // 60000 characters of a summary. A merged review over 100 KB, or a
-            // summary over 50000 characters, lists its comments with shorter
-            // excerpts, then none, then moves the least severe inline comments
-            // to the list; one that still does not fit is not passed on.
-            const MAX_SUMMARY = 50000;
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
+            // not passed on.
+            //
+            // publish-review keeps PUBLISH_SUMMARY characters of the summary it
+            // posts (publish.cjs MAX_SUMMARY; a test holds the two equal), and
+            // when one inline anchor is bad it posts every inline comment in
+            // that summary instead (placeComments, summaryText). So a chunked
+            // review fits only when its summary plus every inline comment as
+            // publish-review would list it, `- \`path:line\` (side): body` and
+            // a newline, plus its malformed comments listed the same way, plus
+            // RESERVE for the two list headings and a longer critical count,
+            // stays within PUBLISH_SUMMARY. Each unclosed `<!--` counts 3 more,
+            // as publish-review escapes it. To fit, the listed comments first
+            // lose text (whole, then 300 and 120 characters, then locations
+            // only, grouped by path); then the least severe inline comment
+            // joins the list and the text tiers start again. A review that
+            // still does not fit is incomplete, saying why. One review of the
+            // whole diff is passed on as before.
+            const PUBLISH_SUMMARY = 60000;
+            const RESERVE = 200;
+            const posted = (text) => text.length + 3 * (text.split("<!--").length - 1);
+            const demoted = () =>
+              comments.reduce((n, c) => n + posted(`- \`${c.path}:${c.line}\` (${c.side}): ${c.body}`) + 1, 0) +
+              malformed.reduce((n, c) => n + posted(`- \`${c.path ?? ""}:${c.line ?? ""}\`: ${c.body}`) + 1, 0);
             const reviewOf = (excerpt) => {
               const summary = summaryOf(excerpt);
               const text = JSON.stringify({
@@ -5272,16 +5356,26 @@ jobs:
                 ...(malformed.length > 0 ? { malformed } : {}),
                 ...(hold ? { hold } : {}),
               });
-              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+              const need = posted(summary) + demoted() + RESERVE;
+              return { text, need, ok: Buffer.byteLength(text, "utf8") <= 100000 && (chunks === 1 || need <= PUBLISH_SUMMARY) };
             };
             let review;
-            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
-            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+            for (;;) {
+              for (const excerpt of chunks === 1 ? [0] : [MAX_BODY, 300, 120, 0]) {
+                review = reviewOf(excerpt);
+                if (review.ok) break;
+              }
+              if (review.ok || comments.length === 0 || chunks === 1) break;
               overflow = [comments.at(-1), ...overflow];
               comments = comments.slice(0, -1);
-              review = reviewOf(0);
             }
-            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            if (!review.ok) {
+              if (chunks === 1) return incomplete("the review is over 100,000 bytes, too large to pass on");
+              return incomplete(
+                `the merged review does not fit: ${comments.length + overflow.length} findings need ${review.need} summary characters with every inline comment demoted, over the ${PUBLISH_SUMMARY} publish-review keeps`,
+              );
+            }
+            review = review.text;
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
@@ -6862,7 +6956,12 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -7318,7 +7417,14 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
+            // A chunk's summary keeps its share of one review's 20000
+            // characters, and never less than CHUNK_SUMMARY_CHARS.
+            const caps =
+              chunks === 1
+                ? { summary: 20000, comments: 25 }
+                : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
+            // A comment body's length, the compose step's schema maxLength.
+            const MAX_BODY = 3000;
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -7328,9 +7434,12 @@ jobs:
                 return "the leg wrote no structured output";
               }
               const summary =
-                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim().slice(0, caps.summary) : "";
+                typeof raw?.summary === "string" ? raw.summary.replace(/<!--[\s\S]*?-->/gu, "").trim() : "";
               if (!Number.isSafeInteger(raw?.findings) || raw.findings < 0) return "the review returned no findings count";
               if (!summary) return "the review returned no summary";
+              // Never cut: a cut summary could lose a finding or its
+              // critical-findings line.
+              if (summary.length > caps.summary) return `the review's summary is over its ${caps.summary}-character cap`;
               if (!Array.isArray(raw.comments) || raw.comments.length > caps.comments) return "the review returned no comment list";
               // A comment with no body is dropped. One whose path, line, side or
               // start_line is malformed goes on in `malformed`, with its path and
@@ -7353,7 +7462,7 @@ jobs:
                   malformed.push({
                     ...(typeof c.path === "string" && /^[^\0\r\n`]{1,500}$/u.test(c.path) ? { path: c.path } : {}),
                     ...(Number.isSafeInteger(c.line) && c.line >= 1 ? { line: c.line } : {}),
-                    body: c.body.slice(0, 3000),
+                    body: c.body.slice(0, MAX_BODY),
                   });
                   continue;
                 }
@@ -7362,7 +7471,7 @@ jobs:
                   line: c.line,
                   side: c.side,
                   ...(c.start_line === undefined ? {} : { start_line: c.start_line }),
-                  body: c.body.slice(0, 3000),
+                  body: c.body.slice(0, MAX_BODY),
                 });
               }
               // An optional hold for a person: known criteria, each once, and a
@@ -7502,10 +7611,10 @@ jobs:
             };
             const malformed = reviews.flatMap((r) => r.malformed);
             // A chunked review's comments, merged across chunks. One another
-            // chunk made at the same line with the same text is dropped as a
-            // duplicate; one that repeats only the line or only the text, and
-            // every comment past the inline cap, most severe first, is listed
-            // in the summary instead, so no finding is lost. Severity is
+            // chunk made at the same line with the same text (whitespace and
+            // case aside) is dropped as a duplicate; any other is a finding of
+            // its own. Past the inline cap, most severe first, the rest are
+            // listed in the summary, so no finding is lost. Severity is
             // publish-review's reading: exactly one severity line, else
             // CRITICAL.
             const INLINE = 25;
@@ -7520,26 +7629,20 @@ jobs:
             let comments = reviews[0].comments;
             let overflow = [];
             if (chunks > 1) {
-              const lines = new Set();
-              const texts = new Set();
               const both = new Set();
               const kept = [];
               for (const c of reviews.flatMap((r) => r.comments)) {
-                const where = `${c.path}\0${c.line}\0${c.side}`;
-                const what = plain(c.body).toLowerCase();
-                if (both.has(`${where}\0${what}`)) {
+                const same = `${c.path}\0${c.line}\0${c.side}\0${plain(c.body).toLowerCase()}`;
+                if (both.has(same)) {
                   duplicates++;
                   continue;
                 }
-                both.add(`${where}\0${what}`);
-                const repeat = lines.has(where) || texts.has(what);
-                lines.add(where);
-                texts.add(what);
-                (repeat ? overflow : kept).push(c);
+                both.add(same);
+                kept.push(c);
               }
               kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
               comments = kept.slice(0, INLINE);
-              overflow = [...kept.slice(INLINE), ...overflow];
+              overflow = kept.slice(INLINE);
             }
             const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
@@ -7552,45 +7655,55 @@ jobs:
               chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
                 : "";
+            // publish-review's CRITICAL_LINE. Its gates read a summary's
+            // CRITICAL count only from exactly one such line:
+            // claude-code-plugins clear-escalations.mjs (:578, :924) clears
+            // only one line reading 0, babysit_review_evidence.py (:351)
+            // counts every finding CRITICAL without exactly one, and
+            // publish-review (countedSummary) adds its own demoted findings
+            // only to a lone line. So a chunked review's lines merge into one:
+            // each chunk's count (its one line, else its summary-only
+            // findings, as publish-review counts a summary with no line, or
+            // with several the larger of their sum and those findings), plus
+            // the listed CRITICAL comments.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+            const chunkCritical = reviews.reduce((sum, r) => {
+              const counts = [...r.summary.matchAll(CRITICAL_LINE)].map((m) => Number(m[2]));
+              const summaryOnly = Math.max(r.findings - r.comments.length - r.malformed.length, 0);
+              return sum + (counts.length === 1 ? counts[0] : Math.max(summaryOnly, counts.reduce((a, b) => a + b, 0)));
+            }, 0);
             const head =
               chunks === 1
                 ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
-            // The summary listing the overflow comments, each with its first
-            // `excerpt` characters. Its critical-findings line counts the
-            // CRITICAL ones, which a merge gate would otherwise not see, and,
-            // when no chunk's summary has that line, the summary-only
-            // findings, which publish-review would otherwise count as
-            // CRITICAL.
-            // publish-review's CRITICAL_LINE: it adds its own demoted
-            // findings to the line only when the summary has exactly one, so
-            // the listed CRITICAL findings join a lone line rather than
-            // adding a second.
-            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
+                : reviews
+                    .map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary.replace(CRITICAL_LINE, "").trim()}`)
+                    .join("\n\n");
+            // The summary listing the overflow comments, most severe first,
+            // each with its first `excerpt` characters; at excerpt 0, only
+            // their locations, grouped by path.
             const summaryOf = (excerpt) => {
-              if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow
-                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
-                .map((c) => {
+              if (chunks === 1) return head + moved + ceiling;
+              const ranked = overflow.toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              let entries;
+              if (excerpt > 0) {
+                entries = ranked.map((c) => {
                   const text = plain(c.body);
-                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side}): ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
                 });
-              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
-              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const lines = (head.match(CRITICAL_LINE) ?? []).length;
-              const counted =
-                lines === 1
-                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
-                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
+              } else {
+                const byPath = new Map();
+                for (const c of ranked) byPath.set(plain(c.path), [...(byPath.get(plain(c.path)) ?? []), c]);
+                entries = [...byPath].map(([where, list]) => `- \`${where}\`: ${list.map((c) => `${severity(c.body)} line ${c.line} (${c.side})`).join(", ")}`);
+              }
+              const critical = chunkCritical + overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               return (
                 [
-                  counted[0],
+                  head,
+                  ...(entries.length > 0
+                    ? ["", `Findings not posted inline (past the ${INLINE}-comment cap), most severe first:`, "", ...entries]
+                    : []),
                   "",
-                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
-                  "",
-                  ...entries,
-                  ...counted.slice(1),
+                  `critical-findings: ${critical}`,
                 ].join("\n") +
                 moved +
                 ceiling
@@ -7610,12 +7723,30 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
-            // 60000 characters of a summary. A merged review over 100 KB, or a
-            // summary over 50000 characters, lists its comments with shorter
-            // excerpts, then none, then moves the least severe inline comments
-            // to the list; one that still does not fit is not passed on.
-            const MAX_SUMMARY = 50000;
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
+            // not passed on.
+            //
+            // publish-review keeps PUBLISH_SUMMARY characters of the summary it
+            // posts (publish.cjs MAX_SUMMARY; a test holds the two equal), and
+            // when one inline anchor is bad it posts every inline comment in
+            // that summary instead (placeComments, summaryText). So a chunked
+            // review fits only when its summary plus every inline comment as
+            // publish-review would list it, `- \`path:line\` (side): body` and
+            // a newline, plus its malformed comments listed the same way, plus
+            // RESERVE for the two list headings and a longer critical count,
+            // stays within PUBLISH_SUMMARY. Each unclosed `<!--` counts 3 more,
+            // as publish-review escapes it. To fit, the listed comments first
+            // lose text (whole, then 300 and 120 characters, then locations
+            // only, grouped by path); then the least severe inline comment
+            // joins the list and the text tiers start again. A review that
+            // still does not fit is incomplete, saying why. One review of the
+            // whole diff is passed on as before.
+            const PUBLISH_SUMMARY = 60000;
+            const RESERVE = 200;
+            const posted = (text) => text.length + 3 * (text.split("<!--").length - 1);
+            const demoted = () =>
+              comments.reduce((n, c) => n + posted(`- \`${c.path}:${c.line}\` (${c.side}): ${c.body}`) + 1, 0) +
+              malformed.reduce((n, c) => n + posted(`- \`${c.path ?? ""}:${c.line ?? ""}\`: ${c.body}`) + 1, 0);
             const reviewOf = (excerpt) => {
               const summary = summaryOf(excerpt);
               const text = JSON.stringify({
@@ -7626,16 +7757,26 @@ jobs:
                 ...(malformed.length > 0 ? { malformed } : {}),
                 ...(hold ? { hold } : {}),
               });
-              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+              const need = posted(summary) + demoted() + RESERVE;
+              return { text, need, ok: Buffer.byteLength(text, "utf8") <= 100000 && (chunks === 1 || need <= PUBLISH_SUMMARY) };
             };
             let review;
-            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
-            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+            for (;;) {
+              for (const excerpt of chunks === 1 ? [0] : [MAX_BODY, 300, 120, 0]) {
+                review = reviewOf(excerpt);
+                if (review.ok) break;
+              }
+              if (review.ok || comments.length === 0 || chunks === 1) break;
               overflow = [comments.at(-1), ...overflow];
               comments = comments.slice(0, -1);
-              review = reviewOf(0);
             }
-            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            if (!review.ok) {
+              if (chunks === 1) return incomplete("the review is over 100,000 bytes, too large to pass on");
+              return incomplete(
+                `the merged review does not fit: ${comments.length + overflow.length} findings need ${review.need} summary characters with every inline comment demoted, over the ${PUBLISH_SUMMARY} publish-review keeps`,
+              );
+            }
+            review = review.text;
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary

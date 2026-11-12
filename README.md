@@ -1785,21 +1785,32 @@ written to `.claude-lane/chunks/distinct.diff`, whose size is the one checked
 against the read budget; when the rest alone is over either cap only the rest
 is split; in both the copies and renames count as read. Otherwise the whole
 diff is split, copies and renames included.
-Each chunk returns at most `CHUNK_COMMENTS` (12) comments and a
-`CHUNK_SUMMARY_CHARS` (1500) character summary, both in the workflow's
-`env`; one review of the whole diff keeps 25 and 20000. The extract step
-merges the chunks: a comment another chunk made at the same line with the same
-text (whitespace and case aside) is dropped; one that repeats only the line or
-only the text, and every comment past 25 inline comments, ranked CRITICAL,
-IMPORTANT, SUGGESTION by publish-review's reading of the body's severity line,
-is listed in the summary under "Findings not posted inline" with its severity,
-location and an excerpt, followed by a `critical-findings:` line counting the
-listed CRITICAL findings (and, when no chunk's summary has that line, the
-summary-only findings publish-review would count as CRITICAL). A merged review
-over 100 KB, or a summary over 50000 characters, lists with shorter excerpts,
-then locations only, then moves the least severe inline comments to the list;
-one that still does not fit is `incomplete`. Twenty chunks every one at its
-caps fit. The findings are the chunks' sums less the dropped duplicates,
+Each chunk returns at most `CHUNK_COMMENTS` (12) comments and a summary
+of its share of one review's 20000 characters, never less than
+`CHUNK_SUMMARY_CHARS` (1500), both in the workflow's `env`; one review of
+the whole diff keeps 25 and 20000. A summary over its cap is never cut: the
+review is `incomplete`. The extract step merges the chunks:
+
+- A comment another chunk made at the same line with the same text
+  (whitespace and case aside) is dropped. Any other comment is its own
+  finding, two on one line included.
+- At most 25 stay inline, ranked CRITICAL, IMPORTANT, SUGGESTION by
+  publish-review's reading of the body's severity line. The rest are listed in
+  the summary under "Findings not posted inline", whole.
+- The chunks' `critical-findings:` lines merge into one line at the end of the
+  summary: each chunk's count (its one line, else its summary-only findings,
+  which publish-review would count as CRITICAL), plus the listed CRITICAL
+  comments. The merge gates read only a summary with exactly one such line.
+- publish-review keeps 60000 characters of a summary and, after one bad inline
+  anchor, posts every inline comment in it. The merged summary plus every
+  inline and malformed comment as publish-review would list it must fit that
+  limit, and the review must stay under 100 KB. To fit, the list's entries
+  shorten to 300, then 120 characters, then locations grouped by path; then
+  the least severe inline comment joins the list and the steps repeat. A
+  review that still does not fit is `incomplete`, naming the findings and
+  the characters they need.
+
+The findings are the chunks' sums less the dropped duplicates,
 the files read their sum, each chunk's capped at the files the job counted
 in it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
