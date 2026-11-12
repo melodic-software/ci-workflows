@@ -49,8 +49,8 @@ const PR = {
 
 // Each read answers from its queue in order: an Error is thrown, anything
 // else is the answer. The last entry repeats once the queue runs out.
-function fakeGithub({ get = [PR], pages = [["a.txt"]] } = {}) {
-  const calls = { get: 0, paginate: 0 };
+function fakeGithub({ get = [PR], pages = [["a.txt"]], list = [[]] } = {}) {
+  const calls = { get: 0, paginate: 0, list: 0 };
   const next = (queue, n) => queue[Math.min(n, queue.length - 1)];
   return {
     calls,
@@ -61,7 +61,11 @@ function fakeGithub({ get = [PR], pages = [["a.txt"]] } = {}) {
           if (answer instanceof Error) throw answer;
           return { data: answer };
         },
-        list: async () => ({ data: [] }),
+        list: async () => {
+          const answer = next(list, calls.list++);
+          if (answer instanceof Error) throw answer;
+          return { data: answer };
+        },
         listFiles: "pulls.listFiles",
       },
     },
@@ -285,3 +289,55 @@ test("listFiles: a 503 on page 2 retries the listing and keeps both pages", asyn
   assert.deepEqual(pageCalls, ["a.txt", "b.txt", "a.txt", "b.txt"]);
   assert.deepEqual(result.paths, ["a.txt", "b.txt"]);
 });
+
+// A two-pull-request stack: #7 targets #6's branch, #6 targets main, so the
+// walk reads the pull request below #7 with pulls.list.
+const UPPER = { ...PR, base: { ref: "feature/6" } };
+const LOWER = {
+  number: 6,
+  user: { login: "some-contributor", id: 1 },
+  head: { ref: "feature/6", sha: "e".repeat(40) },
+  base: { ref: "main" },
+};
+const stack = (list) => fakeGithub({ get: [UPPER, LOWER], list });
+
+test("pulls.list: one 503 then success walks the stack after 2 calls", async () => {
+  const github = stack([unavailable(), [LOWER]]);
+  const result = await run(github);
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(github.calls.list, 2);
+  assert.deepEqual(result.sleeps, [2000]);
+});
+
+test("pulls.list: three 503s fail closed and name the 3 attempts", async () => {
+  const github = stack([unavailable()]);
+  const result = await run(github);
+  assert.equal(result.mode, null);
+  assert.equal(github.calls.list, 3);
+  assert.match(
+    result.errors,
+    /could not find the pull request below #7: Service Unavailable \(3 attempts\)/u,
+  );
+});
+
+for (const [name, error] of [
+  [
+    "a 403 rate-limit answer",
+    httpError(403, "API rate limit exceeded", { "x-ratelimit-remaining": "0" }),
+  ],
+  ["a 429", httpError(429, "Too Many Requests", { "retry-after": "3" })],
+]) {
+  test(`pulls.list: ${name} fails at once after 1 call`, async () => {
+    const github = stack([error, [LOWER]]);
+    const result = await run(github);
+    assert.equal(result.mode, null);
+    assert.equal(github.calls.list, 1);
+    assert.deepEqual(result.sleeps, []);
+    assert.ok(
+      result.errors.includes(
+        `could not find the pull request below #7: ${error.message} (1 attempt)`,
+      ),
+      result.errors,
+    );
+  });
+}

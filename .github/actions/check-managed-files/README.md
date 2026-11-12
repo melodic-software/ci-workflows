@@ -45,11 +45,13 @@ the pull requests it holds and checks each one's own diff:
   file list cannot be read, the walk does not reach the base branch, or a path
   that `merge_group.base_sha...head_sha` changes belongs to none of the group's
   pull requests.
-- A pull request or file-list read answered with HTTP 500, 502, 503 or 504 (a
+- Every GitHub read the guard makes (the pull request, the stack walk, the
+  file list and the commit list) answered with HTTP 500, 502, 503 or 504 (a
   network failure counts as 500) is tried up to 3 times, after 2 s and then
   5 s, or after the response's `Retry-After` when it asks for 30 s or less.
   A longer `Retry-After`, a rate limit (403, 429) or any other error fails at
-  once, and the failure names the attempts made.
+  once, and the failure names the attempts made. One read waits at most 59 s,
+  and all the reads of one run share a 120 s wait budget.
 
 The head ref names only the group's last pull request, so the merge queue must
 use `grouping_strategy: ALLGREEN`, as for
