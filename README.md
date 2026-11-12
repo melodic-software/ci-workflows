@@ -1769,25 +1769,66 @@ the file list and the file total, so a review that leaves them unread is still
 `partial`; its reason names the first 10
 (`; <n> binary file(s) not reviewable as text: <path>, ... and <m> more`).
 
-**Chunks.** A diff in scope over the read budget, or with more than 40 files,
-is split at file boundaries, each file whole, into at most 4 chunks of at most
+**Chunks.** Three limits in the workflow's `env`, each defined there once and
+read by every leg's shell and script steps, size a review: `READ_BUDGET`
+(300000 bytes), `MAX_CHUNK_FILES` (40 files) and the chunk ceiling
+`MAX_CHUNKS` (20). A diff in scope over the read budget, or with more than 40 files,
+is split at file boundaries, each file whole, into at most 20 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
-default-branch tip, and each chunk gets its own model step in the leg, in
-order. The identical copies and verified renames in scope are left out first:
+default-branch tip. Each leg reviews the first chunk in its review step
+and the rest, in order, in one step (`.github/actions/run-review-chunks`),
+which installs the CLI once and runs run-claude-cli's launcher per chunk with
+the same credential, tool rules and protections; a chunk runs only after the
+one before it succeeded and handed nothing on. That step's limit is 3 minutes
+plus the leg's per-chunk cap and a minute for each later chunk (12 or 14 a
+chunk for the code or security lane), so a review of one chunk keeps the
+first step's 14 or 16 minutes and only a review that needs more chunks gets
+more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
+before the job starts, never its own steps, so each leg's job limit is sized
+for the ceiling (305 or 345 minutes, under the 6-hour job limit) and every
+step keeps its own limit. The later chunks' transcripts are sealed as one,
+under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one
 review; when only the rest fits both caps it is one review of the rest,
 written to `.claude-lane/chunks/distinct.diff`, whose size is the one checked
 against the read budget; when the rest alone is over either cap only the rest
 is split; in both the copies and renames count as read. Otherwise the whole
 diff is split, copies and renames included.
-The review's findings, comments and files read are the
-chunks' sums, each chunk's files read capped at the files the job counted in
-it. A chunk whose step failed, did not run, handed off or returned no
+Each chunk returns at most `CHUNK_COMMENTS` (12) comments and a summary
+of its share of one review's 20000 characters, never less than
+`CHUNK_SUMMARY_CHARS` (1500), both in the workflow's `env`; one review of
+the whole diff keeps 25 and 20000. A summary over its cap is never cut: the
+review is `incomplete`. The extract step merges the chunks:
+
+- A comment another chunk made at the same line with the same text
+  (whitespace and case aside) is dropped. Any other comment is its own
+  finding, two on one line included.
+- At most 25 stay inline, ranked CRITICAL, IMPORTANT, SUGGESTION by
+  publish-review's reading of the body's severity line. The rest are listed in
+  the summary under "Findings not posted inline", whole.
+- The chunks' `critical-findings:` lines merge into one line at the end of the
+  summary: each chunk's count (its one line, else its summary-only findings,
+  which publish-review would count as CRITICAL), plus the listed CRITICAL
+  comments. The merge gates read only a summary with exactly one such line.
+- publish-review keeps 60000 characters of a summary and, after one bad inline
+  anchor, posts every inline comment in it. The merged summary plus every
+  inline and malformed comment as publish-review would list it must fit that
+  limit, and the review must stay under 100 KB. To fit, the list's entries
+  shorten to 300, then 120 characters, then locations grouped by path; then
+  the least severe inline comment joins the list and the steps repeat. A
+  review that still does not fit is `incomplete`, naming the findings and
+  the characters they need.
+
+The findings are the chunks' sums less the dropped duplicates,
+the files read their sum, each chunk's capped at the files the job counted
+in it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
-file over the budget, more than 4 chunks, so more than 160 files that are not
-copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`.
+file over the budget, more than 20 chunks, so more than 800 files that are not
+copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`;
+when the refusal is the ceiling, the step's warning and the review's summary
+name the chunk count the diff needs and the ceiling.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
