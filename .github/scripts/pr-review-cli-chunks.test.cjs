@@ -299,6 +299,7 @@ function fakeLegs(work, legs = {}) {
       const k = Number(/prompt-([0-9]+)\.md$/u.exec(promptFile)[1]);
       ran.push(k);
       const end = legs[k] ?? {};
+      if (end.killed) throw new Error(`step killed during chunk ${k}`);
       const execution = path.join(work, "leg-1-execution.json");
       fs.writeFileSync(
         execution,
@@ -310,7 +311,8 @@ function fakeLegs(work, legs = {}) {
       const structured = path.join(work, "structured-output.json");
       const log = path.join(work, "run-claude-cli-log.jsonl");
       fs.writeFileSync(log, `{"k":${k}}\n`);
-      if (!end.failed) fs.writeFileSync(structured, `{"k":${k}}`);
+      const writes = !end.failed && !end.noStructured;
+      if (writes) fs.writeFileSync(structured, `{"k":${k}}`);
       fs.appendFileSync(
         process.env.FAKE_OUTPUT,
         [
@@ -321,7 +323,7 @@ function fakeLegs(work, legs = {}) {
           `execution-file=${execution}`,
           "execution-file-clean=true",
           `log-file=${log}`,
-          `structured-output-file=${end.failed ? "" : structured}`,
+          `structured-output-file=${writes ? structured : ""}`,
           "",
         ].join("\n"),
       );
@@ -353,6 +355,9 @@ function loop(first, last, legs) {
       { runChunk: fake.runChunk, now: () => 1_700_000_000_000 },
     );
     return { ...result, ran: fake.ran, results, output };
+  } catch (error) {
+    error.output = output;
+    throw error;
   } finally {
     if (saved === undefined) delete process.env.FAKE_OUTPUT;
     else process.env.FAKE_OUTPUT = saved;
@@ -395,8 +400,14 @@ test("the chunk loop runs every later chunk in order and keeps each one's files 
       messages.filter((m) => m.type === "result").map((m) => m.k),
       run.ran,
     );
-    // The legs' own outputs were taken back out of the step's file.
-    assert.equal(fs.readFileSync(run.output, "utf8"), "earlier=1\n");
+    // The legs' own outputs were taken back out of the step's file, which
+    // holds what came before and one set of the loop's outputs.
+    const lines = fs.readFileSync(run.output, "utf8").split("\n").filter(Boolean);
+    assert.equal(lines[0], "earlier=1");
+    const keys = lines.slice(1).map((line) => line.split("=")[0]);
+    assert.deepEqual(keys, [...new Set(keys)]);
+    assert.ok(keys.includes("chunk-outcomes"));
+    assert.equal(keys.includes("structured-output-file"), false);
   }
 });
 
@@ -924,4 +935,42 @@ test("the merge reads a comment's severity as publish-review does", () => {
       /return found\.length === 1 \? found\[0\] : "CRITICAL";/u,
     );
   }
+});
+
+// The step's output file as the runner reads it: the last value of each key.
+const outputsOf = (file) =>
+  Object.fromEntries(
+    fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+  );
+
+test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it finished", () => {
+  let killed;
+  assert.throws(() => {
+    try {
+      loop(2, 6, { 4: { killed: true } });
+    } catch (error) {
+      killed = error;
+      throw error;
+    }
+  }, /step killed during chunk 4/u);
+  const outputs = outputsOf(killed.output);
+  assert.equal(outputs["chunk-outcomes"], "success,success");
+  assert.equal(outputs["last-chunk"], "3");
+  const messages = JSON.parse(fs.readFileSync(outputs["transcript-file"], "utf8"));
+  assert.deepEqual(
+    messages.filter((m) => m.type === "result").map((m) => m.k),
+    [2, 3],
+  );
+});
+
+test("a chunk that exits 0 with no structured result fails the loop before the next chunk", () => {
+  const run = loop(2, 6, { 3: { noStructured: true } });
+  assert.equal(run.ok, false);
+  assert.deepEqual(run.ran, [2, 3]);
+  assert.equal(run.outputs["chunk-outcomes"], "success,failure,skipped,skipped,skipped");
+  assert.equal(run.outputs["lane-class"], "other");
 });

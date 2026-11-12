@@ -61,8 +61,10 @@ function transcript(files, target) {
 /**
  * Runs chunks env.CHUNK_FIRST..env.CHUNK_LAST. `runChunk(promptFile)` runs one
  * leg and returns its exit status; it appends its outputs to
- * env.GITHUB_OUTPUT as lane.cjs does. Returns the step's outputs and whether
- * the step succeeded.
+ * env.GITHUB_OUTPUT as lane.cjs does. After every chunk the step's outputs
+ * so far replace the last ones written, so a step its timeout kills still
+ * names the chunks it finished and keeps their transcript. Returns the step's
+ * outputs and whether the step succeeded.
  */
 function runChunks(env, { runChunk, now = () => Date.now() }) {
   const first = Number(env.CHUNK_FIRST);
@@ -71,6 +73,7 @@ function runChunks(env, { runChunk, now = () => Date.now() }) {
     throw new Error("CHUNK_FIRST and CHUNK_LAST must be whole numbers, first <= last");
   }
   const outputFile = env.GITHUB_OUTPUT;
+  const base = fs.statSync(outputFile).size;
   const results = env.RESULTS_DIR;
   const outcomes = [];
   const executions = [];
@@ -92,8 +95,10 @@ function runChunks(env, { runChunk, now = () => Date.now() }) {
     const execution = move(leg["execution-file"], path.join(dir, "execution.json"));
     if (execution) executions.push(execution);
     const log = move(leg["log-file"], path.join(dir, "log.jsonl"));
-    move(leg["structured-output-file"], path.join(dir, "structured.json"));
-    failed = status !== 0;
+    const structured = move(leg["structured-output-file"], path.join(dir, "structured.json"));
+    // A leg that exits 0 with no well-formed result fails here, so no later
+    // chunk runs for a review that is already incomplete.
+    failed = status !== 0 || !resultObject(structured);
     outcomes.push(failed ? "failure" : "success");
     stop = {
       "lane-class": leg["lane-class"] ?? (failed ? "other" : ""),
@@ -107,16 +112,33 @@ function runChunks(env, { runChunk, now = () => Date.now() }) {
       "last-chunk": String(k),
     };
     if (failed && stop["lane-class"] === "") stop["lane-class"] = "other";
+    fs.truncateSync(outputFile, base);
+    writeOutputs(outputFile, outputsOf(stop, outcomes, results, executions));
   }
+  const outputs = outputsOf(stop, outcomes, results, executions);
+  fs.truncateSync(outputFile, base);
+  writeOutputs(outputFile, outputs);
+  return { ok: !failed, outputs };
+}
+
+function outputsOf(stop, outcomes, results, executions) {
   return {
-    ok: !failed,
-    outputs: {
-      ...stop,
-      "chunk-outcomes": outcomes.join(","),
-      "results-dir": results,
-      "transcript-file": transcript(executions, path.join(results, "transcript.json")),
-    },
+    ...stop,
+    "chunk-outcomes": outcomes.join(","),
+    "results-dir": results,
+    "transcript-file": transcript(executions, path.join(results, "transcript.json")),
   };
+}
+
+// Whether `file` holds one JSON object, the structured result lane.cjs writes.
+function resultObject(file) {
+  if (!file) return false;
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  } catch {
+    return false;
+  }
 }
 
 function writeOutputs(file, outputs) {
@@ -130,14 +152,13 @@ function writeOutputs(file, outputs) {
 if (require.main === module) {
   const env = process.env;
   const lane = path.join(__dirname, "..", "run-claude-cli", "lane.cjs");
-  const { ok, outputs } = runChunks(env, {
+  const { ok } = runChunks(env, {
     runChunk: (promptFile) =>
       spawnSync(process.execPath, [lane, "run"], {
         env: { ...env, LANE_PROMPT_FILE: promptFile },
         stdio: "inherit",
       }).status ?? 1,
   });
-  writeOutputs(env.GITHUB_OUTPUT, outputs);
   if (!ok) process.exitCode = 1;
 }
 
