@@ -1700,9 +1700,15 @@ the job's binary-files list only the lines before its first hunk count. Each
 file without that evidence lowers the count, so the review is `partial`, and
 is named after `no read evidence for` on the status line when its path is
 plain. A missing or unparseable transcript or diff leaves its files unread.
-When Read results of the job's diff files exist but none gives a line number,
-the CLI's Read output changed shape: the check does not run, the model's count
-stands as before, and the status line says `per-file read check skipped`.
+The check is skipped, with the model's count standing as before and the status
+line saying `per-file read check skipped`, only when no Read result of a job
+diff file is recognised and at least one is unrecognised. Recognised means it
+carries the CLI's structured line range (even of 0 lines) or at least one
+numbered line. Unrecognised means it has no structured range, came from a Read
+with no limit and no offset other than 1, of a job diff file of n > 0 lines,
+and holds at least min(n, 5) non-empty lines that are not tool notices, none
+of them numbered. Any other result, such as a Read past the end of the file,
+is no evidence and leaves its files unread.
 
 **Identical copies.** Changed files whose whole change is
 identical (modifications with the same content and mode before and after, or

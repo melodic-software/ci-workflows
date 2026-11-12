@@ -91,7 +91,13 @@ const LIST = [
 
 // One Read call and its result, as the CLI streams them.
 let ids = 0;
-function read(file, text, from, to, { parent = null, error = false } = {}) {
+function read(
+  file,
+  text,
+  from,
+  to,
+  { parent = null, error = false, whole = false } = {},
+) {
   const id = `toolu_${++ids}`;
   const lines = text.split("\n");
   const shown = [];
@@ -108,7 +114,9 @@ function read(file, text, from, to, { parent = null, error = false } = {}) {
             type: "tool_use",
             id,
             name: "Read",
-            input: { file_path: file, offset: from, limit: to - from + 1 },
+            input: whole
+              ? { file_path: file }
+              : { file_path: file, offset: from, limit: to - from + 1 },
           },
         ],
       },
@@ -494,7 +502,10 @@ function run(files, env) {
             fs.writeFileSync(file, messages);
             return file;
           })()
-        : transcript(name, messages),
+        : transcript(
+            name,
+            typeof messages === "function" ? messages(workspace) : messages,
+          ),
     ]),
   );
   let results = "";
@@ -996,7 +1007,9 @@ test("when no Read result of a job diff file gives a line number, the check does
     {
       workspace,
       transcripts: {
-        first: unnumbered(read(".claude-lane/pr.diff", DIFF, 1, 37)),
+        first: unnumbered(
+          read(".claude-lane/pr.diff", DIFF, 1, 37, { whole: true }),
+        ),
       },
     },
     env,
@@ -1247,7 +1260,9 @@ test("the format fallback is the same in both modes", () => {
       {
         workspace: SHORT.workspace,
         transcripts: {
-          first: unnumbered(read(".claude-lane/pr.diff", DIFF, 1, 37)),
+          first: unnumbered(
+            read(".claude-lane/pr.diff", DIFF, 1, 37, { whole: true }),
+          ),
         },
       },
       { REVIEW: extracted, MODE: mode },
@@ -1259,4 +1274,142 @@ test("the format fallback is the same in both modes", () => {
       mode,
     );
   }
+});
+
+// --- the fallback is reachable only by a real format change ---
+
+// fixtures/check-review-reads/notices.json: a local CLI 2.1.322 run's Reads
+// of a diff with offset 100 past its end, of an empty file, and of a file the
+// token cap cut (its numbered lines removed), kept to their tool messages,
+// the run's directory replaced by /workspace.
+const NOTICES = JSON.parse(
+  fs.readFileSync(
+    path.join(__dirname, "fixtures", "check-review-reads", "notices.json"),
+    "utf8",
+  ),
+);
+// The offset-past-end Read, retargeted at the job's diff.
+const pastEnd = (workspace, { structured = true } = {}) => {
+  const [call, result] = structuredClone(NOTICES.slice(0, 2));
+  const diff = path.join(workspace, ".claude-lane/pr.diff");
+  call.message.content[0].input.file_path = diff;
+  if (structured) result.tool_use_result.file.filePath = diff;
+  else delete result.tool_use_result;
+  return [call, result];
+};
+
+test("the recorded tool notices are what the CLI prints for an offset past the end and an empty file", () => {
+  assert.match(
+    NOTICES[1].message.content[0].content,
+    /^<system-reminder>Warning: the file exists but is shorter than the provided offset \(100\)\. The file has 18 lines\.<\/system-reminder>$/u,
+  );
+  assert.deepEqual(NOTICES[1].tool_use_result.file.numLines, 0);
+  assert.match(
+    NOTICES[3].message.content[0].content,
+    /^<system-reminder>Warning: the file exists but the contents are empty\.<\/system-reminder>$/u,
+  );
+});
+
+test("a Read the model shapes past the end of a diff is no evidence, never the fallback", () => {
+  const workspace = {
+    ".claude-lane/pr.diff": DIFF,
+    ".claude-lane/files.txt": FILES,
+  };
+  const env = { REVIEW: REVIEW({ read: 5, changed: 5 }) };
+  for (const structured of [true, false]) {
+    const { outputs, review, stdout } = run(
+      { workspace, transcripts: { first: (w) => pastEnd(w, { structured }) } },
+      env,
+    );
+    assert.equal(outputs["reads-checked"], "true", String(structured));
+    assert.equal(review.coverage.read, 0, String(structured));
+    assert.equal(
+      stdout[0],
+      "::notice title=pr-review-cli reads::listed=5 unread=5 mode=enforce",
+    );
+  }
+});
+
+test("only a whole-file Read returning enough unnumbered content lines of a non-empty job diff is unrecognised", () => {
+  const { workspace } = lane({
+    ".claude-lane/pr.diff": DIFF,
+    "lane/empty.diff": "",
+  });
+  const key = fs.realpathSync(path.join(workspace, ".claude-lane/pr.diff"));
+  const emptyKey = fs.realpathSync(path.join(workspace, "lane/empty.diff"));
+  const lineCounts = new Map([
+    [key, 37],
+    [emptyKey, 0],
+  ]);
+  const of = (messages) => readsOf(messages, workspace, lineCounts);
+  // A whole-file Read whose lines carry a prefix the parser does not know.
+  const prefixed = unnumbered(read(key, DIFF, 1, 37, { whole: true }));
+  for (const block of prefixed[1].message.content) {
+    block.content = block.content
+      .split("\n")
+      .map((line) => `L: ${line}`)
+      .join("\n");
+  }
+  assert.deepEqual([...of(prefixed).unrecognised], [key]);
+  // The same text from a Read with a limit, or with an offset past 1, is no evidence.
+  const limited = structuredClone(prefixed);
+  limited[0].message.content[0].input = { file_path: key, limit: 37 };
+  assert.deepEqual([...of(limited).unrecognised], []);
+  const offset = structuredClone(prefixed);
+  offset[0].message.content[0].input = { file_path: key, offset: 2 };
+  assert.deepEqual([...of(offset).unrecognised], []);
+  const first = structuredClone(prefixed);
+  first[0].message.content[0].input = { file_path: key, offset: 1 };
+  assert.deepEqual([...of(first).unrecognised], [key]);
+  // Four content lines of a 37-line file are short of the five required.
+  const short = structuredClone(prefixed);
+  short[1].message.content[0].content = "a\nb\nc\nd";
+  assert.deepEqual([...of(short).unrecognised], []);
+  // Five lines of tool notices are not content.
+  const notices = structuredClone(prefixed);
+  notices[1].message.content[0].content = [
+    NOTICES[1].message.content[0].content,
+    NOTICES[3].message.content[0].content,
+    NOTICES[5].message.content[0].content.trim(),
+    "<system-reminder>",
+    "</system-reminder>",
+  ].join("\n");
+  assert.deepEqual([...of(notices).unrecognised], []);
+  // An empty job file never reads as an unknown format.
+  const empty = unnumbered(
+    read(emptyKey, "x\ny\nz\nu\nv", 1, 5, { whole: true }),
+  );
+  assert.deepEqual([...of(empty).unrecognised], []);
+  // A structured range of 0 lines is recognised: evidence of nothing.
+  const range = pastEnd(workspace);
+  range[0].message.content[0].input.file_path = key;
+  range[1].tool_use_result.file.filePath = key;
+  assert.deepEqual([...of(range).recognised], [key]);
+  assert.equal(of(range).shown.get(key).size, 0);
+});
+
+test("a whole-file Read whose lines carry an unknown prefix still gives the fallback", () => {
+  const prefixed = (w) => {
+    const messages = unnumbered(
+      read(path.join(w, ".claude-lane/pr.diff"), DIFF, 1, 37, { whole: true }),
+    );
+    messages[1].message.content[0].content =
+      messages[1].message.content[0].content
+        .split("\n")
+        .map((line) => `L: ${line}`)
+        .join("\n");
+    return messages;
+  };
+  const { outputs, stdout } = run(
+    {
+      workspace: {
+        ".claude-lane/pr.diff": DIFF,
+        ".claude-lane/files.txt": FILES,
+      },
+      transcripts: { first: prefixed },
+    },
+    { REVIEW: REVIEW({ read: 5, changed: 5 }) },
+  );
+  assert.equal(outputs["reads-checked"], "false");
+  assert.deepEqual(stdout, [FORMAT_WARNING]);
 });

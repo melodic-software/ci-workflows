@@ -14,9 +14,12 @@ description: >-
   makes the review partial, and is named in the coverage (`unread_files`) and
   a warning, by path only when the path is plain. A missing or unparseable
   transcript or diff leaves its files unread; a list of files to read the job
-  cannot back makes the review incomplete. When Read results of the job's
-  diff files exist but none gives a line number, the CLI's Read output
-  changed shape: the check does not run, the extract step's count stands,
+  cannot back makes the review incomplete. When no Read result of a job diff
+  file is recognised (a structured range, even of 0 lines, or a numbered
+  line) and one is unrecognised (a whole-file Read of a non-empty job diff
+  returning at least min(lines, 5) non-notice lines, none numbered), the
+  CLI's Read output changed shape: the check does not run, the extract
+  step's count stands,
   `reads-checked` is `false`, the coverage says so, and a warning names the
   reason. That is `enforce` mode. In `report` mode, the default, it logs the
   same notice and warning and passes the extract step's verdict and review on

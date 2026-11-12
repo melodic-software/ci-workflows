@@ -101,7 +101,7 @@ function structuredRange(message, file, workspace) {
     !Number.isSafeInteger(record.startLine) ||
     !Number.isSafeInteger(record.numLines) ||
     record.startLine < 1 ||
-    record.numLines < 1
+    record.numLines < 0
   ) {
     return null;
   }
@@ -111,12 +111,25 @@ function structuredRange(message, file, workspace) {
   );
 }
 
+// A tool notice line the CLI adds to a Read result: a system reminder (an
+// offset past the end, an empty file) or a bracketed note (NUL bytes).
+const NOTICE = /^\s*(?:<\/?system-reminder>|\[.*\]\s*$)/u;
+// How many unnumbered content lines a whole-file Read must return before its
+// result reads as content the parser failed on.
+const CONTENT_LINES = 5;
+
 /**
  * The line numbers Read results printed, per file, over every message (main
- * thread and subagents), and the files whose Read results this could and
- * could not read a line number from.
+ * thread and subagents), and which files' results were recognised or not.
+ *
+ * Recognised: a result with the CLI's structured range for that file (even of
+ * 0 lines), or with at least one numbered line. Unrecognised, only for a file
+ * of `lineCounts` with n > 0 lines: a result with no structured range, of a
+ * Read with no limit and no offset other than 1, whose text holds at least
+ * min(n, CONTENT_LINES) non-empty lines that are not tool notices and none
+ * numbered. Every other result is neither: no evidence, never the fallback.
  */
-function readsOf(messages, workspace) {
+function readsOf(messages, workspace, lineCounts = new Map()) {
   const shown = new Map();
   const recognised = new Set();
   const unrecognised = new Set();
@@ -130,7 +143,12 @@ function readsOf(messages, workspace) {
         block.name === "Read" &&
         typeof block.input?.file_path === "string"
       ) {
-        reads.set(block.id, fileKey(workspace, block.input.file_path));
+        reads.set(block.id, {
+          file: fileKey(workspace, block.input.file_path),
+          whole:
+            block.input.limit === undefined &&
+            (block.input.offset === undefined || block.input.offset === 1),
+        });
       }
     }
   }
@@ -143,18 +161,26 @@ function readsOf(messages, workspace) {
         !reads.has(block.tool_use_id)
       )
         continue;
-      const file = reads.get(block.tool_use_id);
+      const { file, whole } = reads.get(block.tool_use_id);
       if (!shown.has(file)) shown.set(file, new Set());
-      const text = resultText(block.content);
+      const lines = resultText(block.content).split("\n");
+      const range = structuredRange(m, file, workspace);
       const numbers =
-        structuredRange(m, file, workspace) ??
-        text.split("\n").flatMap((line) => {
+        range ??
+        lines.flatMap((line) => {
           const match = NUMBERED.exec(line);
           return match ? [Number(match[1])] : [];
         });
       for (const n of numbers) shown.get(file).add(n);
-      if (numbers.length > 0) recognised.add(file);
-      else if (text.trim() !== "") unrecognised.add(file);
+      const length = lineCounts.get(file) ?? 0;
+      if (range !== null || numbers.length > 0) recognised.add(file);
+      else if (
+        whole &&
+        length > 0 &&
+        lines.filter((line) => line.trim() !== "" && !NOTICE.test(line))
+          .length >= Math.min(length, CONTENT_LINES)
+      )
+        unrecognised.add(file);
     }
   }
   return { shown, recognised, unrecognised };
@@ -167,9 +193,13 @@ function diffFile(workspace, file) {
   try {
     const full = path.resolve(workspace, file);
     if (!fs.lstatSync(full).isFile()) return null;
+    const text = fs.readFileSync(full, "utf8");
+    const lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
     return {
       key: fileKey(workspace, file),
-      sections: diffSections(fs.readFileSync(full, "utf8")),
+      lines: lines.length,
+      sections: diffSections(text),
     };
   } catch {
     return null;
@@ -405,19 +435,27 @@ function check(env, write, mode) {
   const alternates = /^[1-9][0-9]{0,5}$/u.test(env.EXCLUDED ?? "")
     ? [path.join(env.CHUNK_DIR, "distinct.diff")]
     : [];
+  const chunkDiffs = (i) =>
+    chunks > 1 ? [path.join(env.CHUNK_DIR, `chunk-${i + 1}.patch`)] : [];
+  // The job's diff files and their line counts, the lengths readsOf weighs
+  // an unrecognised result against.
+  const lineCounts = new Map();
+  for (const file of [
+    env.SCOPE_DIFF,
+    ...alternates,
+    ...files.flatMap((_, i) => chunkDiffs(i)),
+  ]) {
+    const diff = diffFile(workspace, file);
+    if (diff) lineCounts.set(diff.key, diff.lines);
+  }
   const reviews = files.map((file, i) => ({
-    diffs: chunks > 1 ? [path.join(env.CHUNK_DIR, `chunk-${i + 1}.patch`)] : [],
-    ...readsOf(transcript(file), workspace),
+    diffs: chunkDiffs(i),
+    ...readsOf(transcript(file), workspace, lineCounts),
   }));
   // Read results of the job's diff files that no line number could be read
   // from, and none that could: the CLI's Read output changed shape, so the
   // per-file check cannot run and the extract step's count stands.
-  const jobFiles = new Set(
-    [env.SCOPE_DIFF, ...alternates, ...reviews.flatMap((r) => r.diffs)].map(
-      (file) => fileKey(workspace, file),
-    ),
-  );
-  const any = (set) => [...set].some((file) => jobFiles.has(file));
+  const any = (set) => [...set].some((file) => lineCounts.has(file));
   if (
     reviews.some((r) => any(r.unrecognised)) &&
     !reviews.some((r) => any(r.recognised))
