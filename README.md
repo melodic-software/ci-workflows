@@ -1682,8 +1682,15 @@ or the file cap, its bytes or files before the findings count, as the failure
 line does, with the
 hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
-is `incomplete`. The job then holds the read count to its own evidence
-(`.github/actions/check-review-reads`): a file of the scope's list (or of
+is `incomplete`. The job also checks the count against its own evidence
+(`.github/actions/check-review-reads`). The `reads-check-mode` input, else
+the `REVIEW_READS_CHECK_MODE` variable, else `report`, sets what it does.
+`report` (the default) logs `pr-review-cli reads` notices (`listed`,
+`unread`, `mode`) and a warning naming unread files, and changes no verdict,
+count or status line. `enforce` holds the read count to the evidence; turn
+it on for every caller by setting the organisation variable
+`REVIEW_READS_CHECK_MODE=enforce`. Any other value enforces, with a warning.
+Under `enforce`, a file of the scope's list (or of
 `.claude-lane/to-read.txt` when copies or verified renames count as read) is
 read only when the transcript of the review that holds it, its subagents
 included, shows Read results giving the line number of every non-empty line

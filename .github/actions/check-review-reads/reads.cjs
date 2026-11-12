@@ -294,30 +294,76 @@ function transcript(file) {
 
 const WHOLE = /^(?:0|[1-9][0-9]{0,5})$/u;
 
-/** The step: the extract step's review with its read count held to the files the transcripts show read. */
+// The mode the step runs in: `report` when unset, a value that is neither
+// enforces, and names itself only when plain.
+function modeOf(value, write) {
+  if (value === "" || value === "report") return "report";
+  if (value === "enforce") return "enforce";
+  const named = /^[A-Za-z0-9._-]{1,40}$/u.test(value)
+    ? `'${value}'`
+    : "an unrecognised value";
+  write(
+    `::warning title=pr-review-cli reads::the reads-check mode ${named} is neither report nor enforce; the check enforces`,
+  );
+  return "enforce";
+}
+
+// One line per output: a value that would break the line is no result.
+function output(file, values) {
+  const lines = Object.values(values).some((value) => /[\r\n]/u.test(value))
+    ? { verdict: UNCHECKED }
+    : values;
+  fs.appendFileSync(
+    file,
+    Object.entries(lines)
+      .map(([name, value]) => `${name}=${value}\n`)
+      .join(""),
+  );
+}
+
+/**
+ * The step. `enforce`: the extract step's review with its read count held to
+ * the files the transcripts show read. `report`: the same check is logged, and
+ * the extract step's verdict and review go on as they came, apart from the
+ * format fallback's skipped-check note.
+ */
 function main(
   env = process.env,
   { write = (line) => process.stdout.write(`${line}\n`) } = {},
 ) {
-  // One line per output: a value that would break the line is no result.
-  const output = (values) => {
-    const lines = Object.values(values).some((value) => /[\r\n]/u.test(value))
-      ? { verdict: UNCHECKED }
-      : values;
-    fs.appendFileSync(
-      env.GITHUB_OUTPUT,
-      Object.entries(lines)
-        .map(([name, value]) => `${name}=${value}\n`)
-        .join(""),
+  const mode = modeOf(env.MODE ?? "", write);
+  let result;
+  try {
+    result = check(env, write, mode);
+  } catch (error) {
+    // A failed check must not change what report mode passes on.
+    if (mode === "enforce") throw error;
+    write(
+      `::warning title=pr-review-cli reads::the check failed (${error.name}); the review goes on as the extract step gave it`,
     );
-  };
+    result = {};
+  }
+  if (mode === "enforce" || result["reads-checked"] === "false") {
+    return output(env.GITHUB_OUTPUT, result);
+  }
+  output(env.GITHUB_OUTPUT, {
+    verdict: env.VERDICT ?? "",
+    ...(env.REVIEW ? { review: env.REVIEW } : {}),
+    ...(result["reads-checked"]
+      ? { "reads-checked": result["reads-checked"] }
+      : {}),
+  });
+}
+
+/** The check's outputs, as enforce mode gives them. */
+function check(env, write, mode) {
   const verdict = env.VERDICT ?? "";
-  if (verdict !== "complete") return output({ verdict: verdict || UNCHECKED });
+  if (verdict !== "complete") return { verdict: verdict || UNCHECKED };
   let review;
   try {
     review = JSON.parse(env.REVIEW ?? "");
   } catch {
-    return output({ verdict: UNCHECKED });
+    return { verdict: UNCHECKED };
   }
   const coverage = review?.coverage;
   const workspace = env.GITHUB_WORKSPACE || process.cwd();
@@ -330,7 +376,7 @@ function main(
     chunks === 0 ||
     !WHOLE.test(env.SKIPPED ?? "")
   ) {
-    return output({ verdict: UNCHECKED });
+    return { verdict: UNCHECKED };
   }
   // With copies or verified renames counted as read, the list the full-diff
   // step wrote without them; it reports a count only for a list it wrote.
@@ -346,7 +392,7 @@ function main(
     toRead.length !== coverage.changed - skipped ||
     (skipped > 0 && toRead.length !== Number(env.TO_READ))
   ) {
-    return output({ verdict: UNLISTED });
+    return { verdict: UNLISTED };
   }
   const files = [env.EXECUTION_FILE ?? ""];
   for (let k = 2; k <= chunks; k++)
@@ -380,11 +426,11 @@ function main(
       `::warning title=pr-review-cli reads::${FORMAT_UNKNOWN}; the per-file read check did not run`,
     );
     review.coverage = { ...coverage, reads_checked: false };
-    return output({
+    return {
       verdict: "complete",
       "reads-checked": "false",
       review: JSON.stringify(review),
-    });
+    };
   }
   const binary = new Set(
     WHOLE.test(env.BINARY ?? "")
@@ -401,7 +447,7 @@ function main(
     reviews,
   });
   write(
-    `::notice title=pr-review-cli reads::listed=${toRead.length} unread=${unread.length}`,
+    `::notice title=pr-review-cli reads::listed=${toRead.length} unread=${unread.length} mode=${mode}`,
   );
   if (unread.length > 0) {
     const named = unread
@@ -424,14 +470,14 @@ function main(
     if (Buffer.byteLength(JSON.stringify(review), "utf8") > MAX_REVIEW_BYTES)
       review.coverage = { ...coverage, read };
   }
-  output({
+  return {
     verdict: "complete",
     "reads-checked": "true",
     review: JSON.stringify(review),
-  });
+  };
 }
 
-module.exports = { checkReads, diffSections, linesShown, main, readsOf };
+module.exports = { check, checkReads, diffSections, linesShown, main, readsOf };
 
 if (require.main === module) {
   try {

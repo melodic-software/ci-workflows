@@ -18,7 +18,10 @@ description: >-
   diff files exist but none gives a line number, the CLI's Read output
   changed shape: the check does not run, the extract step's count stands,
   `reads-checked` is `false`, the coverage says so, and a warning names the
-  reason. A verdict other than `complete` passes through. It prints no
+  reason. That is `enforce` mode. In `report` mode, the default, it logs the
+  same notice and warning and passes the extract step's verdict and review on
+  unchanged (the format fallback's note aside), even when the check fails. A
+  verdict other than `complete` passes through. It prints no
   transcript text and writes no artifact. Needs node on PATH.
 
 inputs:
@@ -54,6 +57,12 @@ inputs:
     required: true
   binary:
     description: The full-diff step's binary-file count for a whole review; empty otherwise.
+    required: true
+  mode:
+    description: >-
+      `report` logs the result and passes the extract step's review on
+      unchanged; `enforce` holds the read count to it. Any other value
+      enforces, with a warning naming it.
     required: true
   binary-list:
     description: The binary-file list the full-diff step writes.
@@ -99,5 +108,6 @@ runs:
         EXCLUDED: ${{ inputs.excluded }}
         BINARY: ${{ inputs.binary }}
         BINARY_LIST: ${{ inputs.binary-list }}
+        MODE: ${{ inputs.mode }}
         CHUNK_DIR: ${{ inputs.chunk-dir }}
       run: node "$GITHUB_ACTION_PATH/reads.cjs"

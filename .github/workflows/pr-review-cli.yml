@@ -279,6 +279,15 @@ on:
           falls back to the CLAUDE_LANE_CLI_VERSION variable, then latest.
         type: string
         default: ""
+      reads-check-mode:
+        description: >-
+          The per-file read check (.github/actions/check-review-reads):
+          `report` logs which listed files no Read showed and changes no
+          verdict or count; `enforce` holds the read count to them, so the
+          review is partial. Empty falls back to the REVIEW_READS_CHECK_MODE
+          variable, then report. Any other value enforces, with a warning.
+        type: string
+        default: ""
       incremental-review:
         description: >-
           On a push to a reviewed pull request, review only the files changed
@@ -3053,6 +3062,7 @@ jobs:
           to-read: ${{ steps.full-diff.outputs.to-read }}
           excluded: ${{ steps.split.outputs.excluded }}
           binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
+          mode: ${{ inputs.reads-check-mode || vars.REVIEW_READS_CHECK_MODE || 'report' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
@@ -5488,6 +5498,7 @@ jobs:
           to-read: ${{ steps.full-diff.outputs.to-read }}
           excluded: ${{ steps.split.outputs.excluded }}
           binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
+          mode: ${{ inputs.reads-check-mode || vars.REVIEW_READS_CHECK_MODE || 'report' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
@@ -7926,6 +7937,7 @@ jobs:
           to-read: ${{ steps.full-diff.outputs.to-read }}
           excluded: ${{ steps.split.outputs.excluded }}
           binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
+          mode: ${{ inputs.reads-check-mode || vars.REVIEW_READS_CHECK_MODE || 'report' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a

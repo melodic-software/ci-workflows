@@ -521,6 +521,7 @@ function run(files, env) {
       TO_READ_FILE: ".claude-lane/to-read.txt",
       TO_READ: "",
       SKIPPED: "0",
+      MODE: "enforce",
       EXECUTION_FILE: transcripts.first ?? "",
       RESULTS_DIR: results,
       ...env,
@@ -562,7 +563,7 @@ test("the runner passes a complete review on unchanged when every listed file wa
   assert.equal(outputs.verdict, "complete");
   assert.deepEqual(review.coverage, { read: 5, changed: 5 });
   assert.deepEqual(stdout, [
-    "::notice title=pr-review-cli reads::listed=5 unread=0",
+    "::notice title=pr-review-cli reads::listed=5 unread=0 mode=enforce",
   ]);
 });
 
@@ -584,7 +585,7 @@ test("the runner lowers the read count to the files with evidence and names the 
     unread_files: ["src/a.js"],
   });
   assert.deepEqual(stdout, [
-    "::notice title=pr-review-cli reads::listed=5 unread=1",
+    "::notice title=pr-review-cli reads::listed=5 unread=1 mode=enforce",
     "::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): src/a.js",
   ]);
   // A path outside the plain characters is counted, never printed.
@@ -790,6 +791,17 @@ test("every leg checks the reads after the extract step and before the review le
       `\${{ steps.full-diff.outputs.to-read }}`,
     );
     assert.equal(reads.with.excluded, `\${{ steps.split.outputs.excluded }}`);
+    // The mode resolves as cli-version does: the input, the variable, then report.
+    const mode = (inputs, vars) => evaluate(reads.with.mode, { inputs, vars });
+    assert.equal(mode({}, {}), "report");
+    assert.equal(mode({}, { REVIEW_READS_CHECK_MODE: "enforce" }), "enforce");
+    assert.equal(
+      mode(
+        { "reads-check-mode": "report" },
+        { REVIEW_READS_CHECK_MODE: "enforce" },
+      ),
+      "report",
+    );
     assert.equal(
       reads.with.binary,
       `\${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}`,
@@ -1126,4 +1138,125 @@ test("names that would take the review past 100000 bytes are dropped, and the co
     },
   );
   assert.deepEqual(review.coverage, { read: 4, changed: 5 });
+});
+
+// --- report mode: logs the check, passes the extract step's review on ---
+
+const SHORT = {
+  workspace: { ".claude-lane/pr.diff": DIFF, ".claude-lane/files.txt": FILES },
+  transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
+};
+const WHOLE_READ = {
+  workspace: SHORT.workspace,
+  transcripts: { first: read(".claude-lane/pr.diff", DIFF, 1, 37) },
+};
+
+test("report mode logs unread files and passes the extract step's verdict and review on unchanged", () => {
+  const extracted = REVIEW({ read: 5, changed: 5 });
+  const { outputs, stdout } = run(SHORT, { REVIEW: extracted, MODE: "report" });
+  assert.deepEqual(outputs, {
+    verdict: "complete",
+    review: extracted,
+    "reads-checked": "true",
+  });
+  assert.deepEqual(stdout, [
+    "::notice title=pr-review-cli reads::listed=5 unread=1 mode=report",
+    "::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): src/a.js",
+  ]);
+  const clean = run(WHOLE_READ, { REVIEW: extracted, MODE: "report" });
+  assert.equal(clean.outputs.review, extracted);
+  assert.deepEqual(clean.stdout, [
+    "::notice title=pr-review-cli reads::listed=5 unread=0 mode=report",
+  ]);
+});
+
+test("unset mode reports; enforce lowers the count", () => {
+  const extracted = REVIEW({ read: 5, changed: 5 });
+  assert.equal(
+    run(SHORT, { REVIEW: extracted, MODE: "" }).outputs.review,
+    extracted,
+  );
+  const enforced = run(SHORT, { REVIEW: extracted, MODE: "enforce" });
+  assert.deepEqual(enforced.review.coverage, {
+    read: 4,
+    changed: 5,
+    unread_files: ["src/a.js"],
+  });
+  assert.equal(
+    enforced.stdout[0],
+    "::notice title=pr-review-cli reads::listed=5 unread=1 mode=enforce",
+  );
+});
+
+test("a mode that is neither report nor enforce enforces, and says so", () => {
+  const extracted = REVIEW({ read: 5, changed: 5 });
+  const typo = run(SHORT, { REVIEW: extracted, MODE: "enforcing" });
+  assert.equal(typo.review.coverage.read, 4);
+  assert.deepEqual(typo.stdout.slice(0, 2), [
+    "::warning title=pr-review-cli reads::the reads-check mode 'enforcing' is neither report nor enforce; the check enforces",
+    "::notice title=pr-review-cli reads::listed=5 unread=1 mode=enforce",
+  ]);
+  const odd = run(SHORT, { REVIEW: extracted, MODE: "x y" });
+  assert.match(odd.stdout[0], /mode an unrecognised value is neither/u);
+  assert.equal(odd.review.coverage.read, 4);
+});
+
+test("report mode passes on what the extract step gave where enforce would refuse or fail", () => {
+  const extracted = REVIEW({ read: 2, changed: 2, renames: 1 });
+  // A to-read list the job cannot back: enforce makes the review incomplete.
+  const unlisted = {
+    workspace: {
+      ".claude-lane/pr.diff": DIFF,
+      ".claude-lane/files.txt": "src/a.js\nsrc/new-name.js\n",
+    },
+    transcripts: { first: read(".claude-lane/pr.diff", DIFF, 1, 7) },
+  };
+  const env = { REVIEW: extracted, SKIPPED: "1", TO_READ: "" };
+  assert.equal(
+    run(unlisted, { ...env, MODE: "enforce" }).outputs.verdict,
+    "the job could not list the files the review had to read",
+  );
+  assert.deepEqual(run(unlisted, { ...env, MODE: "report" }).outputs, {
+    verdict: "complete",
+    review: extracted,
+  });
+  // A verdict that is not complete goes on as it came.
+  assert.deepEqual(
+    run(
+      { workspace: {} },
+      { VERDICT: "the review returned no summary", REVIEW: "", MODE: "report" },
+    ).outputs,
+    { verdict: "the review returned no summary" },
+  );
+  // A check that throws: report passes the review on, enforce fails.
+  // path.join throws on a CHUNK_DIR that is not a string.
+  const whole = REVIEW({ read: 5, changed: 5 });
+  const throwing = { REVIEW: whole, EXCLUDED: "1", CHUNK_DIR: null };
+  const reported = run(SHORT, { ...throwing, MODE: "report" });
+  assert.deepEqual(reported.outputs, { verdict: "complete", review: whole });
+  assert.deepEqual(reported.stdout, [
+    "::warning title=pr-review-cli reads::the check failed (TypeError); the review goes on as the extract step gave it",
+  ]);
+  assert.throws(() => run(SHORT, { ...throwing, MODE: "enforce" }), TypeError);
+});
+
+test("the format fallback is the same in both modes", () => {
+  const extracted = REVIEW({ read: 5, changed: 5 });
+  for (const mode of ["report", "enforce"]) {
+    const { outputs } = run(
+      {
+        workspace: SHORT.workspace,
+        transcripts: {
+          first: unnumbered(read(".claude-lane/pr.diff", DIFF, 1, 37)),
+        },
+      },
+      { REVIEW: extracted, MODE: mode },
+    );
+    assert.equal(outputs["reads-checked"], "false", mode);
+    assert.deepEqual(
+      JSON.parse(outputs.review).coverage,
+      { read: 5, changed: 5, reads_checked: false },
+      mode,
+    );
+  }
 });
