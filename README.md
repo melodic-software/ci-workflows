@@ -1723,7 +1723,10 @@ old or new path is quoted or not a plain path of letters, digits and
 `._/@+-`, or is over 500 characters, and one from or into a path where a file
 is run, loaded or published by where it sits (RENAME_HELD_PATHS: `SKILL.md`,
 `skills/`, `agents/`, `commands/`, `hooks/`, `.claude-plugin/`, `.claude/`,
-`CLAUDE.md`, `AGENTS.md`, `conftest.py`, `*.config.{js,mjs,cjs,ts}`, the root
+`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`,
+`copilot-instructions.md`, `rules/`, `instructions/`, `prompts/`,
+`output-styles/`, `requirements*.txt`, `constraints*.txt`, `CMakeLists.txt`,
+`conftest.py`, `*.config.{js,mjs,cjs,ts}`, the root
 `.devcontainer/` and `.vscode/`, `.npmrc`, `Makefile`, `Dockerfile*`,
 `CODEOWNERS`, `package.json`, `pyproject.toml`), which wins over the
 extension. With an empty

@@ -504,7 +504,17 @@ env:
     **/.claude-plugin/**
     **/.claude/**
     **/CLAUDE.md
+    **/CLAUDE.local.md
     **/AGENTS.md
+    **/GEMINI.md
+    **/copilot-instructions.md
+    **/rules/**
+    **/instructions/**
+    **/prompts/**
+    **/output-styles/**
+    **/requirements*.txt
+    **/constraints*.txt
+    **/CMakeLists.txt
     **/conftest.py
     **/*.config.js
     **/*.config.mjs
@@ -519,8 +529,9 @@ env:
     **/package.json
     **/pyproject.toml
   # The final extensions, matched without case, a verified rename's old and
-  # new path must both end in: documentation and static media, which no tool
-  # runs or loads by name. Any other file, and a name with no extension, is
+  # new path must both end in: documentation and static media. A tool can
+  # still load such a file by where it sits, so RENAME_HELD_PATHS narrows this
+  # list and wins over it. Any other file, and a name with no extension, is
   # read at its new path. SVG is left out: it can carry script.
   RENAME_INERT_EXTENSIONS: |
     md
