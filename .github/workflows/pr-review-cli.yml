@@ -773,7 +773,7 @@ jobs:
       next-reason: ${{ steps.next.outputs.next-reason }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
-      verdict: ${{ steps.extract.outputs.verdict }}
+      verdict: ${{ steps.reads.outputs.verdict }}
       held: ${{ steps.full-diff.outputs.held }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -2312,6 +2312,10 @@ jobs:
               "  fewer is reported as partial, never as complete. A pure rename (a header with no hunks)",
               "  is read once you have seen its header. A blob id on an index line, matching another",
               "  file's or not, is not a read: read the hunks of every listed file.",
+              "  The job checks this against the Read calls of the review and its subagents: a listed file counts as read",
+              "  only when Read showed every line of its section, its diff --git line through its last line, in the diff",
+              "  file you review or the scope's diff (the REVIEW SCOPE file for an incremental review, else the FULL DIFF",
+              "  file). Grep output, a summary, or a count does not show a line.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -2807,6 +2811,7 @@ jobs:
             const copies = counts ? listed(env.COPIES) : 0;
             const renames = counts ? listed(env.RENAMES) : 0;
             const skipped = copies + renames;
+            core.setOutput("skipped", String(skipped));
             // One review of the diff the split step wrote without them reads
             // that diff's size, not the whole diff's.
             const bytes = Number(
@@ -3025,6 +3030,28 @@ jobs:
               )
               .write();
 
+      # No model runs here. The model's files_read is its word; this holds
+      # the read count to the listed files whose whole change the leg's own
+      # transcript shows a Read of, before the review and its verdict leave
+      # the job (.github/actions/check-review-reads). It runs before the
+      # transcript is sealed and uploaded, and prints path names only.
+      - name: Check the reads
+        id: reads
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true' && steps.chunks.outputs.handoff != 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/check-review-reads
+        with:
+          review: ${{ steps.extract.outputs.review }}
+          verdict: ${{ steps.extract.outputs.verdict }}
+          skipped: ${{ steps.extract.outputs.skipped }}
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          results-dir: ${{ steps.chunks.outputs.results-dir }}
+          chunks: ${{ steps.compose.outputs.chunks }}
+          scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
+          to-read: ${{ steps.full-diff.outputs.to-read }}
+
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
       # registered secret's value anywhere in it, so both leave the job as
@@ -3038,7 +3065,7 @@ jobs:
         timeout-minutes: 1
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          REVIEW: ${{ steps.extract.outputs.review }}
+          REVIEW: ${{ steps.reads.outputs.review }}
           LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
           HANDOFF_FILE: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
         with:
@@ -3090,7 +3117,7 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           require-completion: ${{ (steps.chunks.outputs.handoff || steps.claude.outputs.handoff) != 'true' }}
-          completion: ${{ steps.extract.outputs.verdict }}
+          completion: ${{ steps.reads.outputs.verdict }}
           completion-class: ${{ steps.extract.outputs.verdict-class }}
           detect-failed-shell: true
           known-failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class }}
@@ -3211,7 +3238,7 @@ jobs:
       next-reason: ${{ steps.next.outputs.next-reason }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
-      verdict: ${{ steps.extract.outputs.verdict }}
+      verdict: ${{ steps.reads.outputs.verdict }}
       held: ${{ steps.full-diff.outputs.held }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -4750,6 +4777,10 @@ jobs:
               "  fewer is reported as partial, never as complete. A pure rename (a header with no hunks)",
               "  is read once you have seen its header. A blob id on an index line, matching another",
               "  file's or not, is not a read: read the hunks of every listed file.",
+              "  The job checks this against the Read calls of the review and its subagents: a listed file counts as read",
+              "  only when Read showed every line of its section, its diff --git line through its last line, in the diff",
+              "  file you review or the scope's diff (the REVIEW SCOPE file for an incremental review, else the FULL DIFF",
+              "  file). Grep output, a summary, or a count does not show a line.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -5213,6 +5244,7 @@ jobs:
             const copies = counts ? listed(env.COPIES) : 0;
             const renames = counts ? listed(env.RENAMES) : 0;
             const skipped = copies + renames;
+            core.setOutput("skipped", String(skipped));
             // One review of the diff the split step wrote without them reads
             // that diff's size, not the whole diff's.
             const bytes = Number(
@@ -5431,6 +5463,28 @@ jobs:
               )
               .write();
 
+      # No model runs here. The model's files_read is its word; this holds
+      # the read count to the listed files whose whole change the leg's own
+      # transcript shows a Read of, before the review and its verdict leave
+      # the job (.github/actions/check-review-reads). It runs before the
+      # transcript is sealed and uploaded, and prints path names only.
+      - name: Check the reads
+        id: reads
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true' && steps.chunks.outputs.handoff != 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/check-review-reads
+        with:
+          review: ${{ steps.extract.outputs.review }}
+          verdict: ${{ steps.extract.outputs.verdict }}
+          skipped: ${{ steps.extract.outputs.skipped }}
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          results-dir: ${{ steps.chunks.outputs.results-dir }}
+          chunks: ${{ steps.compose.outputs.chunks }}
+          scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
+          to-read: ${{ steps.full-diff.outputs.to-read }}
+
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
       # registered secret's value anywhere in it, so both leave the job as
@@ -5444,7 +5498,7 @@ jobs:
         timeout-minutes: 1
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          REVIEW: ${{ steps.extract.outputs.review }}
+          REVIEW: ${{ steps.reads.outputs.review }}
           LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
           HANDOFF_FILE: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
         with:
@@ -5496,7 +5550,7 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           require-completion: ${{ (steps.chunks.outputs.handoff || steps.claude.outputs.handoff) != 'true' }}
-          completion: ${{ steps.extract.outputs.verdict }}
+          completion: ${{ steps.reads.outputs.verdict }}
           completion-class: ${{ steps.extract.outputs.verdict-class }}
           detect-failed-shell: true
           known-failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class }}
@@ -5622,7 +5676,7 @@ jobs:
       next-reason: ${{ steps.next.outputs.next-reason }}
       review-failed: ${{ steps.review-outcome.outputs.review-failed }}
       failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class || steps.review-outcome.outputs.failure-class || ((steps.isolate.outcome == 'failure' || steps.isolate.outcome == 'cancelled') && 'install-failed') || '' }}
-      verdict: ${{ steps.extract.outputs.verdict }}
+      verdict: ${{ steps.reads.outputs.verdict }}
       held: ${{ steps.full-diff.outputs.held }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
@@ -7161,6 +7215,10 @@ jobs:
               "  fewer is reported as partial, never as complete. A pure rename (a header with no hunks)",
               "  is read once you have seen its header. A blob id on an index line, matching another",
               "  file's or not, is not a read: read the hunks of every listed file.",
+              "  The job checks this against the Read calls of the review and its subagents: a listed file counts as read",
+              "  only when Read showed every line of its section, its diff --git line through its last line, in the diff",
+              "  file you review or the scope's diff (the REVIEW SCOPE file for an incremental review, else the FULL DIFF",
+              "  file). Grep output, a summary, or a count does not show a line.",
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
@@ -7622,6 +7680,7 @@ jobs:
             const copies = counts ? listed(env.COPIES) : 0;
             const renames = counts ? listed(env.RENAMES) : 0;
             const skipped = copies + renames;
+            core.setOutput("skipped", String(skipped));
             // One review of the diff the split step wrote without them reads
             // that diff's size, not the whole diff's.
             const bytes = Number(
@@ -7840,6 +7899,28 @@ jobs:
               )
               .write();
 
+      # No model runs here. The model's files_read is its word; this holds
+      # the read count to the listed files whose whole change the leg's own
+      # transcript shows a Read of, before the review and its verdict leave
+      # the job (.github/actions/check-review-reads). It runs before the
+      # transcript is sealed and uploaded, and prints path names only.
+      - name: Check the reads
+        id: reads
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true' && steps.chunks.outputs.handoff != 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/check-review-reads
+        with:
+          review: ${{ steps.extract.outputs.review }}
+          verdict: ${{ steps.extract.outputs.verdict }}
+          skipped: ${{ steps.extract.outputs.skipped }}
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          results-dir: ${{ steps.chunks.outputs.results-dir }}
+          chunks: ${{ steps.compose.outputs.chunks }}
+          scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
+          file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
+          to-read: ${{ steps.full-diff.outputs.to-read }}
+
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
       # registered secret's value anywhere in it, so both leave the job as
@@ -7853,7 +7934,7 @@ jobs:
         timeout-minutes: 1
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          REVIEW: ${{ steps.extract.outputs.review }}
+          REVIEW: ${{ steps.reads.outputs.review }}
           LAST_SUMMARY: ${{ steps.scope.outputs.last-summary }}
           HANDOFF_FILE: ${{ runner.temp }}/review-handoff/${{ github.job }}.json
         with:
@@ -7905,7 +7986,7 @@ jobs:
           credential: ${{ steps.claude.outputs.credential }}
           max-turns: ${{ steps.compose.outputs.max-turns }}
           require-completion: ${{ (steps.chunks.outputs.handoff || steps.claude.outputs.handoff) != 'true' }}
-          completion: ${{ steps.extract.outputs.verdict }}
+          completion: ${{ steps.reads.outputs.verdict }}
           completion-class: ${{ steps.extract.outputs.verdict-class }}
           detect-failed-shell: true
           known-failure-class: ${{ steps.chunks.outputs.lane-class || steps.claude.outputs.lane-class }}

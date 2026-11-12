@@ -946,6 +946,10 @@ consumer to audit it.
   `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
   history cannot (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
+- `.github/actions/check-review-reads` — `pr-review-cli.yml`'s step after
+  the extract step: holds the review's read count to the files the leg's own
+  transcript shows read, before the review leaves the job (its `action.yml`
+  states the rule).
 - `.github/actions/upload-lane-transcript` — the step after each model leg in
   `pr-review-cli.yml` and `intake-triage.yml`: scans the leg's execution file,
   seals it to the caller's `lane-transcript-public-key` input and uploads only
@@ -1678,7 +1682,15 @@ or the file cap, its bytes or files before the findings count, as the failure
 line does, with the
 hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
-is `incomplete`.
+is `incomplete`. The job then holds the read count to its own evidence
+(`.github/actions/check-review-reads`): a file of the scope's list (or of
+`.claude-lane/to-read.txt` when copies or verified renames count as read) is
+read only when the transcript of the review that holds it, its subagents
+included, shows Read results printing every non-empty line of each of its
+sections in a diff file the job wrote. Each file without that evidence lowers
+the count, so the review is `partial`, and is named after `no read evidence
+for` on the status line when its path is plain. A missing or unparseable
+transcript or diff leaves its files unread.
 
 **Identical copies.** Changed files whose whole change is
 identical (modifications with the same content and mode before and after, or
