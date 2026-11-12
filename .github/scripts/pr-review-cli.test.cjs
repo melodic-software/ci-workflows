@@ -6177,22 +6177,22 @@ const splitEnv = (source, fullDiff) => ({
   RENAMES: fullDiff.renames,
 });
 
-// `count` files at pkg/old/ moved unchanged to pkg/new/, and `edited` files
-// at src/ changed in place.
+// `count` documents at pkg/old/ moved unchanged to pkg/new/, and `edited`
+// source files at src/ changed in place.
 function movesRepo(count, edited) {
-  const name = (i) => `f${String(i).padStart(3, "0")}.js`;
+  const name = (i) => `f${String(i).padStart(3, "0")}`;
   return renameRepo(
     (write) => {
       for (let i = 0; i < count; i++)
-        write(`pkg/old/${name(i)}`, `export const n${i} = ${i};\n`);
+        write(`pkg/old/${name(i)}.md`, `# Page ${i}\n`);
       for (let i = 0; i < edited; i++)
-        write(`src/${name(i)}`, `export const e${i} = ${i};\n`);
+        write(`src/${name(i)}.js`, `export const e${i} = ${i};\n`);
     },
     ({ write, move }) => {
       for (let i = 0; i < count; i++)
-        move(`pkg/old/${name(i)}`, `pkg/new/${name(i)}`);
+        move(`pkg/old/${name(i)}.md`, `pkg/new/${name(i)}.md`);
       for (let i = 0; i < edited; i++)
-        write(`src/${name(i)}`, `export const e${i} = ${i + 1};\n`);
+        write(`src/${name(i)}.js`, `export const e${i} = ${i + 1};\n`);
     },
   );
 }
@@ -6308,11 +6308,11 @@ test("the full-diff step detects renames whatever the runner's git config says",
   assert.equal(out.renames, "3");
   assert.equal(out.files, "4");
   const diff = fs.readFileSync(path.join(work, ".claude-lane/pr.diff"), "utf8");
-  assert.match(diff, /^rename from pkg\/old\/f000\.js$/mu);
+  assert.match(diff, /^rename from pkg\/old\/f000\.md$/mu);
   assert.doesNotMatch(diff, /^deleted file mode /mu);
   assert.equal(
     fs.readFileSync(path.join(work, ".claude-lane/files.txt"), "utf8"),
-    "pkg/new/f000.js\npkg/new/f001.js\npkg/new/f002.js\nsrc/f000.js\n",
+    "pkg/new/f000.md\npkg/new/f001.md\npkg/new/f002.md\nsrc/f000.js\n",
   );
 });
 
@@ -6740,8 +6740,8 @@ test("a move into a path that runs, loads or publishes the file is an ordinary f
     ...into.map((to, i) => [`src/m${i}.txt`, to]),
     // From a loader path out to an ordinary one.
     ["plugins/q/agents/old.md", "docs/old.md"],
-    // Between two ordinary source directories: still verified.
-    ["src/a/x.js", "lib/b/x.js"],
+    // A document between two ordinary directories: still verified.
+    ["docs/a/x.md", "guides/b/x.md"],
   ];
   const repo = renameRepo(
     (write) => {
@@ -6757,7 +6757,79 @@ test("a move into a path that runs, loads or publishes the file is an ordinary f
     for (const s of job.steps)
       assert.equal(s.env?.RENAME_HELD_PATHS, undefined, s.name);
     const { list } = verifiedRenames(repo, job);
-    assert.deepEqual(list, ["src/a/x.js\tlib/b/x.js"], job.name);
+    assert.deepEqual(list, ["docs/a/x.md\tguides/b/x.md"], job.name);
+  }
+});
+
+// A verified rename needs both paths to end in an extension of
+// RENAME_INERT_EXTENSIONS: documentation and static media. Everything else,
+// whatever its name, is read as an ordinary file.
+test("only a move of documentation or static media between paths outside the held paths is verified, in every leg", () => {
+  const notInert = [
+    "setup.py",
+    "pkg/__init__.py",
+    ".gitmodules",
+    ".pre-commit-config.yaml",
+    "Directory.Build.props",
+    "Jenkinsfile",
+    "justfile",
+    "web/.eslintrc.js",
+    "config/.env",
+    "img/logo.svg",
+    "bin/noext",
+  ];
+  // Documents under a held path, at the root and deeper.
+  const held = [
+    "SKILL.md",
+    "plugins/p/skills/s/SKILL.md",
+    "CLAUDE.md",
+    "sub/CLAUDE.md",
+    "AGENTS.md",
+    "commands/x.md",
+    "plugins/p/commands/x.md",
+    "agents/x.md",
+    "plugins/p/agents/x.md",
+    "skills/notes.md",
+    "hooks/x.md",
+    ".claude/x.md",
+    "plugins/p/.claude-plugin/x.md",
+    ".github/x.md",
+  ];
+  const moves = [
+    ...notInert.map((to, i) => [`docs/n${i}.md`, to]),
+    ...held.map((to, i) => [`docs/h${i}.md`, to]),
+    // A file of another kind renamed to a document.
+    ["tools/run.py", "docs/run.md"],
+    // Verified: documents and images, the extension in any case.
+    ["docs/a.md", "guides/a.md"],
+    ["img/photo.png", "assets/photo.png"],
+    ["docs/B.MD", "guides/B.MD"],
+  ];
+  // A comment line: git parses a .gitmodules in the work tree as config.
+  const repo = renameRepo(
+    (write) => {
+      for (const [from] of moves) write(from, `# content of ${from}\n`);
+    },
+    ({ move }) => {
+      for (const [from, to] of moves) move(from, to);
+    },
+  );
+  assert.match(workflow.env.RENAME_INERT_EXTENSIONS, /^md$/mu);
+  assert.doesNotMatch(workflow.env.RENAME_INERT_EXTENSIONS, /^svg$/mu);
+  for (const job of [key, subscription, fallback]) {
+    assert.equal(job.env?.RENAME_INERT_EXTENSIONS, undefined, job.name);
+    for (const s of job.steps)
+      assert.equal(s.env?.RENAME_INERT_EXTENSIONS, undefined, s.name);
+    const { list } = verifiedRenames(repo, job);
+    assert.deepEqual(
+      list,
+      [
+        "docs/B.MD\tguides/B.MD",
+        "docs/a.md\tguides/a.md",
+        "img/photo.png\tassets/photo.png",
+      ],
+      job.name,
+    );
   }
 });
 
