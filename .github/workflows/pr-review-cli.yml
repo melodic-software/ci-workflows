@@ -462,6 +462,12 @@ env:
   # The most chunks one leg reviews. A diff that needs more is reviewed
   # unsplit, as a partial review, with the count and this ceiling named.
   MAX_CHUNKS: "20"
+  # Each chunk's output caps when a diff is chunked (one review keeps 20000
+  # summary characters and 25 comments). At MAX_CHUNKS chunks every chunk at
+  # these caps still merges into a review under 100 KB: the extract step keeps
+  # 25 comments inline and lists the rest in the summary.
+  CHUNK_SUMMARY_CHARS: "1500"
+  CHUNK_COMMENTS: "12"
   # The size a declared generated data file's diff section must exceed to
   # leave the review: one file's even share of READ_BUDGET over
   # MAX_CHUNK_FILES. A smaller change, such as one deleted record, still fits
@@ -2117,7 +2123,7 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -2607,7 +2613,7 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -2789,23 +2795,93 @@ jobs:
               // file count.
               ...(chunks === 1 && changed - skipped > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - skipped } : {}),
             };
-            const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
-            const comments = reviews.flatMap((r) => r.comments);
             const malformed = reviews.flatMap((r) => r.malformed);
+            // A chunked review's comments, merged across chunks. One another
+            // chunk made at the same line with the same text is dropped as a
+            // duplicate; one that repeats only the line or only the text, and
+            // every comment past the inline cap, most severe first, is listed
+            // in the summary instead, so no finding is lost. Severity is
+            // publish-review's reading: exactly one severity line, else
+            // CRITICAL.
+            const INLINE = 25;
+            const SEVERITY = /^\s*`?severity: (CRITICAL|IMPORTANT|SUGGESTION)`?\s*$/gmu;
+            const severity = (body) => {
+              const found = [...body.matchAll(SEVERITY)].map((m) => m[1]);
+              return found.length === 1 ? found[0] : "CRITICAL";
+            };
+            const RANK = { CRITICAL: 0, IMPORTANT: 1, SUGGESTION: 2 };
+            const plain = (body) => body.replace(/\s+/gu, " ").trim();
+            let duplicates = 0;
+            let comments = reviews[0].comments;
+            let overflow = [];
+            if (chunks > 1) {
+              const lines = new Set();
+              const texts = new Set();
+              const both = new Set();
+              const kept = [];
+              for (const c of reviews.flatMap((r) => r.comments)) {
+                const where = `${c.path}\0${c.line}\0${c.side}`;
+                const what = plain(c.body).toLowerCase();
+                if (both.has(`${where}\0${what}`)) {
+                  duplicates++;
+                  continue;
+                }
+                both.add(`${where}\0${what}`);
+                const repeat = lines.has(where) || texts.has(what);
+                lines.add(where);
+                texts.add(what);
+                (repeat ? overflow : kept).push(c);
+              }
+              kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              comments = kept.slice(0, INLINE);
+              overflow = [...kept.slice(INLINE), ...overflow];
+            }
+            const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
             // review read the content of.
             const moved =
               renames > 0
                 ? `\n\nVerified renames: ${renames} of ${changed} changed file(s) moved with no content or mode change; they count as read without a read of their unchanged content, and the review was asked to check each new path.`
                 : "";
-            const summary =
-              (chunks === 1
-                ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
-              moved +
-              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+            const ceiling =
+              chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
-                : "");
+                : "";
+            const head =
+              chunks === 1
+                ? reviews[0].summary
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
+            // The summary listing the overflow comments, each with its first
+            // `excerpt` characters. Its critical-findings line counts the
+            // CRITICAL ones, which a merge gate would otherwise not see, and,
+            // when no chunk's summary has that line, the summary-only
+            // findings, which publish-review would otherwise count as
+            // CRITICAL.
+            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            const summaryOf = (excerpt) => {
+              if (overflow.length === 0) return head + moved + ceiling;
+              const entries = overflow.map((c) => {
+                const text = plain(c.body);
+                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
+              });
+              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
+              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
+              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              return (
+                [
+                  head,
+                  "",
+                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
+                  "",
+                  ...entries,
+                  "",
+                  `critical-findings: ${counted}`,
+                ].join("\n") +
+                moved +
+                ceiling
+              );
+            };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0
@@ -2820,17 +2896,32 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
-            // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({
-              findings,
-              coverage,
-              summary,
-              comments,
-              ...(malformed.length > 0 ? { malformed } : {}),
-              ...(hold ? { hold } : {}),
-            });
-            if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
+            // 60000 characters of a summary. A merged review over 100 KB, or a
+            // summary over 50000 characters, lists its comments with shorter
+            // excerpts, then none, then moves the least severe inline comments
+            // to the list; one that still does not fit is not passed on.
+            const MAX_SUMMARY = 50000;
+            const reviewOf = (excerpt) => {
+              const summary = summaryOf(excerpt);
+              const text = JSON.stringify({
+                findings,
+                coverage,
+                summary,
+                comments,
+                ...(malformed.length > 0 ? { malformed } : {}),
+                ...(hold ? { hold } : {}),
+              });
+              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+            };
+            let review;
+            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
+            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+              overflow = [comments.at(-1), ...overflow];
+              comments = comments.slice(0, -1);
+              review = reviewOf(0);
+            }
+            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
@@ -4406,7 +4497,7 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -4864,7 +4955,7 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -5046,23 +5137,93 @@ jobs:
               // file count.
               ...(chunks === 1 && changed - skipped > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - skipped } : {}),
             };
-            const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
-            const comments = reviews.flatMap((r) => r.comments);
             const malformed = reviews.flatMap((r) => r.malformed);
+            // A chunked review's comments, merged across chunks. One another
+            // chunk made at the same line with the same text is dropped as a
+            // duplicate; one that repeats only the line or only the text, and
+            // every comment past the inline cap, most severe first, is listed
+            // in the summary instead, so no finding is lost. Severity is
+            // publish-review's reading: exactly one severity line, else
+            // CRITICAL.
+            const INLINE = 25;
+            const SEVERITY = /^\s*`?severity: (CRITICAL|IMPORTANT|SUGGESTION)`?\s*$/gmu;
+            const severity = (body) => {
+              const found = [...body.matchAll(SEVERITY)].map((m) => m[1]);
+              return found.length === 1 ? found[0] : "CRITICAL";
+            };
+            const RANK = { CRITICAL: 0, IMPORTANT: 1, SUGGESTION: 2 };
+            const plain = (body) => body.replace(/\s+/gu, " ").trim();
+            let duplicates = 0;
+            let comments = reviews[0].comments;
+            let overflow = [];
+            if (chunks > 1) {
+              const lines = new Set();
+              const texts = new Set();
+              const both = new Set();
+              const kept = [];
+              for (const c of reviews.flatMap((r) => r.comments)) {
+                const where = `${c.path}\0${c.line}\0${c.side}`;
+                const what = plain(c.body).toLowerCase();
+                if (both.has(`${where}\0${what}`)) {
+                  duplicates++;
+                  continue;
+                }
+                both.add(`${where}\0${what}`);
+                const repeat = lines.has(where) || texts.has(what);
+                lines.add(where);
+                texts.add(what);
+                (repeat ? overflow : kept).push(c);
+              }
+              kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              comments = kept.slice(0, INLINE);
+              overflow = [...kept.slice(INLINE), ...overflow];
+            }
+            const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
             // review read the content of.
             const moved =
               renames > 0
                 ? `\n\nVerified renames: ${renames} of ${changed} changed file(s) moved with no content or mode change; they count as read without a read of their unchanged content, and the review was asked to check each new path.`
                 : "";
-            const summary =
-              (chunks === 1
-                ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
-              moved +
-              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+            const ceiling =
+              chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
-                : "");
+                : "";
+            const head =
+              chunks === 1
+                ? reviews[0].summary
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
+            // The summary listing the overflow comments, each with its first
+            // `excerpt` characters. Its critical-findings line counts the
+            // CRITICAL ones, which a merge gate would otherwise not see, and,
+            // when no chunk's summary has that line, the summary-only
+            // findings, which publish-review would otherwise count as
+            // CRITICAL.
+            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            const summaryOf = (excerpt) => {
+              if (overflow.length === 0) return head + moved + ceiling;
+              const entries = overflow.map((c) => {
+                const text = plain(c.body);
+                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
+              });
+              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
+              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
+              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              return (
+                [
+                  head,
+                  "",
+                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
+                  "",
+                  ...entries,
+                  "",
+                  `critical-findings: ${counted}`,
+                ].join("\n") +
+                moved +
+                ceiling
+              );
+            };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0
@@ -5077,17 +5238,32 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
-            // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({
-              findings,
-              coverage,
-              summary,
-              comments,
-              ...(malformed.length > 0 ? { malformed } : {}),
-              ...(hold ? { hold } : {}),
-            });
-            if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
+            // 60000 characters of a summary. A merged review over 100 KB, or a
+            // summary over 50000 characters, lists its comments with shorter
+            // excerpts, then none, then moves the least severe inline comments
+            // to the list; one that still does not fit is not passed on.
+            const MAX_SUMMARY = 50000;
+            const reviewOf = (excerpt) => {
+              const summary = summaryOf(excerpt);
+              const text = JSON.stringify({
+                findings,
+                coverage,
+                summary,
+                comments,
+                ...(malformed.length > 0 ? { malformed } : {}),
+                ...(hold ? { hold } : {}),
+              });
+              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+            };
+            let review;
+            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
+            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+              overflow = [comments.at(-1), ...overflow];
+              comments = comments.slice(0, -1);
+              review = reviewOf(0);
+            }
+            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary
@@ -6668,7 +6844,7 @@ jobs:
               chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
                 ? Number(env.CHUNKS)
                 : 1;
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // The identical-change copies and verified renames in scope the
             // full-diff step listed, which the extract step counts as read
             // under this same condition: in one review, or in chunks the split
@@ -7124,7 +7300,7 @@ jobs:
               return incomplete("the full diff could not be written, so the review saw only part of the pull request");
             }
             // Each chunk's share of the caps one review has.
-            const caps = { summary: Math.floor(20000 / chunks), comments: Math.floor(25 / chunks) };
+            const caps = chunks === 1 ? { summary: 20000, comments: 25 } : { summary: Number(env.CHUNK_SUMMARY_CHARS), comments: Number(env.CHUNK_COMMENTS) };
             // One review's checks: a reason string on a gap, else its parts.
             const check = (file) => {
               let raw;
@@ -7306,23 +7482,93 @@ jobs:
               // file count.
               ...(chunks === 1 && changed - skipped > Number(env.MAX_CHUNK_FILES) ? { over_files: changed - skipped } : {}),
             };
-            const findings = reviews.reduce((sum, r) => sum + r.findings, 0);
-            const comments = reviews.flatMap((r) => r.comments);
             const malformed = reviews.flatMap((r) => r.malformed);
+            // A chunked review's comments, merged across chunks. One another
+            // chunk made at the same line with the same text is dropped as a
+            // duplicate; one that repeats only the line or only the text, and
+            // every comment past the inline cap, most severe first, is listed
+            // in the summary instead, so no finding is lost. Severity is
+            // publish-review's reading: exactly one severity line, else
+            // CRITICAL.
+            const INLINE = 25;
+            const SEVERITY = /^\s*`?severity: (CRITICAL|IMPORTANT|SUGGESTION)`?\s*$/gmu;
+            const severity = (body) => {
+              const found = [...body.matchAll(SEVERITY)].map((m) => m[1]);
+              return found.length === 1 ? found[0] : "CRITICAL";
+            };
+            const RANK = { CRITICAL: 0, IMPORTANT: 1, SUGGESTION: 2 };
+            const plain = (body) => body.replace(/\s+/gu, " ").trim();
+            let duplicates = 0;
+            let comments = reviews[0].comments;
+            let overflow = [];
+            if (chunks > 1) {
+              const lines = new Set();
+              const texts = new Set();
+              const both = new Set();
+              const kept = [];
+              for (const c of reviews.flatMap((r) => r.comments)) {
+                const where = `${c.path}\0${c.line}\0${c.side}`;
+                const what = plain(c.body).toLowerCase();
+                if (both.has(`${where}\0${what}`)) {
+                  duplicates++;
+                  continue;
+                }
+                both.add(`${where}\0${what}`);
+                const repeat = lines.has(where) || texts.has(what);
+                lines.add(where);
+                texts.add(what);
+                (repeat ? overflow : kept).push(c);
+              }
+              kept.sort((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)]);
+              comments = kept.slice(0, INLINE);
+              overflow = [...kept.slice(INLINE), ...overflow];
+            }
+            const findings = reviews.reduce((sum, r) => sum + r.findings, 0) - duplicates;
             // The marker's summary says why the read count holds files no
             // review read the content of.
             const moved =
               renames > 0
                 ? `\n\nVerified renames: ${renames} of ${changed} changed file(s) moved with no content or mode change; they count as read without a read of their unchanged content, and the review was asked to check each new path.`
                 : "";
-            const summary =
-              (chunks === 1
-                ? reviews[0].summary
-                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n")) +
-              moved +
-              (chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
+            const ceiling =
+              chunks === 1 && /^[1-9][0-9]{0,5}$/u.test(env.OVER_CHUNKS ?? "")
                 ? `\n\nChunk ceiling: the diff in scope needs ${env.OVER_CHUNKS} chunks, more than the ceiling of ${env.MAX_CHUNKS}, so it was reviewed unsplit, as a partial review.`
-                : "");
+                : "";
+            const head =
+              chunks === 1
+                ? reviews[0].summary
+                : reviews.map((r, i) => `#### Chunk ${i + 1} of ${chunks} (${chunkFiles[i]} files)\n\n${r.summary}`).join("\n\n");
+            // The summary listing the overflow comments, each with its first
+            // `excerpt` characters. Its critical-findings line counts the
+            // CRITICAL ones, which a merge gate would otherwise not see, and,
+            // when no chunk's summary has that line, the summary-only
+            // findings, which publish-review would otherwise count as
+            // CRITICAL.
+            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            const summaryOf = (excerpt) => {
+              if (overflow.length === 0) return head + moved + ceiling;
+              const entries = overflow.map((c) => {
+                const text = plain(c.body);
+                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
+              });
+              const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
+              const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
+              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              return (
+                [
+                  head,
+                  "",
+                  `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
+                  "",
+                  ...entries,
+                  "",
+                  `critical-findings: ${counted}`,
+                ].join("\n") +
+                moved +
+                ceiling
+              );
+            };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
             const hold =
               holds.length === 0
@@ -7337,17 +7583,32 @@ jobs:
                         .slice(0, 2000),
                     };
             // The status job receives the review as one environment string, which
-            // Linux caps at 128 KiB (MAX_ARG_STRLEN); the schema's caps keep an
-            // ASCII review near 100 KB, and anything over that is not passed on.
-            const review = JSON.stringify({
-              findings,
-              coverage,
-              summary,
-              comments,
-              ...(malformed.length > 0 ? { malformed } : {}),
-              ...(hold ? { hold } : {}),
-            });
-            if (Buffer.byteLength(review, "utf8") > 100000) return incomplete("the review is over 100,000 bytes, too large to pass on");
+            // Linux caps at 128 KiB (MAX_ARG_STRLEN), and publish-review keeps
+            // 60000 characters of a summary. A merged review over 100 KB, or a
+            // summary over 50000 characters, lists its comments with shorter
+            // excerpts, then none, then moves the least severe inline comments
+            // to the list; one that still does not fit is not passed on.
+            const MAX_SUMMARY = 50000;
+            const reviewOf = (excerpt) => {
+              const summary = summaryOf(excerpt);
+              const text = JSON.stringify({
+                findings,
+                coverage,
+                summary,
+                comments,
+                ...(malformed.length > 0 ? { malformed } : {}),
+                ...(hold ? { hold } : {}),
+              });
+              return Buffer.byteLength(text, "utf8") <= 100000 && (summary.length <= MAX_SUMMARY || overflow.length === 0) ? text : undefined;
+            };
+            let review;
+            for (const excerpt of [300, 120, 0]) review ??= reviewOf(excerpt);
+            while (review === undefined && overflow.length > 0 && comments.length > 0) {
+              overflow = [comments.at(-1), ...overflow];
+              comments = comments.slice(0, -1);
+              review = reviewOf(0);
+            }
+            if (review === undefined) return incomplete("the review is over 100,000 bytes, too large to pass on");
             core.setOutput("review", review);
             core.setOutput("verdict", "complete");
             await core.summary

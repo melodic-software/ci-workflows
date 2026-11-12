@@ -1815,6 +1815,8 @@ async function extract(files, env = {}, job = key) {
     MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     READ_BUDGET: workflow.env.READ_BUDGET,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     ...env,
   };
   const saved = Object.fromEntries(
@@ -2139,6 +2141,8 @@ async function composeOutputs(env, job = key) {
     HOLD_PATHS: "",
     RUNNER_TEMP: dir,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     LEG_MINUTES: "13",
     ...env,
   };
@@ -4263,6 +4267,8 @@ test("a diff of many small added files, some identical, is chunked without its c
     CHUNK_DIR: s.env.CHUNK_DIR,
     READ_BUDGET: workflow.env.READ_BUDGET,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     SCOPE: "whole",
     COPIES: fullDiff.copies,
@@ -4937,7 +4943,7 @@ test("an incremental review leaves a file the push deleted out of its file count
   }
 });
 
-test("the compose step writes one prompt per chunk, each with its share of the caps", async () => {
+test("the compose step writes one prompt per chunk, each with the fixed per-chunk caps", async () => {
   const outputs = await composeOutputs({ CHUNKS: "3", CHUNK_FILES: "2,1,4" });
   assert.equal(outputs.chunks, "3");
   assert.equal(outputs["chunk-files"], "2,1,4");
@@ -4954,14 +4960,14 @@ test("the compose step writes one prompt per chunk, each with its share of the c
     );
     assert.match(
       prompt,
-      /at most 8 comments and a summary of at most 6666 characters/u,
+      /at most 12 comments and a summary of at most 1500 characters/u,
     );
   }
   assert.match(prompts[2], /\(4 files of the scope's file list\)/u);
   assert.equal(promptFile(outputs, 4), undefined);
   const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
-  assert.equal(schema.properties.summary.maxLength, 6666);
-  assert.equal(schema.properties.comments.maxItems, 8);
+  assert.equal(schema.properties.summary.maxLength, 1500);
+  assert.equal(schema.properties.comments.maxItems, 12);
   // Without a well-formed count, one review with the whole caps.
   for (const env of [
     {},
@@ -5185,8 +5191,13 @@ test("a chunked review sums every chunk's findings, comments and files read, and
   const chunk = (n, extra = {}) => ({
     findings: n,
     files_read: 2,
+    // Distinct findings: the merge drops a comment another chunk repeats.
+    comments: Array.from({ length: n }, (_, i) => ({
+      ...COMMENT,
+      line: 10 * n + i + 1,
+      body: `Finding ${n}.${i}`,
+    })),
     summary: `S${n}`,
-    comments: Array.from({ length: n }, () => COMMENT),
     ...extra,
   });
   const outputs = await extractChunks([
