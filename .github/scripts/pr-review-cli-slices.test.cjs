@@ -28,7 +28,8 @@ const LEGS = ["review-key", "review-subscription", "review-fallback"].map(
 const LIMITS = ["MAX_CHUNK_FILES", "READ_BUDGET", "MAX_CHUNKS"];
 
 // A stand-in for claude-code-plugins' split-diff.py with its documented
-// contract (module docstring): greedy chunks of whole `diff --git` sections,
+// contract (module docstring) and its line split (lines_of: on \n only):
+// greedy chunks of whole `diff --git` sections,
 // at most max-bytes and max-files each; a section over max-bytes, or more
 // than max-chunks chunks, exits 3 naming the reason. It copies the patch it
 // was given to $SPLIT_RECORD.
@@ -40,7 +41,9 @@ const SPLITTER = [
   "data = Path(patch).read_bytes()",
   "Path(os.environ['SPLIT_RECORD']).write_bytes(data)",
   "files = []",
-  "for line in data.splitlines(keepends=True):",
+  "lines = [line + b'\\n' for line in data.split(b'\\n')]",
+  "lines[-1] = lines[-1][:-1]",
+  "for line in [line for line in lines if line]:",
   "    if not files or line.startswith(b'diff --git '):",
   "        files.append(b'')",
   "    files[-1] += line",
@@ -155,6 +158,7 @@ test("a file over one chunk's budget is cut at its hunks, each piece under its h
     // The sliced file counts once, in the chunk holding its last piece, so
     // the chunks' counts still add up to the files in scope.
     assert.equal(cut.outputs.files, "0,2", job.name);
+    assert.equal(cut.outputs.sliced, "1", job.name);
     assert.match(
       cut.stdout,
       /^::notice title=pr-review-cli chunks::chunks=2 bytes=[0-9]+ distinct-bytes=[0-9]+ files=0,2 excluded=0 sliced=1$/mu,
@@ -184,14 +188,16 @@ test("a single hunk over the budget is not cut: the review stays partial, the fi
 });
 
 test("a path that could break an annotation is not printed", () => {
-  const odd = "src/we ird%0A::x.js";
-  const diff = `${HEADER(odd)}${HUNK(1, 1200)}`;
-  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
-  assert.match(
-    cut.stdout,
-    /^::warning::a file: one hunk of [0-9]+ bytes with its header is larger/mu,
-  );
-  assert.doesNotMatch(cut.stdout, /we ird/u);
+  for (const job of LEGS) {
+    const odd = "src/we ird%0A::x.js";
+    const diff = `${HEADER(odd)}${HUNK(1, 1200)}`;
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    assert.match(
+      cut.stdout,
+      /^::warning::a file: one hunk of [0-9]+ bytes with its header is larger/mu,
+    );
+    assert.doesNotMatch(cut.stdout, /we ird/u);
+  }
 });
 
 test("slices past the chunk ceiling keep the review partial, the count and the ceiling named", () => {
@@ -219,15 +225,89 @@ test("slices past the chunk ceiling keep the review partial, the count and the c
   }
 });
 
-test("a deleted file over the budget is cut too, and counts no file", () => {
+test("a deleted file over the budget is not cut: the split refuses it as before", () => {
+  // git gives a deletion one hunk; two here show the file is left whole
+  // whatever its hunks.
   const header = `diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n`;
   const hunks = [1, 2].map((n) => HUNK(n, 600));
-  const cut = split(LEGS[0], `${header}${hunks.join("")}${SMALL_DIFF}`, {
-    READ_BUDGET: "1000",
-  });
-  assert.equal(cut.chunk(1), `${header}${hunks[0]}`);
-  assert.equal(cut.chunk(2), `${header}${hunks[1]}${SMALL_DIFF}`);
-  assert.equal(cut.outputs.files, "0,1");
+  const diff = `${header}${hunks.join("")}${SMALL_DIFF}`;
+  for (const job of LEGS) {
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    assert.ok(cut.received.equals(Buffer.from(diff)), job.name);
+    assert.equal(cut.outputs.chunks, "1", job.name);
+    assert.equal(cut.outputs.sliced, undefined, job.name);
+    assert.deepEqual(
+      cut.stdout.trim().split("\n"),
+      [
+        `::warning::the diff in scope (${Buffer.byteLength(diff)} bytes, 1 files, 0 copies and renames left out) did not split into at most ${workflow.env.MAX_CHUNKS} chunks of 1000 bytes and ${workflow.env.MAX_CHUNK_FILES} files (exit 3); it is reviewed unsplit, as a partial review`,
+      ],
+      job.name,
+    );
+  }
+});
+
+test("a renamed file's path is printed only when both sides of its header name it", () => {
+  const header =
+    "diff --git a/lib/longername.js b/lib/x.js\nsimilarity index 50%\nrename from lib/longername.js\nrename to lib/x.js\n--- a/lib/longername.js\n+++ b/lib/x.js\n";
+  for (const job of LEGS) {
+    const big = split(job, `${header}${HUNK(1, 1200)}`, {
+      READ_BUDGET: "1000",
+    });
+    assert.match(big.stdout, /^::warning::a file: one hunk of /mu, job.name);
+    assert.doesNotMatch(big.stdout, /longerna/u, job.name);
+  }
+});
+
+test("a rename's piece note names its header's line, never half the header", async () => {
+  const header =
+    "diff --git a/lib/longername.js b/lib/x.js\nsimilarity index 50%\nrename from lib/longername.js\nrename to lib/x.js\n--- a/lib/longername.js\n+++ b/lib/x.js\n";
+  const diff = `${header}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+  for (const job of LEGS) {
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const prompts = await compose(job, cut, cut.chunkDir);
+    assert.match(
+      prompts[0],
+      /^PIECE 1 OF 2 of the file whose diff --git line is line 1 of chunk-1\.patch: /mu,
+      job.name,
+    );
+    assert.doesNotMatch(prompts.join(""), /longerna[^m]/u, job.name);
+  }
+});
+
+// The chunks rejoined: a cut file's later pieces lose their repeated header.
+function rejoin(cut) {
+  const cutHeaders = new Set(
+    fs
+      .readFileSync(path.join(cut.chunkDir, "sliced.txt"), "utf8")
+      .split("\n")
+      .filter(Boolean),
+  );
+  let joined = "";
+  let previous;
+  for (let k = 1; k <= Number(cut.outputs.chunks); k++) {
+    for (const section of cut.chunk(k).split(/(?=^diff --git )/mu)) {
+      const header = section.split("\n")[0];
+      joined +=
+        header === previous && cutHeaders.has(header)
+          ? section.slice(section.search(/^@@/mu))
+          : section;
+      previous = header;
+    }
+  }
+  return joined;
+}
+
+test("a diff with no final newline rejoins byte for byte, cut in the middle or at its end", () => {
+  const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
+  const middle = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF.slice(0, -1)}`;
+  const end = `${SMALL_DIFF}${HEADER(BIG)}${hunks.join("").slice(0, -1)}`;
+  for (const job of LEGS) {
+    for (const diff of [middle, end]) {
+      const cut = split(job, diff, { READ_BUDGET: "1000" });
+      assert.equal(cut.outputs.sliced, "1", job.name);
+      assert.equal(rejoin(cut), diff, job.name);
+    }
+  }
 });
 
 // --- no change for a diff that fits today ---
@@ -269,37 +349,41 @@ test("with no file over the budget the splitter gets the step's input byte for b
       assert.equal(cut.outputs.sliced, undefined, name);
     }
   }
-  // The 81-file split, as the existing chunk tests count it.
-  const cut = split(LEGS[0], many);
-  assert.equal(cut.outputs.chunks, "3");
-  assert.equal(cut.outputs.files, "40,40,1");
-  assert.match(
-    cut.stdout,
-    /^::notice title=pr-review-cli chunks::chunks=3 bytes=[0-9]+ distinct-bytes=[0-9]+ files=40,40,1 excluded=0$/mu,
-  );
+  for (const job of LEGS) {
+    // The 81-file split, as the existing chunk tests count it.
+    const cut = split(job, many);
+    assert.equal(cut.outputs.chunks, "3");
+    assert.equal(cut.outputs.files, "40,40,1");
+    assert.match(
+      cut.stdout,
+      /^::notice title=pr-review-cli chunks::chunks=3 bytes=[0-9]+ distinct-bytes=[0-9]+ files=40,40,1 excluded=0$/mu,
+    );
+  }
 });
 
 test("with verified renames left out, the splitter gets the distinct diff byte for byte", () => {
-  const renames = Array.from({ length: 3 }, (_, i) => [`old${i}`, `new${i}`]);
-  const moved = renames
-    .map(
-      ([a, b]) =>
-        `diff --git a/${a} b/${b}\nsimilarity index 100%\nrename from ${a}\nrename to ${b}\n`,
-    )
-    .join("");
-  const rest = Array.from(
-    { length: 50 },
-    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
-  ).join("");
-  const cut = split(LEGS[0], moved + rest, { RENAMES: "3" }, (work) =>
-    fs.writeFileSync(
-      path.join(work, ".claude-lane", "renames.txt"),
-      renames.map((pair) => `${pair.join("\t")}\n`).join(""),
-    ),
-  );
-  assert.ok(cut.received.equals(Buffer.from(rest)));
-  assert.equal(cut.outputs.files, "40,10");
-  assert.equal(cut.outputs.excluded, "3");
+  for (const job of LEGS) {
+    const renames = Array.from({ length: 3 }, (_, i) => [`old${i}`, `new${i}`]);
+    const moved = renames
+      .map(
+        ([a, b]) =>
+          `diff --git a/${a} b/${b}\nsimilarity index 100%\nrename from ${a}\nrename to ${b}\n`,
+      )
+      .join("");
+    const rest = Array.from(
+      { length: 50 },
+      (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
+    ).join("");
+    const cut = split(job, moved + rest, { RENAMES: "3" }, (work) =>
+      fs.writeFileSync(
+        path.join(work, ".claude-lane", "renames.txt"),
+        renames.map((pair) => `${pair.join("\t")}\n`).join(""),
+      ),
+    );
+    assert.ok(cut.received.equals(Buffer.from(rest)));
+    assert.equal(cut.outputs.files, "40,10");
+    assert.equal(cut.outputs.excluded, "3");
+  }
 });
 
 // --- the extract step's read count over the split step's chunks ---
@@ -360,6 +444,7 @@ async function extract(
     CHUNK_FILES: composed["chunk-files"] ?? cut.outputs.files,
     CHUNK_PIECES: composed["chunk-pieces"] ?? "",
     PIECE_NAMES: composed["chunk-piece-names"] ?? "",
+    SLICED: cut.outputs.sliced ?? "",
     CHUNK_DIR: cut.chunkDir,
     CHUNK_OUTCOMES: Array(filesRead.length).fill("success").join(","),
     EXCLUDED: cut.outputs.excluded,
@@ -450,17 +535,47 @@ test("a review of a cut file is complete only when every chunk holding a piece r
 });
 
 test("a malformed piece count leaves no completed review", async () => {
+  for (const job of LEGS) {
+    const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const out = await extract(job, cut, [1, 2], 2, {
+      "chunk-pieces": "1",
+      "chunk-piece-names": "[]",
+    });
+    assert.equal(
+      out.verdict,
+      "the job could not read how many cut-file pieces each chunk holds",
+    );
+    assert.equal(out.review, undefined);
+  }
+});
+
+test("a split that cut a file but passed on no piece counts leaves no completed review", async () => {
   const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
-  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
-  const out = await extract(LEGS[0], cut, [1, 2], 2, {
-    "chunk-pieces": "1",
-    "chunk-piece-names": "[]",
-  });
-  assert.equal(
-    out.verdict,
-    "the job could not read how many cut-file pieces each chunk holds",
-  );
-  assert.equal(out.review, undefined);
+  for (const job of LEGS) {
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    assert.equal(cut.outputs.files, "0,2");
+    const out = await extract(job, cut, [0, 2], 2, {});
+    assert.equal(
+      out.verdict,
+      "the job could not read how many cut-file pieces each chunk holds",
+      job.name,
+    );
+    assert.equal(out.review, undefined);
+  }
+});
+
+test("a chunk claiming more than its units cannot make up another chunk's shortfall", async () => {
+  const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+  for (const job of LEGS) {
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const composed = (await compose(job, cut, cut.chunkDir)).outputs;
+    // Units 1 and 2: chunk 1 claims 3, chunk 2 read 1 of its 2.
+    const out = await extract(job, cut, [3, 1], 2, composed);
+    const coverage = JSON.parse(out.review).coverage;
+    assert.deepEqual(coverage, { read: 1, changed: 2 }, job.name);
+    assert.equal(isPartial(coverage), true);
+  }
 });
 
 test("with no cut file the extract step's result is as before, whatever the piece inputs hold when empty", async () => {
@@ -533,10 +648,10 @@ function readAll(id, file, skip = 0) {
 // chunk 1 the big file's first piece, chunk 2 its second piece and the small
 // file. `skip` drops one line of a chunk's Read; `tamper` edits the chunks
 // first. Returns the lines the check wrote.
-function checkCut({ skip = {}, tamper = () => {} } = {}) {
+function checkCut({ job, skip = {}, tamper = () => {} }) {
   const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
   const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
-  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
+  const cut = split(job, diff, { READ_BUDGET: "1000" });
   const work = cut.work;
   fs.writeFileSync(
     path.join(work, ".claude-lane", "files.txt"),
@@ -585,40 +700,46 @@ function checkCut({ skip = {}, tamper = () => {} } = {}) {
 }
 
 test("the reads check counts a cut file read when every piece was fully Read in the chunk that holds it", () => {
-  assert.deepEqual(checkCut(), [
-    "::notice title=pr-review-cli reads::listed=2 unread=0 mode=report",
-  ]);
+  for (const job of LEGS) {
+    assert.deepEqual(checkCut({ job }), [
+      "::notice title=pr-review-cli reads::listed=2 unread=0 mode=report",
+    ]);
+  }
 });
 
 test("a piece Read short lists the cut file unread and names the piece", () => {
-  // Line 7 of chunk 1 is its first hunk's added line.
-  assert.deepEqual(checkCut({ skip: { 1: 7 } }), [
-    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
-    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
-    `::warning title=pr-review-cli reads::cut files not read whole: piece 1 of 2 of ${BIG} (chunk 1)`,
-  ]);
-  // The last piece short: its own name.
-  assert.deepEqual(checkCut({ skip: { 2: 6 } }).slice(1), [
-    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
-    `::warning title=pr-review-cli reads::cut files not read whole: piece 2 of 2 of ${BIG} (chunk 2)`,
-  ]);
-  // The small file short is an uncut file's result, as before.
-  assert.deepEqual(checkCut({ skip: { 2: 9 } }), [
-    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
-    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${SMALL}`,
-  ]);
+  for (const job of LEGS) {
+    // Line 7 of chunk 1 is its first hunk's added line.
+    assert.deepEqual(checkCut({ job, skip: { 1: 7 } }), [
+      "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+      `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+      `::warning title=pr-review-cli reads::cut files not read whole: piece 1 of 2 of ${BIG} (chunk 1)`,
+    ]);
+    // The last piece short: its own name.
+    assert.deepEqual(checkCut({ job, skip: { 2: 6 } }).slice(1), [
+      `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+      `::warning title=pr-review-cli reads::cut files not read whole: piece 2 of 2 of ${BIG} (chunk 2)`,
+    ]);
+    // The small file short is an uncut file's result, as before.
+    assert.deepEqual(checkCut({ job, skip: { 2: 9 } }), [
+      "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+      `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${SMALL}`,
+    ]);
+  }
 });
 
 test("a piece no chunk holds lists the cut file unread, saying its pieces do not rebuild its change", () => {
-  const drop = (dir) => {
-    const file = path.join(dir, "chunk-2.patch");
-    fs.writeFileSync(file, SMALL_DIFF);
-  };
-  assert.deepEqual(checkCut({ tamper: drop }), [
-    "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
-    `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
-    `::warning title=pr-review-cli reads::cut files not read whole: ${BIG} (its pieces do not rebuild its change)`,
-  ]);
+  for (const job of LEGS) {
+    const drop = (dir) => {
+      const file = path.join(dir, "chunk-2.patch");
+      fs.writeFileSync(file, SMALL_DIFF);
+    };
+    assert.deepEqual(checkCut({ job, tamper: drop }), [
+      "::notice title=pr-review-cli reads::listed=2 unread=1 mode=report",
+      `::warning title=pr-review-cli reads::no Read showed the whole change of 1 listed file(s): ${BIG}`,
+      `::warning title=pr-review-cli reads::cut files not read whole: ${BIG} (its pieces do not rebuild its change)`,
+    ]);
+  }
 });
 
 // --- the chunk notes the compose step writes ---
@@ -755,13 +876,15 @@ test("a chunk with no piece keeps today's note, byte for byte", async () => {
 });
 
 test("a cut file's path that is not plain is named by its header's line", async () => {
-  const odd = "src/we ird.js";
-  const diff = `${HEADER(odd)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
-  const cut = split(LEGS[0], diff, { READ_BUDGET: "1000" });
-  const prompts = await compose(LEGS[0], cut, cut.chunkDir);
-  assert.match(
-    prompts[0],
-    /^PIECE 1 OF 2 of the file whose diff --git line is line 1 of chunk-1\.patch: /mu,
-  );
-  assert.doesNotMatch(prompts[0], /we ird/u);
+  for (const job of LEGS) {
+    const odd = "src/we ird.js";
+    const diff = `${HEADER(odd)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const prompts = await compose(job, cut, cut.chunkDir);
+    assert.match(
+      prompts[0],
+      /^PIECE 1 OF 2 of the file whose diff --git line is line 1 of chunk-1\.patch: /mu,
+    );
+    assert.doesNotMatch(prompts[0], /we ird/u);
+  }
 });

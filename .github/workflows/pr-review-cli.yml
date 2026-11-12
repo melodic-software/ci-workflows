@@ -2035,17 +2035,28 @@ jobs:
             open=1
           fi
           LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
-            function named(header,   rest, p) {
+            # A header names its path only as `a/<p> b/<p>`.
+            function named(header,   rest, half, p) {
               rest = substr(header, 12)
-              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
-              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+              half = int((length(rest) - 1) / 2)
+              p = substr(rest, 3, half - 2)
+              return (rest == "a/" p " b/" p && p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
             }
-            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+            # Line i of the section, with its newline unless it is the last
+            # line of a diff that ends without one.
+            function put(i) {
+              printf "%s%s", line[i], (i == n && size_end ? "" : "\n") > cut
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last, gone) {
               if (n == 0) return
               if (bytes > budget) {
                 h = 0
                 head = 0
-                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                gone = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") {
+                  head += length(line[++h]) + 1
+                  if (line[h] ~ /^(deleted file mode |status: removed$)/) gone = 1
+                }
                 hunks = 0
                 for (i = h + 1; i <= n; i++) {
                   if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
@@ -2054,18 +2065,20 @@ jobs:
                 size[hunks] -= size_end
                 big = 0
                 for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
-                if (big > budget) {
+                if (gone) {
+                  # A deletion is one hunk of the old file: never cut.
+                } else if (big > budget) {
                   print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
                 } else if (hunks > 1) {
                   print line[1] > list
                   piece = budget
                   for (k = 1; k <= hunks; k++) {
                     if (piece + size[k] > budget) {
-                      for (i = 1; i <= h; i++) print line[i] > cut
+                      for (i = 1; i <= h; i++) put(i)
                       piece = head
                     }
                     last = k < hunks ? start[k + 1] - 1 : n
-                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    for (i = start[k]; i <= last; i++) put(i)
                     piece += size[k]
                   }
                   n = 0
@@ -2073,7 +2086,7 @@ jobs:
                   return
                 }
               }
-              for (i = 1; i <= n; i++) print line[i] > cut
+              for (i = 1; i <= n; i++) put(i)
               n = 0
               bytes = 0
             }
@@ -2127,6 +2140,9 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
+          if [ "$slices" -gt 0 ]; then
+            echo "sliced=$slices" >>"$GITHUB_OUTPUT"
+          fi
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
@@ -2436,7 +2452,7 @@ jobs:
                 return null;
               }
             };
-            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            const cutList = chunks === 1 || !env.CHUNK_DIR ? null : regular(path.join(env.CHUNK_DIR, "sliced.txt"));
             if (cutList !== null) {
               const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
               const seen = new Map();
@@ -2461,8 +2477,8 @@ jobs:
             // A piece's file: its path when plain, else where its header is.
             const nameOf = (p, k) => {
               const rest = p.header.slice("diff --git ".length);
-              const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
-              return /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+              const file = rest.slice(2, Math.floor((rest.length - 1) / 2));
+              return rest === `a/${file} b/${file}` && /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
                 ? file
                 : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
             };
@@ -2768,6 +2784,7 @@ jobs:
           CHUNK_FILES: ${{ steps.compose.outputs.chunk-files }}
           CHUNK_PIECES: ${{ steps.compose.outputs.chunk-pieces }}
           PIECE_NAMES: ${{ steps.compose.outputs.chunk-piece-names }}
+          SLICED: ${{ steps.split.outputs.sliced }}
           CHUNK_DIR: .claude-lane/chunks
           CHUNK_OUTCOMES: ${{ format('{0},{1}', steps.claude.outcome, steps.chunks.outputs.chunk-outcomes) }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
@@ -3021,14 +3038,17 @@ jobs:
             try {
               pieceNames = env.PIECE_NAMES ? JSON.parse(env.PIECE_NAMES) : [];
             } catch {}
+            // A split that cut a file always holds a piece in some chunk.
+            const cutFiles = /^[1-9][0-9]{0,5}$/u.test(env.SLICED ?? "") && chunks > 1;
             if (
-              piecesIn.length > 0 &&
+              (cutFiles && piecesIn.length === 0) ||
+              (piecesIn.length > 0 &&
               (chunks === 1 ||
                 piecesIn.length !== chunks ||
                 !piecesIn.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n)) ||
                 !Array.isArray(pieceNames) ||
                 pieceNames.length !== chunks ||
-                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string")))
+                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string"))))
             ) {
               return incomplete("the job could not read how many cut-file pieces each chunk holds");
             }
@@ -4696,17 +4716,28 @@ jobs:
             open=1
           fi
           LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
-            function named(header,   rest, p) {
+            # A header names its path only as `a/<p> b/<p>`.
+            function named(header,   rest, half, p) {
               rest = substr(header, 12)
-              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
-              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+              half = int((length(rest) - 1) / 2)
+              p = substr(rest, 3, half - 2)
+              return (rest == "a/" p " b/" p && p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
             }
-            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+            # Line i of the section, with its newline unless it is the last
+            # line of a diff that ends without one.
+            function put(i) {
+              printf "%s%s", line[i], (i == n && size_end ? "" : "\n") > cut
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last, gone) {
               if (n == 0) return
               if (bytes > budget) {
                 h = 0
                 head = 0
-                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                gone = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") {
+                  head += length(line[++h]) + 1
+                  if (line[h] ~ /^(deleted file mode |status: removed$)/) gone = 1
+                }
                 hunks = 0
                 for (i = h + 1; i <= n; i++) {
                   if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
@@ -4715,18 +4746,20 @@ jobs:
                 size[hunks] -= size_end
                 big = 0
                 for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
-                if (big > budget) {
+                if (gone) {
+                  # A deletion is one hunk of the old file: never cut.
+                } else if (big > budget) {
                   print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
                 } else if (hunks > 1) {
                   print line[1] > list
                   piece = budget
                   for (k = 1; k <= hunks; k++) {
                     if (piece + size[k] > budget) {
-                      for (i = 1; i <= h; i++) print line[i] > cut
+                      for (i = 1; i <= h; i++) put(i)
                       piece = head
                     }
                     last = k < hunks ? start[k + 1] - 1 : n
-                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    for (i = start[k]; i <= last; i++) put(i)
                     piece += size[k]
                   }
                   n = 0
@@ -4734,7 +4767,7 @@ jobs:
                   return
                 }
               }
-              for (i = 1; i <= n; i++) print line[i] > cut
+              for (i = 1; i <= n; i++) put(i)
               n = 0
               bytes = 0
             }
@@ -4788,6 +4821,9 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
+          if [ "$slices" -gt 0 ]; then
+            echo "sliced=$slices" >>"$GITHUB_OUTPUT"
+          fi
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
@@ -5097,7 +5133,7 @@ jobs:
                 return null;
               }
             };
-            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            const cutList = chunks === 1 || !env.CHUNK_DIR ? null : regular(path.join(env.CHUNK_DIR, "sliced.txt"));
             if (cutList !== null) {
               const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
               const seen = new Map();
@@ -5122,8 +5158,8 @@ jobs:
             // A piece's file: its path when plain, else where its header is.
             const nameOf = (p, k) => {
               const rest = p.header.slice("diff --git ".length);
-              const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
-              return /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+              const file = rest.slice(2, Math.floor((rest.length - 1) / 2));
+              return rest === `a/${file} b/${file}` && /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
                 ? file
                 : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
             };
@@ -5397,6 +5433,7 @@ jobs:
           CHUNK_FILES: ${{ steps.compose.outputs.chunk-files }}
           CHUNK_PIECES: ${{ steps.compose.outputs.chunk-pieces }}
           PIECE_NAMES: ${{ steps.compose.outputs.chunk-piece-names }}
+          SLICED: ${{ steps.split.outputs.sliced }}
           CHUNK_DIR: .claude-lane/chunks
           CHUNK_OUTCOMES: ${{ format('{0},{1}', steps.claude.outcome, steps.chunks.outputs.chunk-outcomes) }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
@@ -5650,14 +5687,17 @@ jobs:
             try {
               pieceNames = env.PIECE_NAMES ? JSON.parse(env.PIECE_NAMES) : [];
             } catch {}
+            // A split that cut a file always holds a piece in some chunk.
+            const cutFiles = /^[1-9][0-9]{0,5}$/u.test(env.SLICED ?? "") && chunks > 1;
             if (
-              piecesIn.length > 0 &&
+              (cutFiles && piecesIn.length === 0) ||
+              (piecesIn.length > 0 &&
               (chunks === 1 ||
                 piecesIn.length !== chunks ||
                 !piecesIn.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n)) ||
                 !Array.isArray(pieceNames) ||
                 pieceNames.length !== chunks ||
-                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string")))
+                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string"))))
             ) {
               return incomplete("the job could not read how many cut-file pieces each chunk holds");
             }
@@ -7330,17 +7370,28 @@ jobs:
             open=1
           fi
           LC_ALL=C awk -v budget="$READ_BUDGET" -v open="$open" -v cut="$CHUNK_DIR/sliced.diff" -v list="$sliced" '
-            function named(header,   rest, p) {
+            # A header names its path only as `a/<p> b/<p>`.
+            function named(header,   rest, half, p) {
               rest = substr(header, 12)
-              p = substr(substr(rest, 1, int((length(rest) - 1) / 2)), 3)
-              return (p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
+              half = int((length(rest) - 1) / 2)
+              p = substr(rest, 3, half - 2)
+              return (rest == "a/" p " b/" p && p ~ /^[A-Za-z0-9._\/@+-]+$/ && length(p) <= 500) ? p : "a file"
             }
-            function flush(   i, h, k, hunks, start, size, head, piece, big, last) {
+            # Line i of the section, with its newline unless it is the last
+            # line of a diff that ends without one.
+            function put(i) {
+              printf "%s%s", line[i], (i == n && size_end ? "" : "\n") > cut
+            }
+            function flush(   i, h, k, hunks, start, size, head, piece, big, last, gone) {
               if (n == 0) return
               if (bytes > budget) {
                 h = 0
                 head = 0
-                while (h < n && substr(line[h + 1], 1, 2) != "@@") head += length(line[++h]) + 1
+                gone = 0
+                while (h < n && substr(line[h + 1], 1, 2) != "@@") {
+                  head += length(line[++h]) + 1
+                  if (line[h] ~ /^(deleted file mode |status: removed$)/) gone = 1
+                }
                 hunks = 0
                 for (i = h + 1; i <= n; i++) {
                   if (substr(line[i], 1, 2) == "@@") start[++hunks] = i
@@ -7349,18 +7400,20 @@ jobs:
                 size[hunks] -= size_end
                 big = 0
                 for (k = 1; k <= hunks; k++) if (head + size[k] > big) big = head + size[k]
-                if (big > budget) {
+                if (gone) {
+                  # A deletion is one hunk of the old file: never cut.
+                } else if (big > budget) {
                   print "::warning::" named(line[1]) ": one hunk of " big " bytes with its header is larger than one chunk of " budget " bytes, so the file cannot be cut at its hunks; the diff is reviewed unsplit, as a partial review"
                 } else if (hunks > 1) {
                   print line[1] > list
                   piece = budget
                   for (k = 1; k <= hunks; k++) {
                     if (piece + size[k] > budget) {
-                      for (i = 1; i <= h; i++) print line[i] > cut
+                      for (i = 1; i <= h; i++) put(i)
                       piece = head
                     }
                     last = k < hunks ? start[k + 1] - 1 : n
-                    for (i = start[k]; i <= last; i++) print line[i] > cut
+                    for (i = start[k]; i <= last; i++) put(i)
                     piece += size[k]
                   }
                   n = 0
@@ -7368,7 +7421,7 @@ jobs:
                   return
                 }
               }
-              for (i = 1; i <= n; i++) print line[i] > cut
+              for (i = 1; i <= n; i++) put(i)
               n = 0
               bytes = 0
             }
@@ -7422,6 +7475,9 @@ jobs:
             files="$files${files:+,}$n"
           done
           { echo "chunks=$chunks"; echo "files=$files"; echo "excluded=$excluded"; } >>"$GITHUB_OUTPUT"
+          if [ "$slices" -gt 0 ]; then
+            echo "sliced=$slices" >>"$GITHUB_OUTPUT"
+          fi
           echo "::notice title=pr-review-cli chunks::chunks=$chunks bytes=$SCOPE_BYTES distinct-bytes=$distinct_bytes files=$files excluded=$excluded$cut_note"
 
       # Review threads a listed account resolved or a listed person
@@ -7731,7 +7787,7 @@ jobs:
                 return null;
               }
             };
-            const cutList = chunks === 1 ? null : regular(path.join(env.CHUNK_DIR ?? "", "sliced.txt"));
+            const cutList = chunks === 1 || !env.CHUNK_DIR ? null : regular(path.join(env.CHUNK_DIR, "sliced.txt"));
             if (cutList !== null) {
               const cutHeaders = new Set(cutList.split("\n").filter(Boolean));
               const seen = new Map();
@@ -7756,8 +7812,8 @@ jobs:
             // A piece's file: its path when plain, else where its header is.
             const nameOf = (p, k) => {
               const rest = p.header.slice("diff --git ".length);
-              const file = rest.slice(0, Math.floor((rest.length - 1) / 2)).slice(2);
-              return /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
+              const file = rest.slice(2, Math.floor((rest.length - 1) / 2));
+              return rest === `a/${file} b/${file}` && /^[A-Za-z0-9._/@+-]{1,500}$/u.test(file)
                 ? file
                 : `the file whose diff --git line is line ${p.at} of chunk-${k}.patch`;
             };
@@ -8029,6 +8085,7 @@ jobs:
           CHUNK_FILES: ${{ steps.compose.outputs.chunk-files }}
           CHUNK_PIECES: ${{ steps.compose.outputs.chunk-pieces }}
           PIECE_NAMES: ${{ steps.compose.outputs.chunk-piece-names }}
+          SLICED: ${{ steps.split.outputs.sliced }}
           CHUNK_DIR: .claude-lane/chunks
           CHUNK_OUTCOMES: ${{ format('{0},{1}', steps.claude.outcome, steps.chunks.outputs.chunk-outcomes) }}
           COPIES: ${{ steps.full-diff.outputs.copies }}
@@ -8282,14 +8339,17 @@ jobs:
             try {
               pieceNames = env.PIECE_NAMES ? JSON.parse(env.PIECE_NAMES) : [];
             } catch {}
+            // A split that cut a file always holds a piece in some chunk.
+            const cutFiles = /^[1-9][0-9]{0,5}$/u.test(env.SLICED ?? "") && chunks > 1;
             if (
-              piecesIn.length > 0 &&
+              (cutFiles && piecesIn.length === 0) ||
+              (piecesIn.length > 0 &&
               (chunks === 1 ||
                 piecesIn.length !== chunks ||
                 !piecesIn.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n)) ||
                 !Array.isArray(pieceNames) ||
                 pieceNames.length !== chunks ||
-                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string")))
+                !pieceNames.every((list) => Array.isArray(list) && list.every((name) => typeof name === "string"))))
             ) {
               return incomplete("the job could not read how many cut-file pieces each chunk holds");
             }
