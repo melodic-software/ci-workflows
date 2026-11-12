@@ -203,7 +203,8 @@ function validCoverage(coverage) {
     absentOrPositive(coverage.over_files) &&
     absentOrPaths(coverage.data_files) &&
     absentOrPaths(coverage.binary_files) &&
-    absentOrPaths(coverage.unread_files)
+    absentOrPaths(coverage.unread_files) &&
+    (coverage.reads_checked === undefined || coverage.reads_checked === false)
   );
 }
 
@@ -221,7 +222,11 @@ function named(paths) {
 // The files read, then the generated data files the review never read.
 function coverageText(coverage) {
   const data = coverage.data_files ?? [];
-  return `read ${coverage.read} of ${coverage.changed} changed file(s)${
+  const unchecked =
+    coverage.reads_checked === false
+      ? "; per-file read check skipped: the CLI's Read output format was not recognised"
+      : "";
+  return `read ${coverage.read} of ${coverage.changed} changed file(s)${unchecked}${
     data.length === 0
       ? ""
       : `; ${data.length} data file(s) not reviewed: ${named(data)}`

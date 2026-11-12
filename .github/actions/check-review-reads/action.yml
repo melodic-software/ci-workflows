@@ -4,15 +4,22 @@ description: >-
   shows read. It reads each review's execution file (run-claude-cli's, and
   run-review-chunks' chunk-<k>/execution.json for a later chunk) for the Read
   calls of the review and its subagents. A listed file is read only when, in
-  the transcript of the review that holds it, Read printed every non-empty
-  line of each of its sections in a diff file the job wrote, with the scope
-  diff's own text. Every listed file without that evidence lowers the read
-  count, which makes the review partial, and is named in the coverage
-  (`unread_files`) and a warning, by path only when the path is plain. A
-  missing or unparseable transcript or diff leaves its files unread; a list
-  of files to read the job cannot back makes the review incomplete. A
-  verdict other than `complete` passes through. It prints no transcript
-  text and writes no artifact. Needs node on PATH.
+  the transcript of the review that holds it, Read results gave the line
+  number of every non-empty line of each of its sections in a diff file the
+  job wrote whose section text is the scope diff's own: the structured range
+  the CLI records with a result, else the numbers it prints. It compares line
+  numbers only, so a line the tool truncates still counts. For a file on the
+  job's binary-files list only the section's lines before its first hunk
+  count. Every listed file without that evidence lowers the read count, which
+  makes the review partial, and is named in the coverage (`unread_files`) and
+  a warning, by path only when the path is plain. A missing or unparseable
+  transcript or diff leaves its files unread; a list of files to read the job
+  cannot back makes the review incomplete. When Read results of the job's
+  diff files exist but none gives a line number, the CLI's Read output
+  changed shape: the check does not run, the extract step's count stands,
+  `reads-checked` is `false`, the coverage says so, and a warning names the
+  reason. A verdict other than `complete` passes through. It prints no
+  transcript text and writes no artifact. Needs node on PATH.
 
 inputs:
   review:
@@ -42,6 +49,16 @@ inputs:
   to-read:
     description: The full-diff step's count of the to-read list it wrote; empty when it wrote none.
     required: true
+  excluded:
+    description: The copies and renames the split step left out of its diff; empty when none.
+    required: true
+  binary:
+    description: The full-diff step's binary-file count for a whole review; empty otherwise.
+    required: true
+  binary-list:
+    description: The binary-file list the full-diff step writes.
+    required: false
+    default: .claude-lane/binary-files.txt
   to-read-file:
     description: The to-read list the full-diff step writes.
     required: false
@@ -58,6 +75,9 @@ outputs:
   verdict:
     description: "`complete`, or the reason no completed review was found."
     value: ${{ steps.check.outputs.verdict }}
+  reads-checked:
+    description: "`true` when the per-file check ran, `false` when the CLI's Read output was not recognised; empty unless the verdict is complete."
+    value: ${{ steps.check.outputs.reads-checked }}
 
 runs:
   using: composite
@@ -76,5 +96,8 @@ runs:
         FILE_LIST: ${{ inputs.file-list }}
         TO_READ: ${{ inputs.to-read }}
         TO_READ_FILE: ${{ inputs.to-read-file }}
+        EXCLUDED: ${{ inputs.excluded }}
+        BINARY: ${{ inputs.binary }}
+        BINARY_LIST: ${{ inputs.binary-list }}
         CHUNK_DIR: ${{ inputs.chunk-dir }}
       run: node "$GITHUB_ACTION_PATH/reads.cjs"

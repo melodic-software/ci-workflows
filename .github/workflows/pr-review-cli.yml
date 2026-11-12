@@ -3051,6 +3051,8 @@ jobs:
           scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
           file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
           to-read: ${{ steps.full-diff.outputs.to-read }}
+          excluded: ${{ steps.split.outputs.excluded }}
+          binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
@@ -5484,6 +5486,8 @@ jobs:
           scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
           file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
           to-read: ${{ steps.full-diff.outputs.to-read }}
+          excluded: ${{ steps.split.outputs.excluded }}
+          binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a
@@ -7920,6 +7924,8 @@ jobs:
           scope-diff: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental.diff' || '.claude-lane/pr.diff' }}
           file-list: ${{ steps.scope.outputs.scope == 'incremental' && '.claude-lane/incremental-files.txt' || '.claude-lane/files.txt' }}
           to-read: ${{ steps.full-diff.outputs.to-read }}
+          excluded: ${{ steps.split.outputs.excluded }}
+          binary: ${{ steps.scope.outputs.scope != 'incremental' && steps.full-diff.outputs.binary || '' }}
 
       # No model runs here. The review and the last marker's summary are
       # model text, and the runner drops a job output whose value contains a

@@ -1686,11 +1686,16 @@ is `incomplete`. The job then holds the read count to its own evidence
 (`.github/actions/check-review-reads`): a file of the scope's list (or of
 `.claude-lane/to-read.txt` when copies or verified renames count as read) is
 read only when the transcript of the review that holds it, its subagents
-included, shows Read results printing every non-empty line of each of its
-sections in a diff file the job wrote. Each file without that evidence lowers
-the count, so the review is `partial`, and is named after `no read evidence
-for` on the status line when its path is plain. A missing or unparseable
-transcript or diff leaves its files unread.
+included, shows Read results giving the line number of every non-empty line
+of each of its sections in a diff file the job wrote. It compares line
+numbers, not text, so a line the tool truncates still counts; for a file on
+the job's binary-files list only the lines before its first hunk count. Each
+file without that evidence lowers the count, so the review is `partial`, and
+is named after `no read evidence for` on the status line when its path is
+plain. A missing or unparseable transcript or diff leaves its files unread.
+When Read results of the job's diff files exist but none gives a line number,
+the CLI's Read output changed shape: the check does not run, the model's count
+stands as before, and the status line says `per-file read check skipped`.
 
 **Identical copies.** Changed files whose whole change is
 identical (modifications with the same content and mode before and after, or
