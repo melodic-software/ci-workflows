@@ -3485,7 +3485,7 @@ test("an incremental review counts the declared copies in its scope as read, in 
     );
     assert.match(
       review.prompt,
-      /files_read counts\nthe first path only/u,
+      /count the first path in files_read like any other\nfile, never its copies/u,
       job.name,
     );
     // A review that read one distinct file fewer stays partial.
@@ -3561,7 +3561,7 @@ test("the prompt names the identical files only for a review that holds them onc
   assert.match(await compose({ COPIES: "8", SCOPE: "incremental" }), line);
   assert.match(
     await compose({ COPIES: "8", SCOPE: "whole" }),
-    /files_read counts\nthe first path only/u,
+    /count the first path in files_read like any other\nfile, never its copies/u,
   );
   assert.match(
     await compose({ COPIES: "8", SCOPE: "whole" }),
@@ -5000,7 +5000,7 @@ test("files_read counts against the scope's file list, with no deletion left for
       assert.match(prompt, /\(38 files of the scope's file list\)/u, job.name);
       assert.match(
         prompt,
-        /files_read counts the listed files of this chunk you read every hunk of, so a chunk read whole\nreturns 38\./u,
+        /TO READ: the 38 files of the scope's file list in this chunk are the files to read\.\nCount only these in files_read, each once you read every hunk of it:\na review that read all of them returns files_read 38\. The other listed files are context, never counted\./u,
         job.name,
       );
       assert.match(
@@ -6146,7 +6146,8 @@ function renameRepo(base, head) {
     return git(origin, "rev-parse", "HEAD");
   };
   const baseSha = commit(base(write) ?? []);
-  const headSha = commit(head({ write, move }) ?? []);
+  const remove = (file) => fs.rmSync(path.join(origin, file));
+  const headSha = commit(head({ write, move, remove }) ?? []);
   let n = 0;
   const clone = () => {
     const work = path.join(dir, `work-${n++}`);
@@ -6687,4 +6688,236 @@ test("the split, compose and extract steps read the full-diff step's renames, in
         `\${{ steps.full-diff.outputs.renames }}`,
         `${job.name} ${s}`,
       );
+});
+
+// Lists the renames the full-diff step verified for `repo`, sorted.
+function verifiedRenames(repo, job = key, env = {}) {
+  const work = repo.clone();
+  const { out } = runLegStep(
+    repo,
+    work,
+    job,
+    "full-diff",
+    fullDiffEnv(repo, env),
+  );
+  const file = path.join(work, ".claude-lane/renames.txt");
+  return {
+    out,
+    work,
+    list: fs.existsSync(file)
+      ? fs.readFileSync(file, "utf8").trim().split("\n").sort()
+      : [],
+  };
+}
+
+test("a rename at a path that is not plain, or over 500 characters, is an ordinary file, in every leg", () => {
+  const long = `${Array.from({ length: 5 }, (_, i) => `${i}`.repeat(100)).join("/")}/f.md`;
+  assert.ok(long.length > 500);
+  const moves = [
+    ["docs/plain.md", "docs/moved/plain.md"],
+    ["docs/my guide.md", "docs/moved/my guide.md"],
+    ["docs/t\tx.md", "docs/moved/t\tx.md"],
+    ["docs/n\nx.md", "docs/moved/n\nx.md"],
+    ["docs/é.md", "docs/moved/é.md"],
+    [long, `moved/${long}`],
+  ];
+  const repo = renameRepo(
+    (write) => {
+      for (const [from] of moves) write(from, `content of ${from}\n`);
+    },
+    ({ move }) => {
+      for (const [from, to] of moves) move(from, to);
+    },
+  );
+  for (const job of [key, subscription, fallback]) {
+    const { out, list } = verifiedRenames(repo, job);
+    assert.deepEqual(list, ["docs/plain.md\tdocs/moved/plain.md"], job.name);
+    assert.equal(out.renames, "1", job.name);
+  }
+});
+
+// A base holding `O` and `O b/R`: moving `O` unchanged to `R b/O b/R` and
+// deleting `O b/R` gives both sections the header
+// `diff --git a/O b/R b/O b/R`. 45 edited files put the diff over the file
+// cap, so the split step cuts it.
+test("a rename whose section header another section shares leaves no section out of the review", () => {
+  const repo = renameRepo(
+    (write) => {
+      write("O", "moved unchanged\n");
+      write("O b/R", "deleted whole\n");
+      for (let i = 0; i < 45; i++) write(`src/f${i}.js`, `v1 ${i}\n`);
+    },
+    ({ write, move, remove }) => {
+      move("O", "R b/O b/R");
+      remove("O b/R");
+      for (let i = 0; i < 45; i++) write(`src/f${i}.js`, `v2 ${i}\n`);
+    },
+  );
+  const { out, list, work } = verifiedRenames(repo);
+  assert.deepEqual(list, []);
+  assert.equal(out.renames, "0");
+  const header = "diff --git a/O b/R b/O b/R";
+  const diff = fs.readFileSync(path.join(work, ".claude-lane/pr.diff"), "utf8");
+  assert.equal(diff.split("\n").filter((l) => l === header).length, 2);
+  const cut = runLegStep(
+    repo,
+    work,
+    key,
+    "split",
+    splitEnv(standInSplitter(repo.dir), out),
+  ).out;
+  assert.equal(cut.excluded, "0");
+  const chunked = Array.from({ length: Number(cut.chunks) }, (_, k) =>
+    fs.readFileSync(
+      path.join(work, step(key, "split").env.CHUNK_DIR, `chunk-${k + 1}.patch`),
+      "utf8",
+    ),
+  ).join("");
+  assert.equal(chunked.split("\n").filter((l) => l === header).length, 2);
+  assert.match(chunked, /^deleted file mode 100644$/mu);
+});
+
+test("a move into a path that runs, loads or publishes the file is an ordinary file, in every leg", () => {
+  const into = [
+    "plugins/p/SKILL.md",
+    "plugins/p/skills/a/notes.md",
+    "plugins/p/agents/a.md",
+    "plugins/p/commands/c.md",
+    "plugins/p/hooks/h.md",
+    "plugins/p/.claude-plugin/plugin.json",
+    "x/.claude/notes.md",
+    "CLAUDE.md",
+    "docs/AGENTS.md",
+    "tests/conftest.py",
+    "web/vite.config.js",
+    "web/a.config.mjs",
+    "web/b.config.cjs",
+    "web/c.config.ts",
+    ".devcontainer/devcontainer.json",
+    ".vscode/settings.json",
+    "web/.npmrc",
+    "build/Makefile",
+    "docker/Dockerfile.dev",
+    "docs/CODEOWNERS",
+    "web/package.json",
+    "pyproject.toml",
+  ];
+  const moves = [
+    ...into.map((to, i) => [`src/m${i}.txt`, to]),
+    // From a loader path out to an ordinary one.
+    ["plugins/q/agents/old.md", "docs/old.md"],
+    // Between two ordinary source directories: still verified.
+    ["src/a/x.js", "lib/b/x.js"],
+  ];
+  const repo = renameRepo(
+    (write) => {
+      for (const [from] of moves) write(from, `content of ${from}\n`);
+    },
+    ({ move }) => {
+      for (const [from, to] of moves) move(from, to);
+    },
+  );
+  assert.match(workflow.env.RENAME_HELD_PATHS, /^\*\*\/SKILL\.md$/mu);
+  for (const job of [key, subscription, fallback]) {
+    assert.equal(job.env?.RENAME_HELD_PATHS, undefined, job.name);
+    for (const s of job.steps)
+      assert.equal(s.env?.RENAME_HELD_PATHS, undefined, s.name);
+    const { list } = verifiedRenames(repo, job);
+    assert.deepEqual(list, ["src/a/x.js\tlib/b/x.js"], job.name);
+  }
+});
+
+// 3 files to read (a copy group's first path and 2 edits), 4 copies and 5
+// verified renames: 12 changed.
+test("the model gets the files it must read and the exact files_read a complete review returns", async () => {
+  const repo = renameRepo(
+    (write) => {
+      for (const p of ["a", "b", "c", "d", "e"]) write(`${p}/lib.mjs`, "old\n");
+      for (const i of [0, 1]) write(`src/e${i}.js`, `e${i} v1\n`);
+      for (const i of [0, 1, 2, 3, 4]) write(`docs/g${i}.md`, `g${i}\n`);
+    },
+    ({ write, move }) => {
+      for (const p of ["a", "b", "c", "d", "e"])
+        write(`${p}/lib.mjs`, "synced\n");
+      for (const i of [0, 1]) write(`src/e${i}.js`, `e${i} v2\n`);
+      for (const i of [0, 1, 2, 3, 4])
+        move(`docs/g${i}.md`, `docs/moved/g${i}.md`);
+    },
+  );
+  const { out, work } = verifiedRenames(repo);
+  assert.equal(out.files, "12");
+  assert.equal(out.copies, "4");
+  assert.equal(out.renames, "5");
+  assert.equal(out["to-read"], "3");
+  assert.equal(
+    fs.readFileSync(path.join(work, ".claude-lane/to-read.txt"), "utf8"),
+    "a/lib.mjs\nsrc/e0.js\nsrc/e1.js\n",
+  );
+  const prompt = fs.readFileSync(
+    (
+      await composeOutputs({
+        SCOPE: "whole",
+        COPIES: out.copies,
+        RENAMES: out.renames,
+        TO_READ: out["to-read"],
+        CHUNKS: "1",
+      })
+    )["prompt-file"],
+    "utf8",
+  );
+  assert.match(
+    prompt,
+    /^TO READ: \.claude-lane\/to-read\.txt lists the 3 files /mu,
+  );
+  assert.match(prompt, /a review that read all of them returns files_read 3/u);
+  assert.doesNotMatch(prompt, /files_read counts the first path only/u);
+  const coverage = async (filesRead) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read: filesRead,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          {
+            WHOLE_FILES: out.files,
+            SCOPE_DIFF: path.join(work, ".claude-lane/pr.diff"),
+            SCOPE_BYTES: out.bytes,
+            COPIES: out.copies,
+            RENAMES: out.renames,
+            CHUNKS: "1",
+          },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(3), { read: 12, changed: 12, renames: 5 });
+  assert.deepEqual(await coverage(2), { read: 11, changed: 12, renames: 5 });
+  // A count past the files to read is clamped to them.
+  assert.deepEqual(await coverage(12), { read: 12, changed: 12, renames: 5 });
+  assert.deepEqual(await coverage(99), { read: 12, changed: 12, renames: 5 });
+  // With no copies or renames there is no list and no statement.
+  const plain = verifiedRenames(
+    renameRepo(
+      (write) => write("a.js", "1\n"),
+      ({ write }) => write("a.js", "2\n"),
+    ),
+  );
+  assert.equal(plain.out["to-read"], undefined);
+  assert.equal(
+    fs.existsSync(path.join(plain.work, ".claude-lane/to-read.txt")),
+    false,
+  );
+});
+
+test("the compose step reads the full-diff step's to-read count, in every leg", () => {
+  for (const job of [key, subscription, fallback])
+    assert.equal(
+      step(job, "compose").env.TO_READ,
+      `\${{ steps.full-diff.outputs.to-read }}`,
+      job.name,
+    );
 });

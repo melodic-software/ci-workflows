@@ -1712,9 +1712,20 @@ and whose mode is a non-executable regular file's on both counts. A rename
 whose old or new path matches `hold-paths` or SENSITIVE_PATHS (the paths
 listed under identical copies above), or whose new path is under
 `.github/workflows/`, an executable, a symlink, or a rename with any content
-or mode change, is an ordinary changed file and is read. The prompt names
-every listed rename and asks the review to check each new path for what still
-names the old one and what the new location does to the file. The review's
+or mode change, is an ordinary changed file and is read. So is a rename whose
+old or new path is quoted or not a plain path of letters, digits and
+`._/@+-`, or is over 500 characters, and one from or into a path where a file
+is run, loaded or published by where it sits (RENAME_HELD_PATHS: `SKILL.md`,
+`skills/`, `agents/`, `commands/`, `hooks/`, `.claude-plugin/`, `.claude/`,
+`CLAUDE.md`, `AGENTS.md`, `conftest.py`, `*.config.{js,mjs,cjs,ts}`, the root
+`.devcontainer/` and `.vscode/`, `.npmrc`, `Makefile`, `Dockerfile*`,
+`CODEOWNERS`, `package.json`, `pyproject.toml`). With an empty
+SENSITIVE_PATHS list no rename is verified. The number of verified renames is
+not capped. The prompt names every listed rename and asks the review to check
+each new path for what still names the old one and to read a file whose new
+path makes it run, load or publish differently. When copies or renames count
+as read, `.claude-lane/to-read.txt` lists the other files in scope and the
+prompt states the exact `files_read` a complete review returns. The review's
 summary ends with `Verified renames: <n> of <m> changed file(s) ...` and its
 coverage carries `renames`, so the read count shows why. An incremental review
 lists none.
