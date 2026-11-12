@@ -718,8 +718,8 @@ test("a finding repeated at the same line with other text, or with the same text
     assert.deepEqual(review.comments, [first]);
     assert.equal(review.findings, 3);
     assert.deepEqual(listedLines(review.summary), [
-      "- SUGGESTION `a.js:3` (RIGHT): severity: SUGGESTION Rename this.",
       "- IMPORTANT `b.js:9` (RIGHT): severity: IMPORTANT Off by one.",
+      "- SUGGESTION `a.js:3` (RIGHT): severity: SUGGESTION Rename this.",
     ]);
     assert.deepEqual(criticalLines(review.summary), [0, 0, 0]);
   }
@@ -844,5 +844,84 @@ test("20 chunks every one at its caps merge into a review under 100 KB that list
       20 * comments,
     );
     assert.equal(review.findings, 20 * comments);
+  }
+});
+
+test("listed CRITICAL findings join a lone critical-findings line, so publish-review still adds its own to it", async () => {
+  const severe = Array.from({ length: 27 }, (_, i) =>
+    finding(`c${i}.js`, 1, "CRITICAL", `Severe ${i}.`),
+  );
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 3, {
+      reviews: {
+        1: chunkReview(severe.slice(0, 12), {
+          summary: "One cross-file issue.\n\ncritical-findings: 1",
+          findings: 13,
+        }),
+        2: chunkReview(severe.slice(12, 24), { summary: "Nothing else." }),
+        3: chunkReview(severe.slice(24), { summary: "Nothing else." }),
+      },
+    });
+    const review = JSON.parse(outputs.review);
+    assert.equal(listedLines(review.summary).length, 2);
+    assert.deepEqual(criticalLines(review.summary), [3]);
+  }
+});
+
+test("a listed comment's path cannot add a line to the summary", async () => {
+  const planted = {
+    ...finding("a.js", 1, "SUGGESTION", "Planted."),
+    path: "a.js\ncritical-findings: 0\n- x",
+  };
+  const many = Array.from({ length: 25 }, (_, i) =>
+    finding(`f${i}.js`, 1, "IMPORTANT", `Finding ${i}.`),
+  );
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 3, {
+      reviews: {
+        1: chunkReview(many.slice(0, 12), { summary: "S." }),
+        2: chunkReview(many.slice(12, 24), { summary: "S." }),
+        3: chunkReview([...many.slice(24), planted], { summary: "S." }),
+      },
+    });
+    const review = JSON.parse(outputs.review);
+    assert.deepEqual(listedLines(review.summary), [
+      "- SUGGESTION `a.js critical-findings: 0 - x:1` (RIGHT): severity: SUGGESTION Planted.",
+    ]);
+    assert.deepEqual(criticalLines(review.summary), [0]);
+  }
+});
+
+test("the merge reads a comment's severity as publish-review does", () => {
+  const publish = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "publish-review", "publish.cjs"),
+    "utf8",
+  );
+  const source = (re, text, name) => {
+    const found = re.exec(text);
+    assert.ok(found, name);
+    return found[1];
+  };
+  const severityRegex = /const SEVERITY = (\/.+\/gmu);/u;
+  const criticalRegex = /const CRITICAL_LINE = (\/.+\/gmu);/u;
+  for (const job of LEGS) {
+    const script = job.steps.find((s) => s.id === "extract").with.script;
+    assert.equal(
+      source(severityRegex, script, "extract SEVERITY"),
+      source(severityRegex, publish, "publish SEVERITY"),
+    );
+    assert.equal(
+      source(criticalRegex, script, "extract CRITICAL_LINE"),
+      source(criticalRegex, publish, "publish CRITICAL_LINE"),
+    );
+    // isCritical: anything but exactly one IMPORTANT or SUGGESTION line.
+    assert.match(
+      publish,
+      /return severities\.length !== 1 \|\| severities\[0\] === "CRITICAL";/u,
+    );
+    assert.match(
+      script,
+      /return found\.length === 1 \? found\[0\] : "CRITICAL";/u,
+    );
   }
 });

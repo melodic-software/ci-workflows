@@ -2857,26 +2857,35 @@ jobs:
             // when no chunk's summary has that line, the summary-only
             // findings, which publish-review would otherwise count as
             // CRITICAL.
-            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            // publish-review's CRITICAL_LINE: it adds its own demoted
+            // findings to the line only when the summary has exactly one, so
+            // the listed CRITICAL findings join a lone line rather than
+            // adding a second.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
             const summaryOf = (excerpt) => {
               if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow.map((c) => {
-                const text = plain(c.body);
-                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
-              });
+              const entries = overflow
+                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
+                .map((c) => {
+                  const text = plain(c.body);
+                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                });
               const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              const lines = (head.match(CRITICAL_LINE) ?? []).length;
+              const counted =
+                lines === 1
+                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
+                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
               return (
                 [
-                  head,
+                  counted[0],
                   "",
                   `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
                   "",
                   ...entries,
-                  "",
-                  `critical-findings: ${counted}`,
+                  ...counted.slice(1),
                 ].join("\n") +
                 moved +
                 ceiling
@@ -5199,26 +5208,35 @@ jobs:
             // when no chunk's summary has that line, the summary-only
             // findings, which publish-review would otherwise count as
             // CRITICAL.
-            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            // publish-review's CRITICAL_LINE: it adds its own demoted
+            // findings to the line only when the summary has exactly one, so
+            // the listed CRITICAL findings join a lone line rather than
+            // adding a second.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
             const summaryOf = (excerpt) => {
               if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow.map((c) => {
-                const text = plain(c.body);
-                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
-              });
+              const entries = overflow
+                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
+                .map((c) => {
+                  const text = plain(c.body);
+                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                });
               const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              const lines = (head.match(CRITICAL_LINE) ?? []).length;
+              const counted =
+                lines === 1
+                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
+                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
               return (
                 [
-                  head,
+                  counted[0],
                   "",
                   `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
                   "",
                   ...entries,
-                  "",
-                  `critical-findings: ${counted}`,
+                  ...counted.slice(1),
                 ].join("\n") +
                 moved +
                 ceiling
@@ -7544,26 +7562,35 @@ jobs:
             // when no chunk's summary has that line, the summary-only
             // findings, which publish-review would otherwise count as
             // CRITICAL.
-            const CRITICAL_LINE = /^\s*`?critical-findings: \d{1,6}`?\s*$/gmu;
+            // publish-review's CRITICAL_LINE: it adds its own demoted
+            // findings to the line only when the summary has exactly one, so
+            // the listed CRITICAL findings join a lone line rather than
+            // adding a second.
+            const CRITICAL_LINE = /^(\s*`?critical-findings: )(\d{1,6})(`?\s*)$/gmu;
             const summaryOf = (excerpt) => {
               if (overflow.length === 0) return head + moved + ceiling;
-              const entries = overflow.map((c) => {
-                const text = plain(c.body);
-                const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
-                return `- ${severity(c.body)} \`${c.path}:${c.line}\` (${c.side})${shown}`;
-              });
+              const entries = overflow
+                .toSorted((a, b) => RANK[severity(a.body)] - RANK[severity(b.body)])
+                .map((c) => {
+                  const text = plain(c.body);
+                  const shown = excerpt === 0 ? "" : `: ${text.length > excerpt ? `${text.slice(0, excerpt)}...` : text}`;
+                  return `- ${severity(c.body)} \`${plain(c.path)}:${c.line}\` (${c.side})${shown}`;
+                });
               const critical = overflow.filter((c) => severity(c.body) === "CRITICAL").length;
               const summaryOnly = Math.max(findings - comments.length - overflow.length - malformed.length, 0);
-              const counted = critical + ((head.match(CRITICAL_LINE) ?? []).length === 0 ? summaryOnly : 0);
+              const lines = (head.match(CRITICAL_LINE) ?? []).length;
+              const counted =
+                lines === 1
+                  ? [head.replace(CRITICAL_LINE, (_, before, count, after) => `${before}${Number(count) + critical}${after}`)]
+                  : [head, "", `critical-findings: ${critical + (lines === 0 ? summaryOnly : 0)}`];
               return (
                 [
-                  head,
+                  counted[0],
                   "",
                   `Findings not posted inline (past the ${INLINE}-comment cap, or repeated across chunks), most severe first:`,
                   "",
                   ...entries,
-                  "",
-                  `critical-findings: ${counted}`,
+                  ...counted.slice(1),
                 ].join("\n") +
                 moved +
                 ceiling
