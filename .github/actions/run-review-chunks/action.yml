@@ -1,0 +1,219 @@
+name: Run Review Chunks
+description: >-
+  Run chunks chunk-first..chunk-last of a chunked pull request review in one
+  step, in order, each as one run-claude-cli leg on
+  `<prompt-dir>/prompt-<k>.md` with the same credential and tool rules. It
+  verifies the isolation contract and installs the CLI once, as
+  run-claude-cli does, then runs that action's `lane.cjs run` per chunk, so
+  every leg keeps run-claude-cli's protections: its own environment
+  scrubbed, this step's file-command files and the CLI install bound
+  read-only while it runs. A chunk runs only after the one before it
+  succeeded and handed nothing on; the first failure or handoff stops the
+  loop and the later chunks are `skipped`. Each chunk's structured output,
+  log and execution file land in `<results-dir>/chunk-<k>/` (structured.json,
+  log.jsonl, execution.json). The step fails when a chunk failed.
+
+inputs:
+  lane:
+    description: As run-claude-cli's.
+    required: true
+  role:
+    description: As run-claude-cli's.
+    required: true
+  prompt-dir:
+    description: The directory holding prompt-<k>.md for every chunk this step runs.
+    required: true
+  chunk-first:
+    description: The first chunk this step runs, a whole number.
+    required: true
+  chunk-last:
+    description: The last chunk this step runs, a whole number no lower than chunk-first.
+    required: true
+  preamble:
+    description: As run-claude-cli's, with its default.
+    required: false
+    default: >-
+      You are running unattended in GitHub Actions: no person can answer a
+      question or approve a prompt during this run. Report what you did, and
+      anything left undone, on the issue or pull request you were given. When
+      a step needs a person's decision, say so there and apply the
+      repository's human-gated label instead of guessing.
+  api-key:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  subscription-token:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  fallback-token:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  fallback-ready:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  model:
+    description: As run-claude-cli's.
+    required: true
+  effort:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  max-turns:
+    description: As run-claude-cli's.
+    required: true
+  permission-mode:
+    description: As run-claude-cli's.
+    required: true
+  allowed-tools:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  disallowed-tools:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  tools:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  sandbox:
+    description: As run-claude-cli's.
+    required: false
+    default: "true"
+  plugin-dirs:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  add-dirs:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  json-schema-file:
+    description: As run-claude-cli's.
+    required: false
+    default: ""
+  cli-version:
+    description: As run-claude-cli's.
+    required: false
+    default: latest
+  watchdog-max-wait-ms:
+    description: As run-claude-cli's.
+    required: false
+    default: "1800000"
+  leg-timeout-minutes:
+    description: As run-claude-cli's, for each chunk's leg.
+    required: false
+    default: "30"
+
+outputs:
+  lane-class:
+    description: >-
+      The failure class of the chunk that stopped the loop, as run-claude-cli's
+      lane-class; empty when every chunk succeeded.
+    value: >-
+      ${{ steps.loop.outputs.lane-class
+      || (steps.isolation.outcome == 'success' && steps.install.outcome == 'failure' && 'install-failed')
+      || (steps.loop.outcome != 'success' && 'other')
+      || '' }}
+  handoff:
+    description: The last chunk that ran's handoff, as run-claude-cli's.
+    value: ${{ steps.loop.outputs.handoff }}
+  handoff-reason:
+    description: The last chunk that ran's handoff-reason, as run-claude-cli's.
+    value: ${{ steps.loop.outputs.handoff-reason }}
+  credential:
+    description: Secret NAME the legs ran on, never its value.
+    value: ${{ steps.loop.outputs.credential }}
+  execution-file:
+    description: The last chunk that ran's execution file, as run-claude-cli's.
+    value: ${{ steps.loop.outputs.execution-file }}
+  execution-file-clean:
+    description: The last chunk that ran's execution-file-clean, as run-claude-cli's.
+    value: ${{ steps.loop.outputs.execution-file-clean }}
+  log-file:
+    description: The last chunk that ran's log file, as run-claude-cli's.
+    value: ${{ steps.loop.outputs.log-file }}
+  transcript-file:
+    description: >-
+      Every chunk's execution file messages in order, one JSON array, for
+      upload-lane-transcript; empty when no chunk left one.
+    value: ${{ steps.loop.outputs.transcript-file }}
+  results-dir:
+    description: The directory holding chunk-<k>/ for every chunk that ran.
+    value: ${{ steps.loop.outputs.results-dir }}
+  chunk-outcomes:
+    description: >-
+      One outcome per chunk from chunk-first to chunk-last, comma-separated:
+      success, failure or skipped. Empty when the loop did not finish.
+    value: ${{ steps.loop.outputs.chunk-outcomes }}
+  started-at:
+    description: Unix epoch seconds the last chunk that ran started.
+    value: ${{ steps.loop.outputs.started-at }}
+  cli-version:
+    description: The Claude Code CLI version that ran.
+    value: ${{ steps.install.outputs.cli-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the isolation contract
+      id: isolation
+      shell: bash
+      env:
+        LANE_MANAGED_SETTINGS: /etc/claude-code/managed-settings.json
+        LANE_LOOPBACK_BASE_URL: ""
+        LANE_SANDBOX: ${{ inputs.sandbox }}
+      run: node "$GITHUB_ACTION_PATH/../run-claude-cli/lane.cjs" verify-isolation
+
+    - name: Prepare the work directory
+      id: workdir
+      shell: bash
+      run: |
+        dir="$(mktemp -d "$RUNNER_TEMP/run-review-chunks-XXXXXX")"
+        results="$(mktemp -d "$RUNNER_TEMP/run-review-chunks-results-XXXXXX")"
+        { echo "path=$dir"; echo "results=$results"; } >>"$GITHUB_OUTPUT"
+
+    - name: Install and verify the Claude Code CLI
+      id: install
+      shell: bash
+      env:
+        LANE_CLI_VERSION_INPUT: ${{ inputs.cli-version }}
+        LANE_WORK_DIR: ${{ steps.workdir.outputs.path }}
+      run: node "$GITHUB_ACTION_PATH/../run-claude-cli/lane.cjs" install
+
+    - name: Run the chunks
+      id: loop
+      shell: bash
+      env:
+        LANE_NAME: ${{ inputs.lane }}
+        LANE_ROLE: ${{ inputs.role }}
+        LANE_PREAMBLE: ${{ inputs.preamble }}
+        LANE_API_KEY: ${{ inputs.api-key }}
+        LANE_SUBSCRIPTION_TOKEN: ${{ inputs.subscription-token }}
+        LANE_FALLBACK_TOKEN: ${{ inputs.fallback-token }}
+        LANE_FALLBACK_READY: ${{ inputs.fallback-ready }}
+        LANE_MODEL: ${{ inputs.model }}
+        LANE_EFFORT: ${{ inputs.effort }}
+        LANE_MAX_TURNS: ${{ inputs.max-turns }}
+        LANE_PERMISSION_MODE: ${{ inputs.permission-mode }}
+        LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
+        LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        LANE_TOOLS: ${{ inputs.tools }}
+        LANE_SANDBOX: ${{ inputs.sandbox }}
+        LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
+        LANE_ADD_DIRS: ${{ inputs.add-dirs }}
+        LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}
+        LANE_WATCHDOG_MAX_WAIT_MS: ${{ inputs.watchdog-max-wait-ms }}
+        LANE_LEG_TIMEOUT_MINUTES: ${{ inputs.leg-timeout-minutes }}
+        LANE_LOOPBACK_BASE_URL: ""
+        LANE_CLI_VERSION: ${{ steps.install.outputs.cli-version }}
+        LANE_CLI_PATH: ${{ steps.install.outputs.cli-path }}
+        LANE_WORK_DIR: ${{ steps.workdir.outputs.path }}
+        PROMPT_DIR: ${{ inputs.prompt-dir }}
+        CHUNK_FIRST: ${{ inputs.chunk-first }}
+        CHUNK_LAST: ${{ inputs.chunk-last }}
+        RESULTS_DIR: ${{ steps.workdir.outputs.results }}
+      run: node "$GITHUB_ACTION_PATH/chunks.cjs"

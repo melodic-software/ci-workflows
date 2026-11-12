@@ -11,6 +11,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
+const { evaluate } = require("./actions-expression.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const WORKFLOW_FILE = path.join(
@@ -86,8 +87,9 @@ const SPLITTER = [
   "",
 ].join("\n");
 
-// The split step as shipped, over a diff of `files` added one-line files.
-function split(job, files, env = {}) {
+// The split step as shipped, over a diff of `files` added one-line files
+// and `renames` pure renames the full-diff step listed as verified.
+function split(job, files, env = {}, { renames = 0 } = {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-chunks-split-");
   const source = path.join(dir, "source");
   const scripts = path.join(source, ".github", "scripts", "pr-review-main");
@@ -95,11 +97,29 @@ function split(job, files, env = {}) {
   fs.writeFileSync(path.join(scripts, "split-diff.py"), SPLITTER);
   const work = path.join(dir, "work");
   fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
-  const diff = Array.from(
-    { length: files },
-    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
-  ).join("");
+  const moved = Array.from({ length: renames }, (_, i) => [
+    `old${i}`,
+    `new${i}`,
+  ]);
+  const diff =
+    moved
+      .map(
+        ([from, to]) =>
+          `diff --git a/${from} b/${to}\nsimilarity index 100%\nrename from ${from}\nrename to ${to}\n`,
+      )
+      .join("") +
+    Array.from(
+      { length: files },
+      (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
+    ).join("");
   fs.writeFileSync(path.join(work, ".claude-lane", "pr.diff"), diff);
+  if (renames > 0) {
+    fs.writeFileSync(
+      path.join(work, ".claude-lane", "renames.txt"),
+      moved.map((pair) => `${pair.join("\t")}\n`).join(""),
+    );
+    env = { RENAMES: String(renames), ...env };
+  }
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
   const s = job.steps.find((candidate) => candidate.id === "split");
@@ -241,5 +261,397 @@ test("the review summary of a diff over the ceiling names the count and the ceil
       files,
       `${job.name}: the coverage keeps the review partial`,
     );
+  }
+});
+
+test("no leg assumes a fixed chunk count", () => {
+  assert.doesNotMatch(text, /\[2-[0-9]\]/u, "a chunk-count range regex");
+  for (const job of LEGS) {
+    for (const s of job.steps) {
+      assert.doesNotMatch(s.id ?? "", /^(claude|time)-[0-9]+$/u, s.id);
+    }
+  }
+  assert.doesNotMatch(
+    text,
+    /(STRUCTURED|EXECUTION|LOG)_FILE_[0-9]|prompt-file-/u,
+  );
+  assert.equal(workflow.env.MAX_CHUNKS, "20");
+});
+
+// --- the chunk loop ---
+
+const ACTION_DIR = path.join(__dirname, "..", "actions", "run-review-chunks");
+const { runChunks } = require(path.join(ACTION_DIR, "chunks.cjs"));
+
+// A stand-in for lane.cjs run: writes the leg's files to the work dir and
+// appends its outputs to GITHUB_OUTPUT the way writeOutputs does. `legs`
+// maps a chunk number to how its leg ends.
+function fakeLegs(work, legs = {}) {
+  const ran = [];
+  return {
+    ran,
+    runChunk: (promptFile) => {
+      const k = Number(/prompt-([0-9]+)\.md$/u.exec(promptFile)[1]);
+      ran.push(k);
+      const end = legs[k] ?? {};
+      const execution = path.join(work, "leg-1-execution.json");
+      fs.writeFileSync(
+        execution,
+        JSON.stringify([
+          { type: "system", subtype: "init", permissionMode: "dontAsk", k },
+          { type: "result", k },
+        ]),
+      );
+      const structured = path.join(work, "structured-output.json");
+      const log = path.join(work, "run-claude-cli-log.jsonl");
+      fs.writeFileSync(log, `{"k":${k}}\n`);
+      if (!end.failed) fs.writeFileSync(structured, `{"k":${k}}`);
+      fs.appendFileSync(
+        process.env.FAKE_OUTPUT,
+        [
+          `lane-class=${end.laneClass ?? ""}`,
+          `handoff=${end.handoff ?? "false"}`,
+          `handoff-reason=${end.handoff === "true" ? "credit-stop" : ""}`,
+          "credential=REVIEWS_CLAUDE_API_KEY",
+          `execution-file=${execution}`,
+          "execution-file-clean=true",
+          `log-file=${log}`,
+          `structured-output-file=${end.failed ? "" : structured}`,
+          "",
+        ].join("\n"),
+      );
+      return end.failed ? 1 : 0;
+    },
+  };
+}
+
+function loop(first, last, legs) {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-loop-");
+  const work = path.join(dir, "work");
+  const results = path.join(dir, "results");
+  fs.mkdirSync(work);
+  fs.mkdirSync(results);
+  const output = path.join(dir, "output");
+  fs.writeFileSync(output, "earlier=1\n");
+  const fake = fakeLegs(work, legs);
+  const saved = process.env.FAKE_OUTPUT;
+  process.env.FAKE_OUTPUT = output;
+  try {
+    const result = runChunks(
+      {
+        CHUNK_FIRST: String(first),
+        CHUNK_LAST: String(last),
+        GITHUB_OUTPUT: output,
+        RESULTS_DIR: results,
+        PROMPT_DIR: path.join(dir, "prompts"),
+      },
+      { runChunk: fake.runChunk, now: () => 1_700_000_000_000 },
+    );
+    return { ...result, ran: fake.ran, results, output };
+  } finally {
+    if (saved === undefined) delete process.env.FAKE_OUTPUT;
+    else process.env.FAKE_OUTPUT = saved;
+  }
+}
+
+test("the chunk loop runs every later chunk in order and keeps each one's files apart", () => {
+  for (const n of [4, 5, 12, 20]) {
+    const run = loop(2, n);
+    assert.equal(run.ok, true, `${n} chunks`);
+    assert.deepEqual(
+      run.ran,
+      Array.from({ length: n - 1 }, (_, i) => i + 2),
+    );
+    assert.equal(
+      run.outputs["chunk-outcomes"],
+      Array(n - 1)
+        .fill("success")
+        .join(","),
+    );
+    assert.equal(run.outputs["lane-class"], "");
+    assert.equal(run.outputs.handoff, "false");
+    for (let k = 2; k <= n; k++) {
+      const dir = path.join(run.results, `chunk-${k}`);
+      assert.deepEqual(
+        JSON.parse(fs.readFileSync(path.join(dir, "structured.json"), "utf8")),
+        { k },
+      );
+      assert.equal(
+        fs.readFileSync(path.join(dir, "log.jsonl"), "utf8"),
+        `{"k":${k}}\n`,
+      );
+    }
+    // One transcript of every chunk's messages, in chunk order.
+    const messages = JSON.parse(
+      fs.readFileSync(run.outputs["transcript-file"], "utf8"),
+    );
+    assert.equal(messages.length, 2 * (n - 1));
+    assert.deepEqual(
+      messages.filter((m) => m.type === "result").map((m) => m.k),
+      run.ran,
+    );
+    // The legs' own outputs were taken back out of the step's file.
+    assert.equal(fs.readFileSync(run.output, "utf8"), "earlier=1\n");
+  }
+});
+
+test("a failed chunk stops the loop, skips the rest and fails the step", () => {
+  const run = loop(2, 6, { 3: { failed: true, laneClass: "timeout" } });
+  assert.equal(run.ok, false);
+  assert.deepEqual(run.ran, [2, 3]);
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "success,failure,skipped,skipped,skipped",
+  );
+  assert.equal(run.outputs["lane-class"], "timeout");
+  assert.equal(run.outputs["last-chunk"], "3");
+  assert.equal(
+    fs.existsSync(path.join(run.results, "chunk-3", "structured.json")),
+    false,
+  );
+});
+
+test("a handoff stops the loop and hands its reason on", () => {
+  const run = loop(2, 6, {
+    3: { failed: true, laneClass: "credit-stop", handoff: "true" },
+  });
+  assert.deepEqual(run.ran, [2, 3]);
+  assert.equal(run.outputs.handoff, "true");
+  assert.equal(run.outputs["handoff-reason"], "credit-stop");
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "success,failure,skipped,skipped,skipped",
+  );
+});
+
+test("the loop gives every leg run-claude-cli's launcher environment and preamble", () => {
+  const { parseWorkflow: parseYaml } = require("./workflow-yaml.cjs");
+  const load = (name) =>
+    parseYaml(
+      fs.readFileSync(
+        path.join(__dirname, "..", "actions", name, "action.yml"),
+        "utf8",
+      ),
+    );
+  const launcher = load("run-claude-cli");
+  const chunks = load("run-review-chunks");
+  const laneEnv = (s) =>
+    Object.fromEntries(
+      Object.entries(s.env).filter(([name]) => name.startsWith("LANE_")),
+    );
+  const run = launcher.runs.steps.find((s) => s.id === "run");
+  const loopStep = chunks.runs.steps.find((s) => s.id === "loop");
+  const expected = laneEnv(run);
+  // The prompt file is per chunk, and the loop runs no loopback key proxy.
+  delete expected.LANE_PROMPT_FILE;
+  expected.LANE_LOOPBACK_BASE_URL = "";
+  assert.deepEqual(laneEnv(loopStep), expected);
+  assert.equal(
+    chunks.inputs.preamble.default,
+    launcher.inputs.preamble.default,
+  );
+  for (const id of ["isolation", "install"]) {
+    const ours = chunks.runs.steps.find((s) => s.id === id);
+    const theirs = launcher.runs.steps.find((s) => s.id === id);
+    assert.equal(
+      ours.run,
+      theirs.run.replace(
+        "$GITHUB_ACTION_PATH/",
+        "$GITHUB_ACTION_PATH/../run-claude-cli/",
+      ),
+    );
+  }
+  for (const name of Object.keys(launcher.inputs))
+    if (!["prompt-file", "loopback-base-url"].includes(name))
+      assert.ok(name in chunks.inputs, name);
+});
+
+// --- chunk counts end to end: split, then extract over the loop's results ---
+
+test("a 178-file diff left after verified renames are discounted is reviewed in 5 chunks", () => {
+  for (const job of LEGS) {
+    const cut = split(job, 178, {}, { renames: 42 });
+    // 178 files at 40 per chunk: 40, 40, 40, 40, 18.
+    assert.equal(cut.outputs.chunks, "5", job.name);
+    assert.equal(cut.outputs.files, "40,40,40,40,18", job.name);
+    assert.equal(cut.outputs.excluded, "42", job.name);
+    assert.equal(cut.outputs["over-chunks"], undefined, job.name);
+  }
+});
+
+const REVIEW = (files) => ({
+  findings: 0,
+  files_read: files,
+  summary: "Nothing found.",
+  comments: [],
+});
+
+// The extract step over an N-chunk review: chunk 1 from the first review
+// step's files, chunks 2..N from the chunk loop's results directory,
+// `outcomes` the loop's chunk-outcomes.
+async function extractChunked(job, n, { outcomes, reviews } = {}) {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-n-");
+  const chunkDir = path.join(dir, "chunks");
+  const results = path.join(dir, "results");
+  fs.mkdirSync(chunkDir);
+  fs.mkdirSync(results);
+  const review = (k) => reviews?.[k] ?? REVIEW(2);
+  for (let k = 1; k <= n; k++) {
+    fs.writeFileSync(path.join(chunkDir, `chunk-${k}.patch`), "+x\n");
+    if (k === 1) continue;
+    fs.mkdirSync(path.join(results, `chunk-${k}`));
+    fs.writeFileSync(
+      path.join(results, `chunk-${k}`, "structured.json"),
+      JSON.stringify(review(k)),
+    );
+    fs.writeFileSync(
+      path.join(results, `chunk-${k}`, "log.jsonl"),
+      `${LOG_RECORD}\n`,
+    );
+  }
+  const loopOutcomes =
+    outcomes ??
+    Array(n - 1)
+      .fill("success")
+      .join(",");
+  return extractOne(job, review(1), {
+    CHUNKS: String(n),
+    CHUNK_FILES: Array(n).fill("2").join(","),
+    CHUNK_DIR: chunkDir,
+    RESULTS_DIR: results,
+    CHUNK_OUTCOMES: `success,${loopOutcomes}`,
+    WHOLE_FILES: String(2 * n),
+    SCOPE_BYTES: String(n * Number(workflow.env.READ_BUDGET)),
+  });
+}
+
+test("reviews of 1, 4, 5, 12 and 20 chunks complete, every chunk read", async () => {
+  for (const job of LEGS) {
+    for (const n of [1, 4, 5, 12, 20]) {
+      const outputs =
+        n === 1
+          ? await extractOne(job, REVIEW(1), { CHUNK_OUTCOMES: "success," })
+          : await extractChunked(job, n);
+      assert.equal(outputs.verdict, "complete", `${job.name}: ${n} chunks`);
+      const review = JSON.parse(outputs.review);
+      assert.deepEqual(
+        review.coverage,
+        n === 1 ? { read: 1, changed: 1 } : { read: 2 * n, changed: 2 * n },
+      );
+      // Each chunk's log counted: 3 turns a chunk.
+      assert.equal(outputs.turns, String(3 * n));
+    }
+  }
+});
+
+test("a 6-chunk review with one failed chunk is partial: no verdict, no review", async () => {
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 6, {
+      outcomes: "success,success,failure,skipped,skipped",
+    });
+    assert.equal(
+      outputs.verdict,
+      "chunk 4 of 6: the review step did not succeed",
+      job.name,
+    );
+    assert.equal(outputs.review, undefined);
+    // A loop that did not finish leaves no outcomes: the same.
+    const killed = await extractChunked(job, 6, { outcomes: "" });
+    assert.equal(
+      killed.verdict,
+      "chunk 2 of 6: the review step did not succeed",
+      job.name,
+    );
+  }
+});
+
+// --- timeouts ---
+
+const minutes = (value, context) => Number(evaluate(String(value), context));
+
+test("a 1-chunk review keeps today's step limits, and the loop's limit grows with the chunk count", async () => {
+  for (const job of LEGS) {
+    const first = job.steps.find((s) => s.id === "claude");
+    for (const [lane, limit, leg] of [
+      ["code", 14, "11"],
+      ["security", 16, "13"],
+    ]) {
+      assert.equal(
+        minutes(first["timeout-minutes"], { inputs: { lane } }),
+        limit,
+      );
+      assert.equal(
+        evaluate(first.with["leg-timeout-minutes"], { inputs: { lane } }),
+        leg,
+      );
+    }
+    const loopStep = job.steps.find((s) => s.id === "chunks");
+    const compose = job.steps.find((s) => s.id === "compose");
+    assert.equal(compose.env.LEG_MINUTES, first.with["leg-timeout-minutes"]);
+    assert.equal(
+      loopStep.with["leg-timeout-minutes"],
+      first.with["leg-timeout-minutes"],
+    );
+    // 3 minutes for the one install, then each later chunk's leg and a minute.
+    for (const [n, leg, expected] of [
+      ["2", "11", 15],
+      ["5", "11", 51],
+      ["20", "13", 269],
+    ]) {
+      const dir = makeTemporaryDirectory("pr-review-cli-chunks-compose-");
+      const outputs = await runScript(compose, {
+        LANE: "code",
+        MODEL: "sonnet",
+        EFFORT: "high",
+        MAX_TURNS: "30",
+        MODEL_ARGS: "",
+        CLI_VERSION: "latest",
+        REPOSITORY: "o/r",
+        PR_NUMBER: "7",
+        HEAD_SHA: "a".repeat(40),
+        HOLD_PATHS: "",
+        RUNNER_TEMP: dir,
+        CHUNKS: n,
+        CHUNK_FILES: Array(Number(n)).fill("1").join(","),
+        LEG_MINUTES: leg,
+        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+      });
+      assert.equal(outputs["loop-minutes"], String(expected), n);
+      assert.equal(
+        minutes(loopStep["timeout-minutes"], {
+          steps: { compose: { outputs } },
+        }),
+        expected,
+      );
+    }
+  }
+});
+
+test("each leg's job limit holds every step's limit at the chunk ceiling, inside GitHub's 6 hours", () => {
+  const ceiling = Number(workflow.env.MAX_CHUNKS);
+  for (const job of LEGS) {
+    for (const [lane, leg] of [
+      ["code", 11],
+      ["security", 13],
+    ]) {
+      const atCeiling = 3 + (ceiling - 1) * (leg + 1);
+      const total = job.steps.reduce(
+        (sum, s) =>
+          sum +
+          minutes(s["timeout-minutes"], {
+            inputs: { lane },
+            steps: {
+              compose: { outputs: { "loop-minutes": String(atCeiling) } },
+            },
+          }),
+        0,
+      );
+      const limit = minutes(job["timeout-minutes"], { inputs: { lane } });
+      assert.ok(
+        total + 5 <= limit,
+        `${job.name} (${lane}): steps ${total}, job ${limit}`,
+      );
+      assert.ok(limit <= 360, `${job.name} (${lane}): ${limit} minutes`);
+    }
   }
 });
