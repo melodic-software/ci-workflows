@@ -258,11 +258,13 @@ test("with no file over the budget the splitter gets the step's input byte for b
       const cut = split(job, diff, env);
       assert.ok(cut.received, `${job.name}: ${name}: the splitter ran`);
       assert.ok(cut.received.equals(Buffer.from(diff)), `${job.name}: ${name}`);
-      assert.equal(
-        fs.existsSync(path.join(cut.chunkDir, "sliced.diff")),
-        false,
-        name,
-      );
+      // The chunk directory holds only what the split wrote before.
+      for (const entry of fs.readdirSync(cut.chunkDir))
+        assert.match(
+          entry,
+          /^(?:chunk-[0-9]+\.patch|manifest\.txt|split-error\.txt)$/u,
+          name,
+        );
       assert.doesNotMatch(cut.stdout, /sliced=|cannot be cut/u, name);
       assert.equal(cut.outputs.sliced, undefined, name);
     }
