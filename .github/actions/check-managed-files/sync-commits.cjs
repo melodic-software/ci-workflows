@@ -11,6 +11,8 @@
 // Dependabot and committed by web-flow, matched by account id as
 // pr-automerge-dependabot does.
 
+const { createRetry } = require("./retry.cjs");
+
 const SYNC_BOT = "melodic-standards-sync[bot]";
 const SYNC_BOT_EMAIL =
   "300666570+melodic-standards-sync[bot]@users.noreply.github.com";
@@ -82,21 +84,31 @@ function checkCommits(commits, headSha, commitProblems) {
   return problems;
 }
 
+// A merge-group run passes its own withRetry so all its reads share one wait
+// budget; a pull request run makes this one read.
 async function listProblems(
-  { github, owner, repo, pullNumber, headSha },
+  { github, core, owner, repo, pullNumber, headSha, sleep, withRetry },
   commitProblems,
 ) {
+  const retry =
+    withRetry ??
+    createRetry({ sleep, log: (message) => core.warning(message) });
+  let commits;
   try {
-    const commits = await github.paginate(github.rest.pulls.listCommits, {
-      owner,
-      repo,
-      pull_number: pullNumber,
-      per_page: 100,
-    });
-    return checkCommits(commits, headSha, commitProblems);
+    commits = await retry(
+      () =>
+        github.paginate(github.rest.pulls.listCommits, {
+          owner,
+          repo,
+          pull_number: pullNumber,
+          per_page: 100,
+        }),
+      "could not list the PR's commits",
+    );
   } catch (error) {
-    return [`could not list the PR's commits: ${error.message}`];
+    return [error.message];
   }
+  return checkCommits(commits, headSha, commitProblems);
 }
 
 module.exports = async function verifySyncCommits(args) {

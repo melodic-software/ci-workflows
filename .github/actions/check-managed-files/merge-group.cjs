@@ -14,6 +14,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
+const { createRetry, ReadError } = require("./retry.cjs");
 const verifySyncCommits = require("./sync-commits.cjs");
 
 const { dependabotMode } = verifySyncCommits;
@@ -49,19 +50,12 @@ function selectMode(pr) {
 
 class GroupError extends Error {}
 
-async function getPull({ github, owner, repo }, number) {
-  try {
-    const { data } = await github.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: number,
-    });
-    return data;
-  } catch (error) {
-    throw new GroupError(
-      `could not read pull request #${number}: ${error.message}`,
-    );
-  }
+async function getPull({ github, owner, repo, withRetry }, number) {
+  const { data } = await withRetry(
+    () => github.rest.pulls.get({ owner, repo, pull_number: number }),
+    `could not read pull request #${number}`,
+  );
+  return data;
 }
 
 // The queued pull request and, for a stack, each pull request below it,
@@ -77,20 +71,17 @@ async function groupPulls(args, number, target) {
         `the pull requests below #${pulls[0].number} never reach ${target} within ${MAX_GROUP_PULLS} pull requests`,
       );
     }
-    let below;
-    try {
-      ({ data: below } = await args.github.rest.pulls.list({
-        owner: args.owner,
-        repo: args.repo,
-        state: "open",
-        head: `${args.owner}:${base}`,
-        per_page: 100,
-      }));
-    } catch (error) {
-      throw new GroupError(
-        `could not find the pull request below #${top.number}: ${error.message}`,
-      );
-    }
+    const { data: below } = await args.withRetry(
+      () =>
+        args.github.rest.pulls.list({
+          owner: args.owner,
+          repo: args.repo,
+          state: "open",
+          head: `${args.owner}:${base}`,
+          per_page: 100,
+        }),
+      `could not find the pull request below #${top.number}`,
+    );
     if (below.length !== 1) {
       throw new GroupError(
         `pull request #${top.number} targets ${base}, not ${target}, and ${below.length} open pull requests come from ${base}`,
@@ -105,20 +96,19 @@ async function groupPulls(args, number, target) {
   }
 }
 
-async function pullFiles({ github, owner, repo }, number) {
-  let files;
-  try {
-    files = await github.paginate(github.rest.pulls.listFiles, {
-      owner,
-      repo,
-      pull_number: number,
-      per_page: 100,
-    });
-  } catch (error) {
-    throw new GroupError(
-      `could not list the files of pull request #${number}: ${error.message}`,
-    );
-  }
+// A retry restarts the listing from page 1, so no page is kept from a failed
+// pass.
+async function pullFiles({ github, owner, repo, withRetry }, number) {
+  const files = await withRetry(
+    () =>
+      github.paginate(github.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: number,
+        per_page: 100,
+      }),
+    `could not list the files of pull request #${number}`,
+  );
   if (files.length >= FILE_LIST_CAP) {
     throw new GroupError(
       `pull request #${number} lists ${files.length} files, the API cap, so the list may be incomplete`,
@@ -152,8 +142,14 @@ function groupDiff({ workspace, baseSha, headSha }) {
 //             group's commits against standards main
 //   hand-edit run.sh checks each file written to pathsDir (pr-<N>, NUL-separated)
 //   skip      every pull request is a verified Dependabot one
-// Returns null, with the run failed, when the group cannot be checked.
-async function resolveMergeGroup(args) {
+// Returns null, with the run failed, when the group cannot be checked. Every
+// read in one run, the commit lists included, draws on one retry wait budget.
+async function resolveMergeGroup(input) {
+  const withRetry = createRetry({
+    sleep: input.sleep,
+    log: (message) => input.core.warning(message),
+  });
+  const args = { ...input, withRetry };
   const { core, headRef, baseRef, pathsDir } = args;
   const problems = [];
   try {
@@ -214,7 +210,9 @@ async function resolveMergeGroup(args) {
       return "hand-edit";
     }
   } catch (error) {
-    if (!(error instanceof GroupError)) throw error;
+    if (!(error instanceof GroupError || error instanceof ReadError)) {
+      throw error;
+    }
     problems.push(error.message);
   }
   for (const problem of problems) core.error(problem);
