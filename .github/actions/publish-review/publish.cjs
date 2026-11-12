@@ -224,7 +224,7 @@ function coverageText(coverage) {
   const data = coverage.data_files ?? [];
   const unchecked =
     coverage.reads_checked === false
-      ? "; per-file read check skipped: the CLI's Read output format was not recognised"
+      ? "; per-file read check skipped: the CLI's Read output format was not recognized"
       : "";
   return `read ${coverage.read} of ${coverage.changed} changed file(s)${unchecked}${
     data.length === 0

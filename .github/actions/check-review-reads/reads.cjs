@@ -20,7 +20,7 @@ const NAMED = 50;
 const MAX_REVIEW_BYTES = 100000;
 const UNCHECKED = "the job could not check which files the review read";
 const UNLISTED = "the job could not list the files the review had to read";
-const FORMAT_UNKNOWN = "the CLI's Read output format was not recognised";
+const FORMAT_UNKNOWN = "the CLI's Read output format was not recognized";
 
 /** Each `diff --git` section: its line range, header, rename target, text and non-empty lines. */
 function diffSections(text) {
@@ -120,10 +120,10 @@ const CONTENT_LINES = 5;
 
 /**
  * The line numbers Read results printed, per file, over every message (main
- * thread and subagents), and which files' results were recognised or not.
+ * thread and subagents), and which files' results were recognized or not.
  *
- * Recognised: a result with the CLI's structured range for that file (even of
- * 0 lines), or with at least one numbered line. Unrecognised, only for a file
+ * Recognized: a result with the CLI's structured range for that file (even of
+ * 0 lines), or with at least one numbered line. Unrecognized, only for a file
  * of `lineCounts` with n > 0 lines: a result with no structured range, of a
  * Read with no limit and no offset other than 1, whose text holds at least
  * min(n, CONTENT_LINES) non-empty lines that are not tool notices and none
@@ -131,9 +131,9 @@ const CONTENT_LINES = 5;
  */
 function readsOf(messages, workspace, lineCounts = new Map()) {
   const shown = new Map();
-  const recognised = new Set();
-  const unrecognised = new Set();
-  if (!Array.isArray(messages)) return { shown, recognised, unrecognised };
+  const recognized = new Set();
+  const unrecognized = new Set();
+  if (!Array.isArray(messages)) return { shown, recognized, unrecognized };
   const reads = new Map();
   for (const m of messages) {
     if (m?.type !== "assistant" || !Array.isArray(m.message?.content)) continue;
@@ -173,17 +173,17 @@ function readsOf(messages, workspace, lineCounts = new Map()) {
         });
       for (const n of numbers) shown.get(file).add(n);
       const length = lineCounts.get(file) ?? 0;
-      if (range !== null || numbers.length > 0) recognised.add(file);
+      if (range !== null || numbers.length > 0) recognized.add(file);
       else if (
         whole &&
         length > 0 &&
         lines.filter((line) => line.trim() !== "" && !NOTICE.test(line))
           .length >= Math.min(length, CONTENT_LINES)
       )
-        unrecognised.add(file);
+        unrecognized.add(file);
     }
   }
-  return { shown, recognised, unrecognised };
+  return { shown, recognized, unrecognized };
 }
 
 const linesShown = (messages, workspace) => readsOf(messages, workspace).shown;
@@ -331,7 +331,7 @@ function modeOf(value, write) {
   if (value === "enforce") return "enforce";
   const named = /^[A-Za-z0-9._-]{1,40}$/u.test(value)
     ? `'${value}'`
-    : "an unrecognised value";
+    : "an unrecognized value";
   write(
     `::warning title=pr-review-cli reads::the reads-check mode ${named} is neither report nor enforce; the check enforces`,
   );
@@ -438,7 +438,7 @@ function check(env, write, mode) {
   const chunkDiffs = (i) =>
     chunks > 1 ? [path.join(env.CHUNK_DIR, `chunk-${i + 1}.patch`)] : [];
   // The job's diff files and their line counts, the lengths readsOf weighs
-  // an unrecognised result against.
+  // an unrecognized result against.
   const lineCounts = new Map();
   for (const file of [
     env.SCOPE_DIFF,
@@ -457,8 +457,8 @@ function check(env, write, mode) {
   // per-file check cannot run and the extract step's count stands.
   const any = (set) => [...set].some((file) => lineCounts.has(file));
   if (
-    reviews.some((r) => any(r.unrecognised)) &&
-    !reviews.some((r) => any(r.recognised))
+    reviews.some((r) => any(r.unrecognized)) &&
+    !reviews.some((r) => any(r.recognized))
   ) {
     write(
       `::warning title=pr-review-cli reads::${FORMAT_UNKNOWN}; the per-file read check did not run`,

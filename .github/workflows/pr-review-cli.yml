@@ -8226,7 +8226,7 @@ jobs:
 
       # A leg that could not read the pull request's base from GitHub ran no
       # review, so its verdict is unknown. The run holds green: this step
-      # posts a `held: ` notice, and nothing is published or labelled. A held
+      # posts a `held: ` notice, and nothing is published or labeled. A held
       # leg is always the last one, since it hands on to no other.
       - name: Note the hold
         id: held

@@ -12,11 +12,11 @@ description: >-
   job's binary-files list only the section's lines before its first hunk
   count. Every listed file without that evidence lowers the read count, which
   makes the review partial, and is named in the coverage (`unread_files`) and
-  a warning, by path only when the path is plain. A missing or unparseable
+  a warning, by path only when the path is plain. A missing or unparsable
   transcript or diff leaves its files unread; a list of files to read the job
   cannot back makes the review incomplete. When no Read result of a job diff
-  file is recognised (a structured range, even of 0 lines, or a numbered
-  line) and one is unrecognised (a whole-file Read of a non-empty job diff
+  file is recognized (a structured range, even of 0 lines, or a numbered
+  line) and one is unrecognized (a whole-file Read of a non-empty job diff
   returning at least min(lines, 5) non-notice lines, none numbered), the
   CLI's Read output changed shape: the check does not run, the extract
   step's count stands,
@@ -88,7 +88,7 @@ outputs:
     description: "`complete`, or the reason no completed review was found."
     value: ${{ steps.check.outputs.verdict }}
   reads-checked:
-    description: "`true` when the per-file check ran, `false` when the CLI's Read output was not recognised; empty unless the verdict is complete."
+    description: "`true` when the per-file check ran, `false` when the CLI's Read output was not recognized; empty unless the verdict is complete."
     value: ${{ steps.check.outputs.reads-checked }}
 
 runs:

@@ -674,14 +674,14 @@ test("with copies and verified renames counted as read, the job's to-read list i
   }
 });
 
-test("a missing or unparseable transcript, or a missing diff, leaves every listed file unread", () => {
+test("a missing or unparsable transcript, or a missing diff, leaves every listed file unread", () => {
   const files = {
     ".claude-lane/pr.diff": DIFF,
     ".claude-lane/files.txt": FILES,
   };
   for (const [label, setup] of [
     ["no transcript", { workspace: files }],
-    ["unparseable", { workspace: files, transcripts: { first: "{not json" } }],
+    ["unparsable", { workspace: files, transcripts: { first: "{not json" } }],
     ["not an array", { workspace: files, transcripts: { first: "{}" } }],
     [
       "no diff",
@@ -934,10 +934,10 @@ const upTo = (n) => Array.from({ length: n }, (_, i) => i + 1);
 
 test("a recorded CLI run's Reads, main thread and subagent, read as the CLI wrote them", () => {
   const { workspace, messages, key } = recorded();
-  const { shown, recognised, unrecognised } = readsOf(messages, workspace);
+  const { shown, recognized, unrecognized } = readsOf(messages, workspace);
   assert.ok(upTo(16).every((n) => shown.get(key).has(n)));
-  assert.deepEqual([...recognised], [key]);
-  assert.deepEqual([...unrecognised], []);
+  assert.deepEqual([...recognized], [key]);
+  assert.deepEqual([...unrecognized], []);
   const scope = { scope: "lane/pr.diff" };
   // The run read lines 1-16 of 17: src/a.js (1-9) whole, the second file
   // short of its last line.
@@ -995,7 +995,7 @@ const unnumbered = (messages) => {
   return messages;
 };
 const FORMAT_WARNING =
-  "::warning title=pr-review-cli reads::the CLI's Read output format was not recognised; the per-file read check did not run";
+  "::warning title=pr-review-cli reads::the CLI's Read output format was not recognized; the per-file read check did not run";
 
 test("when no Read result of a job diff file gives a line number, the check does not run and the extract step's count stands", () => {
   const workspace = {
@@ -1022,7 +1022,7 @@ test("when no Read result of a job diff file gives a line number, the check does
     reads_checked: false,
   });
   assert.deepEqual(all.stdout, [FORMAT_WARNING]);
-  // One recognised Read of a job diff file: the unrecognised ones are no evidence.
+  // One recognized Read of a job diff file: the unrecognized ones are no evidence.
   const mixed = run(
     {
       workspace,
@@ -1037,7 +1037,7 @@ test("when no Read result of a job diff file gives a line number, the check does
   );
   assert.equal(mixed.outputs["reads-checked"], "true");
   assert.equal(mixed.review.coverage.read, 1);
-  // No Read at all, or an unrecognised Read of another file only, is no evidence either.
+  // No Read at all, or an unrecognized Read of another file only, is no evidence either.
   for (const messages of [
     [],
     unnumbered(read(".claude-lane/files.txt", FILES, 1, 5)),
@@ -1051,7 +1051,7 @@ test("when no Read result of a job diff file gives a line number, the check does
 test("publish-review says when the per-file read check was skipped", () => {
   assert.equal(
     coverageText({ read: 5, changed: 5, reads_checked: false }),
-    "read 5 of 5 changed file(s); per-file read check skipped: the CLI's Read output format was not recognised",
+    "read 5 of 5 changed file(s); per-file read check skipped: the CLI's Read output format was not recognized",
   );
   assert.equal(
     coverageText({ read: 5, changed: 5 }),
@@ -1210,7 +1210,7 @@ test("a mode that is neither report nor enforce enforces, and says so", () => {
     "::notice title=pr-review-cli reads::listed=5 unread=1 mode=enforce",
   ]);
   const odd = run(SHORT, { REVIEW: extracted, MODE: "x y" });
-  assert.match(odd.stdout[0], /mode an unrecognised value is neither/u);
+  assert.match(odd.stdout[0], /mode an unrecognized value is neither/u);
   assert.equal(odd.review.coverage.read, 4);
 });
 
@@ -1330,7 +1330,7 @@ test("a Read the model shapes past the end of a diff is no evidence, never the f
   }
 });
 
-test("only a whole-file Read returning enough unnumbered content lines of a non-empty job diff is unrecognised", () => {
+test("only a whole-file Read returning enough unnumbered content lines of a non-empty job diff is unrecognized", () => {
   const { workspace } = lane({
     ".claude-lane/pr.diff": DIFF,
     "lane/empty.diff": "",
@@ -1350,21 +1350,21 @@ test("only a whole-file Read returning enough unnumbered content lines of a non-
       .map((line) => `L: ${line}`)
       .join("\n");
   }
-  assert.deepEqual([...of(prefixed).unrecognised], [key]);
+  assert.deepEqual([...of(prefixed).unrecognized], [key]);
   // The same text from a Read with a limit, or with an offset past 1, is no evidence.
   const limited = structuredClone(prefixed);
   limited[0].message.content[0].input = { file_path: key, limit: 37 };
-  assert.deepEqual([...of(limited).unrecognised], []);
+  assert.deepEqual([...of(limited).unrecognized], []);
   const offset = structuredClone(prefixed);
   offset[0].message.content[0].input = { file_path: key, offset: 2 };
-  assert.deepEqual([...of(offset).unrecognised], []);
+  assert.deepEqual([...of(offset).unrecognized], []);
   const first = structuredClone(prefixed);
   first[0].message.content[0].input = { file_path: key, offset: 1 };
-  assert.deepEqual([...of(first).unrecognised], [key]);
+  assert.deepEqual([...of(first).unrecognized], [key]);
   // Four content lines of a 37-line file are short of the five required.
   const short = structuredClone(prefixed);
   short[1].message.content[0].content = "a\nb\nc\nd";
-  assert.deepEqual([...of(short).unrecognised], []);
+  assert.deepEqual([...of(short).unrecognized], []);
   // Five lines of tool notices are not content.
   const notices = structuredClone(prefixed);
   notices[1].message.content[0].content = [
@@ -1374,17 +1374,17 @@ test("only a whole-file Read returning enough unnumbered content lines of a non-
     "<system-reminder>",
     "</system-reminder>",
   ].join("\n");
-  assert.deepEqual([...of(notices).unrecognised], []);
+  assert.deepEqual([...of(notices).unrecognized], []);
   // An empty job file never reads as an unknown format.
   const empty = unnumbered(
     read(emptyKey, "x\ny\nz\nu\nv", 1, 5, { whole: true }),
   );
-  assert.deepEqual([...of(empty).unrecognised], []);
-  // A structured range of 0 lines is recognised: evidence of nothing.
+  assert.deepEqual([...of(empty).unrecognized], []);
+  // A structured range of 0 lines is recognized: evidence of nothing.
   const range = pastEnd(workspace);
   range[0].message.content[0].input.file_path = key;
   range[1].tool_use_result.file.filePath = key;
-  assert.deepEqual([...of(range).recognised], [key]);
+  assert.deepEqual([...of(range).recognized], [key]);
   assert.equal(of(range).shown.get(key).size, 0);
 });
 

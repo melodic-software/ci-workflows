@@ -1688,7 +1688,7 @@ the `REVIEW_READS_CHECK_MODE` variable, else `report`, sets what it does.
 `report` (the default) logs `pr-review-cli reads` notices (`listed`,
 `unread`, `mode`) and a warning naming unread files, and changes no verdict,
 count or status line. `enforce` holds the read count to the evidence; turn
-it on for every caller by setting the organisation variable
+it on for every caller by setting the organization variable
 `REVIEW_READS_CHECK_MODE=enforce`. Any other value enforces, with a warning.
 Under `enforce`, a file of the scope's list (or of
 `.claude-lane/to-read.txt` when copies or verified renames count as read) is
@@ -1699,12 +1699,12 @@ numbers, not text, so a line the tool truncates still counts; for a file on
 the job's binary-files list only the lines before its first hunk count. Each
 file without that evidence lowers the count, so the review is `partial`, and
 is named after `no read evidence for` on the status line when its path is
-plain. A missing or unparseable transcript or diff leaves its files unread.
+plain. A missing or unparsable transcript or diff leaves its files unread.
 The check is skipped, with the model's count standing as before and the status
 line saying `per-file read check skipped`, only when no Read result of a job
-diff file is recognised and at least one is unrecognised. Recognised means it
+diff file is recognized and at least one is unrecognized. Recognized means it
 carries the CLI's structured line range (even of 0 lines) or at least one
-numbered line. Unrecognised means it has no structured range, came from a Read
+numbered line. Unrecognized means it has no structured range, came from a Read
 with no limit and no offset other than 1, of a job diff file of n > 0 lines,
 and holds at least min(n, 5) non-empty lines that are not tool notices, none
 of them numbered. Any other result, such as a Read past the end of the file,
