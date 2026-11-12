@@ -202,7 +202,9 @@ function validCoverage(coverage) {
     absentOrPositive(coverage.over_budget) &&
     absentOrPositive(coverage.over_files) &&
     absentOrPaths(coverage.data_files) &&
-    absentOrPaths(coverage.binary_files)
+    absentOrPaths(coverage.binary_files) &&
+    absentOrPaths(coverage.unread_files) &&
+    (coverage.reads_checked === undefined || coverage.reads_checked === false)
   );
 }
 
@@ -220,7 +222,11 @@ function named(paths) {
 // The files read, then the generated data files the review never read.
 function coverageText(coverage) {
   const data = coverage.data_files ?? [];
-  return `read ${coverage.read} of ${coverage.changed} changed file(s)${
+  const unchecked =
+    coverage.reads_checked === false
+      ? "; per-file read check skipped: the CLI's Read output format was not recognized"
+      : "";
+  return `read ${coverage.read} of ${coverage.changed} changed file(s)${unchecked}${
     data.length === 0
       ? ""
       : `; ${data.length} data file(s) not reviewed: ${named(data)}`
@@ -237,8 +243,12 @@ function isPartial(coverage) {
 }
 
 // Why a review is partial: its diff is over one review's read budget or file
-// cap, or its scope holds binary files no review reads as text.
+// cap, the job found no Read of some listed files' whole change, or its scope
+// holds binary files no review reads as text.
 function partialReason(coverage) {
+  const unread = coverage.unread_files ?? [];
+  const evidence =
+    unread.length === 0 ? "" : `; no read evidence for ${named(unread)}`;
   const size =
     coverage.over_budget === undefined
       ? ""
@@ -252,7 +262,7 @@ function partialReason(coverage) {
     binary.length === 0
       ? ""
       : `; ${binary.length} binary file(s) not reviewable as text: ${named(binary)}`;
-  return `${size}${files}${binaries}`;
+  return `${size}${files}${evidence}${binaries}`;
 }
 
 // The marker's status line, which states coverage before the finding count.
@@ -835,6 +845,7 @@ module.exports = {
   judge,
   loadGate,
   parseReview,
+  partialReason,
   placeComments,
   run,
   scan,

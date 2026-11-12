@@ -1,0 +1,128 @@
+[
+  {
+    "type": "assistant",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01Pfg19xARRo5XWTbZ1CxL2n",
+          "name": "Read",
+          "input": {
+            "file_path": "/workspace/lane/pr.diff",
+            "offset": 100,
+            "limit": 20
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "tool_use_id": "toolu_01Pfg19xARRo5XWTbZ1CxL2n",
+          "type": "tool_result",
+          "content": "<system-reminder>Warning: the file exists but is shorter than the provided offset (100). The file has 18 lines.</system-reminder>"
+        }
+      ]
+    },
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/workspace/lane/pr.diff",
+        "numLines": 0,
+        "startLine": 100,
+        "totalLines": 18
+      }
+    }
+  },
+  {
+    "type": "assistant",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01VTi664NkvZskUNxJf18tYC",
+          "name": "Read",
+          "input": {
+            "file_path": "/workspace/lane/empty.diff"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "tool_use_id": "toolu_01VTi664NkvZskUNxJf18tYC",
+          "type": "tool_result",
+          "content": "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"
+        }
+      ]
+    },
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/workspace/lane/empty.diff",
+        "numLines": 1,
+        "startLine": 1,
+        "totalLines": 1
+      }
+    }
+  },
+  {
+    "type": "assistant",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01WJEXB5fE4FhQZWwLwMVmGb",
+          "name": "Read",
+          "input": {
+            "file_path": "/workspace/repo/.claude-lane/pr.diff"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "parent_tool_use_id": null,
+    "message": {
+      "content": [
+        {
+          "tool_use_id": "toolu_01WJEXB5fE4FhQZWwLwMVmGb",
+          "type": "tool_result",
+          "content": "\n[This file has NUL bytes in its first 8 KB: binary data, UTF-16/UTF-32 without a byte-order mark, or text with embedded NULs. Edit and Write will refuse it: change it with a shell command that keeps its encoding, or ask the user whether to convert it to UTF-8.]"
+        }
+      ]
+    },
+    "tool_use_result": {
+      "type": "text",
+      "file": {
+        "filePath": "/workspace/repo/.claude-lane/pr.diff",
+        "numLines": 1791,
+        "startLine": 1,
+        "totalLines": 3062,
+        "truncatedByTokenCap": true
+      }
+    }
+  }
+]

@@ -946,6 +946,10 @@ consumer to audit it.
   `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
   history cannot (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
+- `.github/actions/check-review-reads` — `pr-review-cli.yml`'s step after
+  the extract step: holds the review's read count to the files the leg's own
+  transcript shows read, before the review leaves the job (its `action.yml`
+  states the rule).
 - `.github/actions/upload-lane-transcript` — the step after each model leg in
   `pr-review-cli.yml` and `intake-triage.yml`: scans the leg's execution file,
   seals it to the caller's `lane-transcript-public-key` input and uploads only
@@ -1678,7 +1682,33 @@ or the file cap, its bytes or files before the findings count, as the failure
 line does, with the
 hidden marker at `sha=none` so the next push reviews the whole pull request
 and no merge gate reads the head as reviewed. A review with no `files_read`
-is `incomplete`.
+is `incomplete`. The job also checks the count against its own evidence
+(`.github/actions/check-review-reads`). The `reads-check-mode` input, else
+the `REVIEW_READS_CHECK_MODE` variable, else `report`, sets what it does.
+`report` (the default) logs `pr-review-cli reads` notices (`listed`,
+`unread`, `mode`) and a warning naming unread files, and changes no verdict,
+count or status line. `enforce` holds the read count to the evidence; turn
+it on for every caller by setting the organization variable
+`REVIEW_READS_CHECK_MODE=enforce`. Any other value enforces, with a warning.
+Under `enforce`, a file of the scope's list (or of
+`.claude-lane/to-read.txt` when copies or verified renames count as read) is
+read only when the transcript of the review that holds it, its subagents
+included, shows Read results giving the line number of every non-empty line
+of each of its sections in a diff file the job wrote. It compares line
+numbers, not text, so a line the tool truncates still counts; for a file on
+the job's binary-files list only the lines before its first hunk count. Each
+file without that evidence lowers the count, so the review is `partial`, and
+is named after `no read evidence for` on the status line when its path is
+plain. A missing or unparsable transcript or diff leaves its files unread.
+The check is skipped, with the model's count standing as before and the status
+line saying `per-file read check skipped`, only when no Read result of a job
+diff file is recognized and at least one is unrecognized. Recognized means it
+carries the CLI's structured line range (even of 0 lines) or at least one
+numbered line. Unrecognized means it has no structured range, came from a Read
+with no limit and no offset other than 1, of a job diff file of n > 0 lines,
+and holds at least min(n, 5) non-empty lines that are not tool notices, none
+of them numbered. Any other result, such as a Read past the end of the file,
+is no evidence and leaves its files unread.
 
 **Identical copies.** Changed files whose whole change is
 identical (modifications with the same content and mode before and after, or

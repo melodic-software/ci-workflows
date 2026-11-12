@@ -1,0 +1,116 @@
+name: Check Review Reads
+description: >-
+  Hold a pr-review-cli review's read count to the files its leg's transcript
+  shows read. It reads each review's execution file (run-claude-cli's, and
+  run-review-chunks' chunk-<k>/execution.json for a later chunk) for the Read
+  calls of the review and its subagents. A listed file is read only when, in
+  the transcript of the review that holds it, Read results gave the line
+  number of every non-empty line of each of its sections in a diff file the
+  job wrote whose section text is the scope diff's own: the structured range
+  the CLI records with a result, else the numbers it prints. It compares line
+  numbers only, so a line the tool truncates still counts. For a file on the
+  job's binary-files list only the section's lines before its first hunk
+  count. Every listed file without that evidence lowers the read count, which
+  makes the review partial, and is named in the coverage (`unread_files`) and
+  a warning, by path only when the path is plain. A missing or unparsable
+  transcript or diff leaves its files unread; a list of files to read the job
+  cannot back makes the review incomplete. When no Read result of a job diff
+  file is recognized (a structured range, even of 0 lines, or a numbered
+  line) and one is unrecognized (a whole-file Read of a non-empty job diff
+  returning at least min(lines, 5) non-notice lines, none numbered), the
+  CLI's Read output changed shape: the check does not run, the extract
+  step's count stands,
+  `reads-checked` is `false`, the coverage says so, and a warning names the
+  reason. That is `enforce` mode. In `report` mode, the default, it logs the
+  same notice and warning and passes the extract step's verdict and review on
+  unchanged (the format fallback's note aside), even when the check fails. A
+  verdict other than `complete` passes through. It prints no
+  transcript text and writes no artifact. Needs node on PATH.
+
+inputs:
+  review:
+    description: The extract step's review JSON.
+    required: true
+  verdict:
+    description: The extract step's verdict.
+    required: true
+  skipped:
+    description: The copies and verified renames the extract step counted as read.
+    required: true
+  execution-file:
+    description: The first review step's execution file.
+    required: true
+  results-dir:
+    description: The chunk loop's results directory; empty when it did not run.
+    required: true
+  chunks:
+    description: The compose step's chunk count.
+    required: true
+  scope-diff:
+    description: The diff file the job wrote for the scope.
+    required: true
+  file-list:
+    description: The scope's file list the job wrote.
+    required: true
+  to-read:
+    description: The full-diff step's count of the to-read list it wrote; empty when it wrote none.
+    required: true
+  excluded:
+    description: The copies and renames the split step left out of its diff; empty when none.
+    required: true
+  binary:
+    description: The full-diff step's binary-file count for a whole review; empty otherwise.
+    required: true
+  mode:
+    description: >-
+      `report` logs the result and passes the extract step's review on
+      unchanged; `enforce` holds the read count to it. Any other value
+      enforces, with a warning naming it.
+    required: true
+  binary-list:
+    description: The binary-file list the full-diff step writes.
+    required: false
+    default: .claude-lane/binary-files.txt
+  to-read-file:
+    description: The to-read list the full-diff step writes.
+    required: false
+    default: .claude-lane/to-read.txt
+  chunk-dir:
+    description: The split step's chunk directory.
+    required: false
+    default: .claude-lane/chunks
+
+outputs:
+  review:
+    description: The review, its coverage held to the files read; empty unless the verdict is complete.
+    value: ${{ steps.check.outputs.review }}
+  verdict:
+    description: "`complete`, or the reason no completed review was found."
+    value: ${{ steps.check.outputs.verdict }}
+  reads-checked:
+    description: "`true` when the per-file check ran, `false` when the CLI's Read output was not recognized; empty unless the verdict is complete."
+    value: ${{ steps.check.outputs.reads-checked }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the reads
+      id: check
+      shell: bash
+      env:
+        REVIEW: ${{ inputs.review }}
+        VERDICT: ${{ inputs.verdict }}
+        SKIPPED: ${{ inputs.skipped }}
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        RESULTS_DIR: ${{ inputs.results-dir }}
+        CHUNKS: ${{ inputs.chunks }}
+        SCOPE_DIFF: ${{ inputs.scope-diff }}
+        FILE_LIST: ${{ inputs.file-list }}
+        TO_READ: ${{ inputs.to-read }}
+        TO_READ_FILE: ${{ inputs.to-read-file }}
+        EXCLUDED: ${{ inputs.excluded }}
+        BINARY: ${{ inputs.binary }}
+        BINARY_LIST: ${{ inputs.binary-list }}
+        MODE: ${{ inputs.mode }}
+        CHUNK_DIR: ${{ inputs.chunk-dir }}
+      run: node "$GITHUB_ACTION_PATH/reads.cjs"

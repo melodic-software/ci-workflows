@@ -357,6 +357,9 @@ async function spend({
     extract: {
       outputs: { verdict: "complete", review: JSON.stringify(review) },
     },
+    reads: {
+      outputs: { verdict: "complete", review: JSON.stringify(review) },
+    },
   };
   const handoffStep = stepId(key, "handoff-file");
   const handoffOutputs = {};
