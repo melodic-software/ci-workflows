@@ -1670,7 +1670,8 @@ shows no successful Read of the diff file and no successful `gh pr diff` warns.
 many of the changed files in scope it read whole; the job counts the files in
 scope and the diff's bytes itself. A review that read fewer files than it
 changed, whose diff is over one review's 300000-byte read budget, or that was
-one review of more than 40 files that are not identical copies, is
+one review of more than 40 files that are not identical copies or verified
+renames, is
 `partial`: red, no completion notice, and its comment's first visible line
 states `read <n> of <m> changed file(s)` and, for a diff over the read budget
 or the file cap, its bytes or files before the findings count, as the failure
@@ -1701,6 +1702,22 @@ of those paths, but never with any other file or past a hold-paths match. An inc
 only the files in its scope whose change since the last reviewed head is
 identical too; when the job cannot compare that head, nothing groups. The
 review reads each group's first path, and the job counts the copies as read.
+
+**Verified renames.** On a whole review, a file the pull request moves
+without changing it is listed in `.claude-lane/renames.txt` (old path, a tab,
+the new path) and counted as read, as an identical copy is. Only a rename git
+pairs at 100% similarity (`git diff --find-renames`, passed explicitly so a
+runner's `diff.renames` cannot change it) whose blob is the same on both sides
+and whose mode is a non-executable regular file's on both counts. A rename
+whose old or new path matches `hold-paths` or SENSITIVE_PATHS (the paths
+listed under identical copies above), or whose new path is under
+`.github/workflows/`, an executable, a symlink, or a rename with any content
+or mode change, is an ordinary changed file and is read. The prompt names
+every listed rename and asks the review to check each new path for what still
+names the old one and what the new location does to the file. The review's
+summary ends with `Verified renames: <n> of <m> changed file(s) ...` and its
+coverage carries `renames`, so the read count shows why. An incremental review
+lists none.
 
 **Generated data files.** The `generated-data` input is a repository path to a
 file of paths or globs, one per line (globbed as `hold-paths`; blank lines and
@@ -1736,20 +1753,20 @@ is split at file boundaries, each file whole, into at most 4 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
 default-branch tip, and each chunk gets its own model step in the leg, in
-order. The identical copies in scope are left out first: when the
-whole diff fits the read budget and the rest fits 40 files it is one review;
-when only the rest fits both caps it is one review of the rest, written to
-`.claude-lane/chunks/distinct.diff`, whose size is the one checked against the
-read budget; when the rest alone is over either cap only the rest is split;
-in both the copies count as read. Otherwise the whole diff is split, copies
-included.
+order. The identical copies and verified renames in scope are left out first:
+when the whole diff fits the read budget and the rest fits 40 files it is one
+review; when only the rest fits both caps it is one review of the rest,
+written to `.claude-lane/chunks/distinct.diff`, whose size is the one checked
+against the read budget; when the rest alone is over either cap only the rest
+is split; in both the copies and renames count as read. Otherwise the whole
+diff is split, copies and renames included.
 The review's findings, comments and files read are the
 chunks' sums, each chunk's files read capped at the files the job counted in
 it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
 file over the budget, more than 4 chunks, so more than 160 files that are not
-copies, or a chunk over 40 files) is reviewed whole and stays `partial`.
+copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`.
 
 **Completion record.** The status step leaves one notice titled
 `claude-lane-review-complete` on the lane's check run, for a merge gate to
