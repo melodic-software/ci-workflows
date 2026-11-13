@@ -2,7 +2,7 @@
 
 // The limits pr-review-cli.yml's chunk machinery is tested at: the files per
 // chunk, the bytes per chunk and the chunk ceiling it was built for. The
-// workflow's env sets larger limits, so only a diff over its read budget is
+// workflow's env sets a larger budget and file cap, so only a diff over its read budget is
 // chunked; these values keep the fixtures sized to exercise the chunk path.
 const CHUNK_MACHINERY_LIMITS = Object.freeze({
   MAX_CHUNK_FILES: "40",
