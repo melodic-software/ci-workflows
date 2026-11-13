@@ -2,9 +2,8 @@
 
 // The limits pr-review-cli.yml's chunk machinery is tested at: the files per
 // chunk, the bytes per chunk and the chunk ceiling it was built for. The
-// workflow's env sets MAX_CHUNKS to 1, so no review is chunked; setting these
-// three values there chunks a large diff again, and these tests keep that
-// path checked.
+// workflow's env sets larger limits, so only a diff over its read budget is
+// chunked; these values keep the fixtures sized to exercise the chunk path.
 const CHUNK_MACHINERY_LIMITS = Object.freeze({
   MAX_CHUNK_FILES: "40",
   READ_BUDGET: "300000",

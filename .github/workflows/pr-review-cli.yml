@@ -471,9 +471,10 @@ env:
   MAX_CHUNK_FILES: "20000"
   # One review's read budget in bytes: the split step cuts chunks of at most
   # this size, and the extract step calls one review of a larger diff
-  # partial. A 349 KB diff of 251 files took one session 4 to 5 minutes, so
-  # the 11-minute code leg reads about 770 to 960 KB; 750000 stays under it.
-  READ_BUDGET: "750000"
+  # partial. Sessions of 506 and 558 KB returned a review inside the leg
+  # limit, and a 349 KB diff of 251 files took one 4 to 5 minutes, which
+  # puts 600000 at about 7 to 9 of the code leg's 11 minutes.
+  READ_BUDGET: "600000"
   # The most chunks one leg reviews. A diff that needs more is reviewed
   # unsplit, as a partial review, with the count and this ceiling named.
   MAX_CHUNKS: "20"
