@@ -13,6 +13,7 @@ const test = require("node:test");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
+const { atChunkMachineryLimits } = require("./chunk-machinery-limits.cjs");
 
 const WORKFLOW_FILE = path.join(
   __dirname,
@@ -22,6 +23,7 @@ const WORKFLOW_FILE = path.join(
 );
 const text = fs.readFileSync(WORKFLOW_FILE, "utf8");
 const workflow = parseWorkflow(text);
+const SHIPPED_LIMITS = atChunkMachineryLimits(workflow.env);
 const LEGS = ["review-key", "review-subscription", "review-fallback"].map(
   (name) => workflow.jobs[name],
 );
@@ -29,7 +31,7 @@ const LIMITS = ["MAX_CHUNK_FILES", "READ_BUDGET", "MAX_CHUNKS"];
 
 test("each chunk limit is defined once, in the workflow env, and read from there", () => {
   for (const name of LIMITS) {
-    assert.match(workflow.env[name] ?? "", /^[1-9][0-9]*$/u, name);
+    assert.match(SHIPPED_LIMITS[name] ?? "", /^[1-9][0-9]*$/u, name);
     const definitions = text.match(new RegExp(`^\\s*${name}:`, "gmu")) ?? [];
     assert.equal(definitions.length, 1, `${name} is defined more than once`);
     assert.doesNotMatch(
@@ -275,7 +277,7 @@ test("no leg assumes a fixed chunk count", () => {
     text,
     /(STRUCTURED|EXECUTION|LOG)_FILE_[0-9]|prompt-file-/u,
   );
-  assert.equal(workflow.env.MAX_CHUNKS, "1");
+  assert.equal(SHIPPED_LIMITS.MAX_CHUNKS, "1");
 });
 
 // --- the chunk loop ---

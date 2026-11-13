@@ -16,6 +16,7 @@ const { cliArgs, readConfig } = require("../actions/run-claude-cli/lane.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
+const { atChunkMachineryLimits } = require("./chunk-machinery-limits.cjs");
 
 const workflow = parseWorkflow(
   fs.readFileSync(
@@ -23,6 +24,7 @@ const workflow = parseWorkflow(
     "utf8",
   ),
 );
+const SHIPPED_LIMITS = atChunkMachineryLimits(workflow.env);
 const {
   "review-key": key,
   "review-subscription": subscription,
@@ -2433,15 +2435,16 @@ test("the extract step records coverage from the job's counts and the model's fi
   const full = await extract({ structured: review(3) }, { WHOLE_FILES: "3" });
   assert.equal(full.verdict, "complete");
   assert.deepEqual(JSON.parse(full.review).coverage, { read: 3, changed: 3 });
+  const many = Number(SHIPPED_LIMITS.MAX_CHUNK_FILES) + 1146;
   const partial = await extract(
     { structured: review(2) },
-    { WHOLE_FILES: "1186" },
+    { ...SHIPPED_LIMITS, WHOLE_FILES: String(many) },
   );
   assert.equal(partial.verdict, "complete");
   assert.deepEqual(JSON.parse(partial.review).coverage, {
     read: 2,
-    changed: 1186,
-    over_files: 1186,
+    changed: many,
+    over_files: many,
   });
   // A count past the scope is capped at it.
   const over = await extract({ structured: review(9) }, { WHOLE_FILES: "3" });
@@ -2465,7 +2468,8 @@ test("the extract step records coverage from the job's counts and the model's fi
 test("a diff over one review's read budget is partial whatever the model reports", async () => {
   const dir = makeTemporaryDirectory("pr-review-cli-budget-");
   const diff = path.join(dir, "pr.diff");
-  fs.writeFileSync(diff, "+".repeat(300001));
+  const budget = Number(SHIPPED_LIMITS.READ_BUDGET);
+  fs.writeFileSync(diff, "+".repeat(budget + 1));
   const outputs = await extract(
     {
       structured: JSON.stringify({
@@ -2475,15 +2479,20 @@ test("a diff over one review's read budget is partial whatever the model reports
         comments: [],
       }),
     },
-    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300001" },
+    {
+      ...SHIPPED_LIMITS,
+      WHOLE_FILES: "5",
+      SCOPE_DIFF: diff,
+      SCOPE_BYTES: String(budget + 1),
+    },
   );
   assert.equal(outputs.verdict, "complete");
   assert.deepEqual(JSON.parse(outputs.review).coverage, {
     read: 5,
     changed: 5,
-    over_budget: 300001,
+    over_budget: budget + 1,
   });
-  fs.writeFileSync(diff, "+".repeat(300000));
+  fs.writeFileSync(diff, "+".repeat(budget));
   const fits = await extract(
     {
       structured: JSON.stringify({
@@ -2493,7 +2502,12 @@ test("a diff over one review's read budget is partial whatever the model reports
         comments: [],
       }),
     },
-    { WHOLE_FILES: "5", SCOPE_DIFF: diff, SCOPE_BYTES: "300000" },
+    {
+      ...SHIPPED_LIMITS,
+      WHOLE_FILES: "5",
+      SCOPE_DIFF: diff,
+      SCOPE_BYTES: String(budget),
+    },
   );
   assert.deepEqual(JSON.parse(fits.review).coverage, { read: 5, changed: 5 });
 });
@@ -3821,7 +3835,7 @@ function split(env = {}, prepare = () => {}) {
 
 test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
   const s = step(key, "split");
-  assert.equal(workflow.env.READ_BUDGET, "1000000");
+  assert.equal(SHIPPED_LIMITS.READ_BUDGET, "1000000");
   assert.match(
     s.run,
     /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
@@ -4063,7 +4077,7 @@ test("a chunk over the file cap reviews unsplit, and two sections of one file co
 // directory, a chunk over the cap) leaves one review of more files than it
 // reads whole: partial, past the copies it skips.
 test("one review of more files that are not copies than the cap is partial", async () => {
-  const cap = Number(workflow.env.MAX_CHUNK_FILES);
+  const cap = Number(SHIPPED_LIMITS.MAX_CHUNK_FILES);
   const coverage = async (files_read, env) =>
     JSON.parse(
       (
@@ -4076,14 +4090,15 @@ test("one review of more files that are not copies than the cap is partial", asy
               comments: [],
             }),
           },
-          env,
+          { ...SHIPPED_LIMITS, ...env },
         )
       ).review,
     ).coverage;
-  assert.deepEqual(await coverage(170, { WHOLE_FILES: "170" }), {
-    read: 170,
-    changed: 170,
-    over_files: 170,
+  const many = cap + 130;
+  assert.deepEqual(await coverage(many, { WHOLE_FILES: String(many) }), {
+    read: many,
+    changed: many,
+    over_files: many,
   });
   assert.deepEqual(await coverage(cap, { WHOLE_FILES: String(cap) }), {
     read: cap,
@@ -4091,11 +4106,11 @@ test("one review of more files that are not copies than the cap is partial", asy
   });
   // The copies one whole review skips do not count against the cap.
   assert.deepEqual(
-    await coverage(35, { WHOLE_FILES: String(cap + 5), COPIES: "10" }),
+    await coverage(cap - 5, { WHOLE_FILES: String(cap + 5), COPIES: "10" }),
     { read: cap + 5, changed: cap + 5 },
   );
   assert.deepEqual(
-    await coverage(41, { WHOLE_FILES: String(cap + 5), COPIES: "4" }),
+    await coverage(cap + 1, { WHOLE_FILES: String(cap + 5), COPIES: "4" }),
     { read: cap + 5, changed: cap + 5, over_files: cap + 1 },
   );
   // An incremental review counts its own scope, past the copies in it.

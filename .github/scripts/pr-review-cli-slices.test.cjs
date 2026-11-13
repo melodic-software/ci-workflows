@@ -14,6 +14,7 @@ const test = require("node:test");
 
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
+const { atChunkMachineryLimits } = require("./chunk-machinery-limits.cjs");
 const reads = require("../actions/check-review-reads/reads.cjs");
 
 const workflow = parseWorkflow(
@@ -22,6 +23,7 @@ const workflow = parseWorkflow(
     "utf8",
   ),
 );
+const SHIPPED_LIMITS = atChunkMachineryLimits(workflow.env);
 const LEGS = ["review-key", "review-subscription", "review-fallback"].map(
   (name) => workflow.jobs[name],
 );
@@ -402,6 +404,7 @@ async function extract(
   wholeFiles,
   composed = {},
   budget = "1000",
+  limits = {},
 ) {
   const dir = makeTemporaryDirectory("pr-review-cli-slices-extract-");
   const log = JSON.stringify({
@@ -455,6 +458,7 @@ async function extract(
       ]),
     ),
     READ_BUDGET: budget,
+    ...limits,
   };
   const outputs = {};
   const warnings = [];
@@ -884,6 +888,9 @@ const filesOf = (count, width) =>
     (_, i) => `${HEADER(`src/f${i}.js`)}${HUNK(1, width)}`,
   ).join("");
 
+// The split step of `job` over `diff`, every limit the workflow's own.
+const splitShipped = (job, diff) => split(job, diff, SHIPPED_LIMITS);
+
 // The extract step of `job` over the split `cut`, every limit the
 // workflow's own, one review reading `files` of `files` changed files.
 async function coverageOf(job, cut, files) {
@@ -893,7 +900,8 @@ async function coverageOf(job, cut, files) {
     [files],
     files,
     {},
-    workflow.env.READ_BUDGET,
+    SHIPPED_LIMITS.READ_BUDGET,
+    SHIPPED_LIMITS,
   );
   assert.ok(out.review, out.verdict);
   return JSON.parse(out.review).coverage;
@@ -911,7 +919,7 @@ test("a diff over 40 files, over 300000 bytes, or with one file over 300000 byte
   ];
   for (const job of LEGS) {
     for (const [name, diff, files] of fixtures) {
-      const cut = split(job, diff);
+      const cut = splitShipped(job, diff);
       const label = `${job.name}: ${name}`;
       assert.equal(cut.outputs.chunks, "1", label);
       assert.equal(cut.outputs["over-chunks"], undefined, label);
@@ -927,7 +935,7 @@ test("a diff over 40 files, over 300000 bytes, or with one file over 300000 byte
 });
 
 test("a diff over the read budget stays partial, the bytes and the chunk count it needs named", async () => {
-  const budget = Number(workflow.env.READ_BUDGET);
+  const budget = Number(SHIPPED_LIMITS.READ_BUDGET);
   const width = 90000;
   const files = Math.ceil(budget / width) + 1;
   const fixtures = [
@@ -940,7 +948,7 @@ test("a diff over the read budget stays partial, the bytes and the chunk count i
   ];
   for (const job of LEGS) {
     for (const [name, diff, changed] of fixtures) {
-      const cut = split(job, diff);
+      const cut = splitShipped(job, diff);
       const label = `${job.name}: ${name}`;
       assert.ok(Buffer.byteLength(diff) > budget, label);
       assert.equal(cut.outputs.chunks, "1", label);
@@ -948,7 +956,7 @@ test("a diff over the read budget stays partial, the bytes and the chunk count i
       assert.match(
         cut.stdout,
         new RegExp(
-          `more than the ceiling of ${workflow.env.MAX_CHUNKS}; it is reviewed unsplit, as a partial review$`,
+          `more than the ceiling of ${SHIPPED_LIMITS.MAX_CHUNKS}; it is reviewed unsplit, as a partial review$`,
           "mu",
         ),
         label,
@@ -967,10 +975,10 @@ test("below the read budget no diff reaches the file cap, so the bytes are the o
     "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n",
   );
   assert.ok(
-    Number(workflow.env.MAX_CHUNK_FILES) * smallest >=
-      Number(workflow.env.READ_BUDGET),
+    Number(SHIPPED_LIMITS.MAX_CHUNK_FILES) * smallest >=
+      Number(SHIPPED_LIMITS.READ_BUDGET),
   );
-  assert.equal(workflow.env.MAX_CHUNKS, "1");
+  assert.equal(SHIPPED_LIMITS.MAX_CHUNKS, "1");
 });
 
 test("a cut file's path that is not plain is named by its header's line", async () => {
