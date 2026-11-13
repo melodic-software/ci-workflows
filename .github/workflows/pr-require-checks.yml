@@ -747,9 +747,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: $/.github/actions/pr-require-checks/aggregate-results
         with:
-          # report-ci-status mirrors this gate under `ci-status` and runs on
-          # contract-only events too; the run-shape reads must ignore it.
-          alias-jobs: ci-status
           # While a full run on the SHA is in flight a contract-only run holds,
           # up to `yield-wait-seconds`, with its check run in progress, then
           # passes only on a `success` recorded since it started. The ceiling is this
@@ -765,18 +762,3 @@ jobs:
           # how many steps of the job are in progress.
           step-name: Aggregate lane results
           results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
-
-  report-ci-status:
-    name: ci-status
-    needs: [ci-status]
-    if: ${{ github.event_name != 'issues' && always() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    permissions: {}
-    steps:
-      - name: Report the conclusion of `CI Status`
-        env:
-          RESULT: ${{ needs.ci-status.result }}
-        run: |
-          echo "CI Status: $RESULT"
-          [ "$RESULT" = success ]

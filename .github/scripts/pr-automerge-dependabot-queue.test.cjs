@@ -241,7 +241,7 @@ async function runWithFakes({
       if (route === github.rest.pulls.listCommits)
         return commits[params.pull_number] ?? [dependabotCommit(GROUP_MESSAGE)];
       if (route === github.rest.checks.listForRef) {
-        assert.equal(params.check_name, "ci-status");
+        assert.equal(params.check_name, "CI Status");
         assert.equal(params.ref, HEAD);
         return checkRuns[params.ref] ?? [success];
       }
@@ -362,7 +362,7 @@ test("a synced policy path that cannot be read leaves pull requests alone and di
   );
 });
 
-test("an in-tier group with a green ci-status is queued at its head with the App token", async () => {
+test("an in-tier group with a green CI Status is queued at its head with the App token", async () => {
   const { counts, appCalls, warnings } = await runWithFakes();
   assert.deepEqual(counts, { queued: 1, skipped: 0, failed: 0 });
   assert.deepEqual(warnings, []);
@@ -526,7 +526,7 @@ for (const [label, runs, shown] of [
     "failure",
   ],
 ]) {
-  test(`a ci-status that is ${label} on the head skips the pull request`, async () => {
+  test(`a CI Status that is ${label} on the head skips the pull request`, async () => {
     const { counts, appCalls, notices } = await runWithFakes({
       checkRuns: { [HEAD]: runs },
     });
@@ -534,7 +534,7 @@ for (const [label, runs, shown] of [
     assert.equal(appCalls.length, 0);
     assert.match(
       notices[0],
-      new RegExp(`#7 not queued yet: ci-status on ${HEAD} is ${shown}`, "u"),
+      new RegExp(`#7 not queued yet: CI Status on ${HEAD} is ${shown}`, "u"),
     );
   });
 }

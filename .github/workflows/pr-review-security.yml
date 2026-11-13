@@ -84,7 +84,7 @@ name: PR Review Security
 # The usage-limit fallback works as in pr-review.yml, with lane name `Claude
 # security review` and the 13-minute step budget. The
 # check is advisory (github-iac ADR 0011 keeps agentic review
-# advisory, and `ci-status` is the only required check); do not make it
+# advisory, and `CI Status` is the only required check); do not make it
 # required.
 
 on:

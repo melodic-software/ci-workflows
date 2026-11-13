@@ -8,7 +8,7 @@ name: PR Automerge Dependabot Queue
 #
 # Per open pull request authored by account 49699333 (dependabot[bot]): the
 # gate pr-automerge-dependabot.yml runs (automerge-dependabot/gate.cjs) over
-# the head commit's Dependabot metadata, then a `ci-status` check run that
+# the head commit's Dependabot metadata, then a `CI Status` check run that
 # succeeded on the head, then enablePullRequestAutoMerge at that head with no
 # merge method (the queue sets it), which enqueues it once it is mergeable.
 # An out-of-tier pull request is left alone with a notice, and disarmed if an
@@ -45,7 +45,7 @@ jobs:
     permissions:
       contents: read # Check out main for the gate scripts.
       pull-requests: read # List the pull requests and their commits; read the merge-queue state.
-      checks: read # Read ci-status on each head; the App holds no checks permission.
+      checks: read # Read CI Status on each head; the App holds no checks permission.
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

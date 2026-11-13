@@ -1,7 +1,7 @@
 "use strict";
 
 // The scheduled path: queue each open Dependabot pull request that passes
-// gate.cjs's gate and whose head has a green ci-status. A GITHUB_TOKEN arm
+// gate.cjs's gate and whose head has a green CI Status. A GITHUB_TOKEN arm
 // never enters a merge queue, so the arm uses the melodic-release App token
 // (`app`); every read uses the job token (`github`), since the App holds no
 // checks permission. Out-of-tier pull requests are left alone and noted, and
@@ -46,7 +46,7 @@ function readLockedRuntime(workspace, lockfile) {
   }
 }
 
-const CI_STATUS = "ci-status";
+const CI_STATUS = "CI Status";
 const MISSING_WORKFLOWS = /without `?workflows`? permission/iu;
 const ALREADY_MERGEABLE = /is in (clean|unstable) status/iu;
 

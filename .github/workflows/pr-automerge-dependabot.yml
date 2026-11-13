@@ -3,7 +3,7 @@ name: PR Automerge Dependabot
 # Reusable workflow: arms GitHub auto-merge (squash) on a Dependabot pull
 # request whose every update is a patch or minor bump of an allowlisted GitHub
 # Actions publisher or of an npm, pip, uv or NuGet package. Arming never merges: GitHub merges once every required check,
-# `ci-status` included, passes. Nothing here calls a merge mutation, so this
+# `CI Status` included, passes. Nothing here calls a merge mutation, so this
 # workflow cannot bypass the required check. A repository without a required
 # check makes GitHub refuse the arm (the pull request is already mergeable),
 # and the job fails rather than merging. A GITHUB_TOKEN arm never enters a
