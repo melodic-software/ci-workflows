@@ -1673,7 +1673,7 @@ shows no successful Read of the diff file and no successful `gh pr diff` warns.
 **Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
 many of the changed files in scope it read whole; the job counts the files in
 scope and the diff's bytes itself. A review that read fewer files than it
-changed, whose diff is over one review's 1000000-byte read budget, or that was
+changed, whose diff is over one review's 750000-byte read budget, or that was
 one review of more than 20000 files that are not identical copies or verified
 renames, is
 `partial`: red, no completion notice, and its comment's first visible line
@@ -1800,15 +1800,14 @@ the file list and the file total, so a review that leaves them unread is still
 
 **Chunks.** Three limits in the workflow's `env`, each defined there once and
 read by every leg's shell and script steps, size a review: `READ_BUDGET`
-(1000000 bytes), `MAX_CHUNK_FILES` (20000 files) and the chunk ceiling
-`MAX_CHUNKS` (1). At a ceiling of 1 every diff is one review of the whole
-diff in scope: a diff within both caps is never split, and a diff over either
-is reviewed whole and stays `partial`, its warning and summary naming the
-chunks it needs. The file cap is at least the read budget over 51 bytes, the
-smallest section a file counts in, so the bytes always reach their cap first.
-With a higher ceiling, a diff in scope over the read budget or the file cap
-is split at file boundaries, each file whole, into at most `MAX_CHUNKS` chunks
-of at most `READ_BUDGET` bytes and `MAX_CHUNK_FILES` files by claude-code-plugins'
+(750000 bytes, about what one 11-minute code leg reads), `MAX_CHUNK_FILES`
+(20000 files) and the chunk ceiling `MAX_CHUNKS` (20). A diff in scope within
+the read budget is one review in one session, whatever its file count or the
+size of one file in it: the file cap is at least the read budget over 51
+bytes, the smallest section a file counts in, so the bytes always reach their
+cap first. A larger diff is split at file boundaries, each file whole
+unless its own section is over the budget (then cut at its hunks), into at
+most 20 chunks of at most 750000 bytes by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
 default-branch tip. Each leg reviews the first chunk in its review step
 and the rest, in order, in one step (`.github/actions/run-review-chunks`),

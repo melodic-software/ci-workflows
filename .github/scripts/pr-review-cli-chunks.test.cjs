@@ -46,7 +46,11 @@ test("each chunk limit is defined once, in the workflow env, and read from there
       for (const name of LIMITS)
         assert.equal(s.env?.[name], undefined, `${job.name} / ${s.name}`);
       const body = `${s.run ?? ""}\n${s.with?.script ?? ""}`;
-      assert.doesNotMatch(body, /\b1000000\b/u, `${job.name} / ${s.name}`);
+      assert.doesNotMatch(
+        body,
+        new RegExp(`\\b${SHIPPED_LIMITS.READ_BUDGET}\\b`, "u"),
+        `${job.name} / ${s.name}`,
+      );
     }
   }
   // The data floor stays 7500 bytes whatever the read budget.
@@ -277,7 +281,6 @@ test("no leg assumes a fixed chunk count", () => {
     text,
     /(STRUCTURED|EXECUTION|LOG)_FILE_[0-9]|prompt-file-/u,
   );
-  assert.equal(SHIPPED_LIMITS.MAX_CHUNKS, "1");
 });
 
 // --- the chunk loop ---

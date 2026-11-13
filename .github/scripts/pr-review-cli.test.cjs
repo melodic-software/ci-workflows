@@ -2703,7 +2703,7 @@ test("the workflow names one sensitive list and one file cap, which no job or st
     "lefthook.yml",
     ".husky/**",
   ]);
-  assert.match(workflow.env.MAX_CHUNK_FILES, /^[1-9][0-9]*$/u);
+  assert.match(SHIPPED_LIMITS.MAX_CHUNK_FILES, /^[1-9][0-9]*$/u);
   for (const job of [key, subscription, fallback]) {
     assert.equal(job.env?.SENSITIVE_PATHS, undefined, job.name);
     assert.equal(job.env?.MAX_CHUNK_FILES, undefined, job.name);
@@ -3835,7 +3835,6 @@ function split(env = {}, prepare = () => {}) {
 
 test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
   const s = step(key, "split");
-  assert.equal(SHIPPED_LIMITS.READ_BUDGET, "1000000");
   assert.match(
     s.run,
     /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
@@ -6704,6 +6703,85 @@ test("a copy group and verified renames together count every changed file once",
   assert.deepEqual(await coverage(2), { read: 7, changed: 7, renames: 3 });
   // The first path unread: one short.
   assert.deepEqual(await coverage(1), { read: 6, changed: 7, renames: 3 });
+});
+
+test("at the workflow's limits, copies and verified renames in a diff within the read budget are one review of pr.diff, every file counted", async () => {
+  // 50 edited files, a copy group of 3 (its first path read, 2 copies) and 3
+  // renames: 56 changed, of which the review reads 51.
+  const repo = renameRepo(
+    (write) => {
+      for (let i = 0; i < 50; i++) write(`src/f${i}.js`, `v1 ${i}\n`);
+      for (const p of ["a", "b", "c"]) write(`${p}/lib.mjs`, "old\n");
+      for (const i of [0, 1, 2]) write(`docs/guide-${i}.md`, `guide ${i}\n`);
+    },
+    ({ write, move }) => {
+      for (let i = 0; i < 50; i++) write(`src/f${i}.js`, `v2 ${i}\n`);
+      for (const p of ["a", "b", "c"]) write(`${p}/lib.mjs`, "synced\n");
+      for (const i of [0, 1, 2])
+        move(`docs/guide-${i}.md`, `docs/manual/guide-${i}.md`);
+    },
+  );
+  const work = repo.clone();
+  const fullDiff = runLegStep(repo, work, key, "full-diff", {
+    ...fullDiffEnv(repo),
+    ...SHIPPED_LIMITS,
+  }).out;
+  assert.equal(fullDiff.files, "56");
+  assert.equal(fullDiff.copies, "2");
+  assert.equal(fullDiff.renames, "3");
+  assert.equal(fullDiff["to-read"], "51");
+  assert.ok(Number(fullDiff.bytes) <= Number(SHIPPED_LIMITS.READ_BUDGET));
+  const cut = runLegStep(repo, work, key, "split", {
+    ...splitEnv(path.join(repo.dir, "no-source"), fullDiff),
+    ...SHIPPED_LIMITS,
+  }).out;
+  // One review of the whole pr.diff: nothing left out, nothing written to
+  // distinct.diff.
+  assert.deepEqual(cut, { chunks: "1" });
+  assert.equal(
+    fs.existsSync(path.join(work, step(key, "split").env.CHUNK_DIR)),
+    false,
+  );
+  const composed = await composeOutputs({
+    ...SHIPPED_LIMITS,
+    SCOPE: "whole",
+    COPIES: fullDiff.copies,
+    RENAMES: fullDiff.renames,
+    TO_READ: fullDiff["to-read"],
+    CHUNKS: cut.chunks,
+  });
+  assert.equal(composed.chunks, "1");
+  const prompt = fs.readFileSync(composed["prompt-file"], "utf8");
+  assert.doesNotMatch(prompt, /DISTINCT DIFF/u);
+  assert.match(prompt, /^IDENTICAL FILES: /mu);
+  assert.match(prompt, /^RENAMED FILES: /mu);
+  assert.match(prompt, /a review that read all of them returns files_read 51/u);
+  const coverage = async (filesRead) =>
+    JSON.parse(
+      (
+        await extract(
+          {
+            structured: JSON.stringify({
+              findings: 0,
+              files_read: filesRead,
+              summary: "S",
+              comments: [],
+            }),
+          },
+          {
+            ...SHIPPED_LIMITS,
+            WHOLE_FILES: fullDiff.files,
+            SCOPE_DIFF: path.join(work, ".claude-lane/pr.diff"),
+            SCOPE_BYTES: fullDiff.bytes,
+            COPIES: fullDiff.copies,
+            RENAMES: fullDiff.renames,
+            CHUNKS: composed.chunks,
+          },
+        )
+      ).review,
+    ).coverage;
+  assert.deepEqual(await coverage(51), { read: 56, changed: 56, renames: 3 });
+  assert.deepEqual(await coverage(50), { read: 55, changed: 56, renames: 3 });
 });
 
 test("the split, compose and extract steps read the full-diff step's renames, in every leg", () => {

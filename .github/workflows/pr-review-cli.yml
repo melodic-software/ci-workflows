@@ -458,23 +458,25 @@ permissions:
 
 # Values the three model jobs' steps share.
 env:
-  # One review reads the whole diff in scope in one session: MAX_CHUNKS 1
-  # keeps every diff one chunk, and a diff over READ_BUDGET bytes or
-  # MAX_CHUNK_FILES files is reviewed unsplit, as a partial review, with the
-  # size and the chunk count it needs named.
+  # A diff in scope of at most READ_BUDGET bytes is one review in one
+  # session, whatever its file count or the size of one file in it. A larger
+  # diff is split into chunks of at most READ_BUDGET bytes, each reviewed in
+  # turn, up to MAX_CHUNKS chunks.
   #
-  # The files one review reads whole: the extract step calls one review of
-  # more files that are not copies or verified renames partial. At least
-  # READ_BUDGET over the smallest section a file counts in (a one-letter
-  # path's mode change, 51 bytes), so the bytes reach their cap first.
+  # The files one review reads whole: the split step cuts chunks of at most
+  # this many, and the extract step calls one review of more files that are
+  # not copies or verified renames partial. At least READ_BUDGET over the
+  # smallest section a file counts in (a one-letter path's mode change, 51
+  # bytes), so the bytes reach their cap first.
   MAX_CHUNK_FILES: "20000"
-  # One review's read budget in bytes: the extract step calls one review of
-  # a larger diff partial. A 349 KB diff of 251 files took one session 4 to
-  # 5 minutes, so about 1 MB is what one leg (11 or 13 minutes) can read.
-  READ_BUDGET: "1000000"
+  # One review's read budget in bytes: the split step cuts chunks of at most
+  # this size, and the extract step calls one review of a larger diff
+  # partial. A 349 KB diff of 251 files took one session 4 to 5 minutes, so
+  # the 11-minute code leg reads about 770 to 960 KB; 750000 stays under it.
+  READ_BUDGET: "750000"
   # The most chunks one leg reviews. A diff that needs more is reviewed
   # unsplit, as a partial review, with the count and this ceiling named.
-  MAX_CHUNKS: "1"
+  MAX_CHUNKS: "20"
   # Each chunk's output caps when a diff is chunked (one review keeps 20000
   # summary characters and 25 comments). At MAX_CHUNKS chunks every chunk at
   # these caps still merges into a review under 100 KB: the extract step keeps

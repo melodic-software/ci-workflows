@@ -879,7 +879,7 @@ test("a chunk with no piece keeps today's note, byte for byte", async () => {
   }
 });
 
-// --- one review of the whole diff, whatever its size below the ceiling ---
+// --- at the workflow's own limits ---
 
 // `count` files of one hunk each, the hunk's added line `width` characters.
 const filesOf = (count, width) =>
@@ -907,7 +907,7 @@ async function coverageOf(job, cut, files) {
   return JSON.parse(out.review).coverage;
 }
 
-test("a diff over 40 files, over 300000 bytes, or with one file over 300000 bytes is one complete review", async () => {
+test("a diff within the read budget of over 40 files, over 300000 bytes, or with one file over 300000 bytes is one complete review", async () => {
   const fixtures = [
     ["81 files", filesOf(81, 10), 81],
     ["5 files of 350000 bytes together", filesOf(5, 70000), 5],
@@ -921,6 +921,10 @@ test("a diff over 40 files, over 300000 bytes, or with one file over 300000 byte
     for (const [name, diff, files] of fixtures) {
       const cut = splitShipped(job, diff);
       const label = `${job.name}: ${name}`;
+      assert.ok(
+        Buffer.byteLength(diff) <= Number(SHIPPED_LIMITS.READ_BUDGET),
+        label,
+      );
       assert.equal(cut.outputs.chunks, "1", label);
       assert.equal(cut.outputs["over-chunks"], undefined, label);
       assert.equal(cut.outputs.sliced, undefined, label);
@@ -934,7 +938,7 @@ test("a diff over 40 files, over 300000 bytes, or with one file over 300000 byte
   }
 });
 
-test("a diff over the read budget stays partial, the bytes and the chunk count it needs named", async () => {
+test("a diff over the read budget is split into chunks of at most the budget and reviewed complete", async () => {
   const budget = Number(SHIPPED_LIMITS.READ_BUDGET);
   const width = 90000;
   const files = Math.ceil(budget / width) + 1;
@@ -951,20 +955,55 @@ test("a diff over the read budget stays partial, the bytes and the chunk count i
       const cut = splitShipped(job, diff);
       const label = `${job.name}: ${name}`;
       assert.ok(Buffer.byteLength(diff) > budget, label);
-      assert.equal(cut.outputs.chunks, "1", label);
-      assert.match(cut.outputs["over-chunks"] ?? "", /^[2-9]$/u, label);
-      assert.match(
-        cut.stdout,
-        new RegExp(
-          `more than the ceiling of ${SHIPPED_LIMITS.MAX_CHUNKS}; it is reviewed unsplit, as a partial review$`,
-          "mu",
-        ),
-        label,
+      const chunks = Number(cut.outputs.chunks);
+      assert.ok(chunks >= 2, label);
+      assert.equal(cut.outputs["over-chunks"], undefined, label);
+      for (let k = 1; k <= chunks; k++)
+        assert.ok(Buffer.byteLength(cut.chunk(k)) <= budget, `${label}: ${k}`);
+      // Every chunk read every unit it holds: its files and its pieces.
+      const composed = (await compose(job, cut, cut.chunkDir)).outputs;
+      const pieces = (composed["chunk-pieces"] ?? "").split(",");
+      const units = cut.outputs.files
+        .split(",")
+        .map((n, i) => Number(n) + Number(pieces[i] || 0));
+      const out = await extract(
+        job,
+        cut,
+        units,
+        changed,
+        composed,
+        SHIPPED_LIMITS.READ_BUDGET,
+        SHIPPED_LIMITS,
       );
-      const coverage = await coverageOf(job, cut, changed);
-      assert.equal(coverage.over_budget, Buffer.byteLength(diff), label);
-      assert.equal(isPartial(coverage), true, label);
+      assert.equal(out.verdict, "complete", label);
+      const coverage = JSON.parse(out.review).coverage;
+      assert.deepEqual(coverage, { read: changed, changed }, label);
+      assert.equal(isPartial(coverage), false, label);
     }
+  }
+});
+
+test("a diff over the chunk ceiling's worth of bytes stays partial, the chunks it needs and the ceiling named", async () => {
+  const budget = Number(SHIPPED_LIMITS.READ_BUDGET);
+  const ceiling = Number(SHIPPED_LIMITS.MAX_CHUNKS);
+  // Each file just under the budget, so each chunk holds one.
+  const diff = filesOf(ceiling + 1, budget - 200);
+  assert.ok(Buffer.byteLength(diff) > ceiling * budget);
+  for (const job of LEGS) {
+    const cut = splitShipped(job, diff);
+    assert.equal(cut.outputs.chunks, "1", job.name);
+    assert.equal(cut.outputs["over-chunks"], String(ceiling + 1), job.name);
+    assert.match(
+      cut.stdout,
+      new RegExp(
+        `needs ${ceiling + 1} chunks .*, more than the ceiling of ${ceiling}; it is reviewed unsplit, as a partial review$`,
+        "mu",
+      ),
+      job.name,
+    );
+    const coverage = await coverageOf(job, cut, ceiling + 1);
+    assert.equal(coverage.over_budget, Buffer.byteLength(diff), job.name);
+    assert.equal(isPartial(coverage), true, job.name);
   }
 });
 
@@ -978,7 +1017,6 @@ test("below the read budget no diff reaches the file cap, so the bytes are the o
     Number(SHIPPED_LIMITS.MAX_CHUNK_FILES) * smallest >=
       Number(SHIPPED_LIMITS.READ_BUDGET),
   );
-  assert.equal(SHIPPED_LIMITS.MAX_CHUNKS, "1");
 });
 
 test("a cut file's path that is not plain is named by its header's line", async () => {
