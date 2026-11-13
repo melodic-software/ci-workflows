@@ -512,32 +512,61 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     : { carry: false, why: `the net diff against ${base} differs from the decided head ${decided}` };
 }
 
-// The findings one status job's annotations record for lane `lane` at
-// `head`, its run's own head: the `claude-lane-findings` notices this step
-// writes, each entry a well-formed { path, start, end, fp }. null when one of
-// them cannot be read whole (cut short, or an entry that is not one), since
-// a finding it held could then be dropped.
-function findingNotices(annotations, lane, head) {
+// This lane's standing critical-security state at one head, as the hold
+// step records it in its status job's `claude-lane-findings` notice: every
+// finding it holds there, each with the head it was first held at, and
+// every lifted finding whose lines that head still holds, each with who
+// lifted it and at which head. Each later head's notice carries the whole
+// state, so a reader needs only the newest vetted one.
+const SHA_FIELD = /^[0-9a-f]{40}$/u;
+const LOGIN = /^[A-Za-z0-9-]{1,39}$/u;
+function readState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!raw || !Array.isArray(raw.findings) || !Array.isArray(raw.lifts)) return null;
+  const range = (f) => {
+    const [loc] = holdLocations([{ path: f?.path, start_line: f?.start, line: f?.end }]);
+    return loc && /^[0-9a-f]{64}$/u.test(f.fp ?? "") ? { ...loc, fp: f.fp } : null;
+  };
+  const findings = [];
+  for (const f of raw.findings) {
+    const r = range(f);
+    if (!r || !SHA_FIELD.test(f.first ?? "")) return null;
+    findings.push({ ...r, first: f.first });
+  }
+  const lifts = [];
+  for (const f of raw.lifts) {
+    const r = range(f);
+    if (
+      !r ||
+      !LOGIN.test(f.by ?? "") ||
+      !Number.isSafeInteger(f.by_id) ||
+      !Number.isFinite(Date.parse(f.lifted_at)) ||
+      !SHA_FIELD.test(f.head ?? "")
+    )
+      return null;
+    lifts.push({ ...r, lift: { by: f.by, by_id: f.by_id, lifted_at: f.lifted_at, head: f.head } });
+  }
+  return { findings, lifts };
+}
+
+// The state one status job's annotations record for lane `lane` at `head`,
+// its run's own head: { state }, { cut } when this lane's notice is there
+// but not readable whole, or { absent } when there is none.
+function stateNotice(annotations, lane, head) {
   const prefix = new RegExp(`^claude-lane-findings lane=${lane} sha=([0-9a-f]{40})(?: |$)`, "u");
-  const found = [];
   for (const a of Array.isArray(annotations) ? annotations : []) {
     const message = String(a?.message ?? "");
     const m = a?.annotation_level === "notice" ? prefix.exec(message) : null;
     if (!m || m[1] !== head) continue;
-    let list;
-    try {
-      list = JSON.parse(message.slice(m[0].length));
-    } catch {
-      return null;
-    }
-    if (!Array.isArray(list)) return null;
-    for (const f of list) {
-      const [loc] = holdLocations([{ path: f?.path, start_line: f?.start, line: f?.end }]);
-      if (!loc || !/^[0-9a-f]{64}$/u.test(f.fp ?? "")) return null;
-      found.push({ ...loc, fp: f.fp });
-    }
+    const state = readState(message.slice(m[0].length));
+    return state ? { state } : { cut: true };
   }
-  return found;
+  return { absent: true };
 }
 
 // Whether `e` is this lane's bot adding the hold label, as every hold of
@@ -548,24 +577,35 @@ const laneLabeled = (e, label) =>
   e.actor?.login === "github-actions[bot]" &&
   e.actor?.type === "Bot";
 
-// At most this many runs of this lane are read for a standing hold; past it
-// the hold is posted.
+// At most this many runs of this lane are read for its newest record; past
+// them the step fails.
 const MAX_LANE_RUNS = 30;
+// The state notice's size cap. GitHub documents no size limit for a
+// workflow-command notice, so the step fails rather than write a longer one
+// that might be cut short.
+const MAX_STATE_BYTES = 4000;
 
-// This lane's status-job records since the hold label was first added
-// (`since`): one { head, at, findings } per finished status job (this run's
-// earlier attempts included) of each pull_request run of this run's
-// workflow on the pull request's branch of this repository, `at` the job's
-// completion. A run last updated before `since` holds no hold, since a hold
-// adds the label before its job ends.
-// { why } when no record can be read; a failed read throws.
-async function laneRecords(github, owner, repo, env, runId, since) {
+// This lane's newest vetted record: { state, head, at } from the newest
+// finished status job (this run's earlier attempts included) of the newest
+// pull_request run of this run's workflow on the pull request's branch of
+// this repository, `at` the job's completion. A finished job with no notice
+// of this lane records an empty state, but only when it succeeded. The walk
+// goes back a run, or an attempt, while the record is missing, cut short,
+// or unvetted: its head's compare lists 300 or more files or changes this
+// lane's workflow, which a pull_request run takes from its head, so such a
+// run could write any notice. A run last updated before `since`, when this
+// lane's bot first added the label, holds no hold. { none } when no run
+// holds a record and none is cut short, { skip } when this run cannot walk at all (it is not a
+// pull_request run of this repository), { why } when the walk passes
+// MAX_LANE_RUNS or a name is not usable. A failed read throws.
+async function newestRecord(github, owner, repo, env, runId, since) {
   const statusJob = String(env.STATUS_JOB ?? "");
   if (!/^[A-Za-z0-9._ -]{1,100}$/u.test(statusJob)) return { why: "the status job name is not usable" };
+  if (!BRANCH.test(String(env.BASE_REF ?? ""))) return { why: "the base branch name is not usable" };
   const self = `${owner}/${repo}`.toLowerCase();
   const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
   if (current?.event !== "pull_request" || String(current.head_repository?.full_name).toLowerCase() !== self)
-    return { why: "this run is not a pull_request run of this repository" };
+    return { skip: "this run is not a pull_request run of this repository" };
   const branch = String(current.head_branch ?? "");
   const workflow = String(current.path ?? "");
   if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
@@ -579,50 +619,68 @@ async function laneRecords(github, owner, repo, env, runId, since) {
       branch,
       per_page: 100,
     })
-  ).filter(
-    (r) =>
-      String(r?.head_repository?.full_name).toLowerCase() === self &&
-      !(Date.parse(r.updated_at) < since),
-  );
-  if (runs.length > MAX_LANE_RUNS)
-    return { why: `this lane ran more than ${MAX_LANE_RUNS} times since the label was first added` };
-  const records = [];
-  for (const run of runs) {
-    const head = String(run.head_sha ?? "");
-    if (!SHA.test(head)) return { why: "a run of this lane has no head commit" };
-    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-      owner,
-      repo,
-      run_id: run.id,
-      filter: "all",
-      per_page: 100,
-    });
+  )
+    .filter(
+      (r) =>
+        String(r?.head_repository?.full_name).toLowerCase() === self &&
+        SHA.test(String(r.head_sha ?? "")) &&
+        !(Date.parse(r.updated_at) < since),
+    )
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
+  const vetted = new Map();
+  const clean = async (head) => {
+    if (!vetted.has(head)) {
+      const files = (
+        await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${env.BASE_REF}...${head}` })
+      ).data?.files;
+      vetted.set(
+        head,
+        Array.isArray(files) && files.length < MAX_COMPARE_FILES && !files.some((f) => f?.filename === workflow),
+      );
+    }
+    return vetted.get(head);
+  };
+  let cut = false;
+  for (const [i, run] of runs.entries()) {
+    if (i === MAX_LANE_RUNS)
+      return { why: `none of this lane's newest ${MAX_LANE_RUNS} runs holds a readable record` };
+    const head = run.head_sha;
+    const jobs = (
+      await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+        owner,
+        repo,
+        run_id: run.id,
+        filter: "all",
+        per_page: 100,
+      })
+    )
+      .filter((job) => {
+        const name = String(job?.name ?? "");
+        return (name === statusJob || name.endsWith(` / ${statusJob}`)) && Number.isFinite(Date.parse(job.completed_at));
+      })
+      .sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at));
     for (const job of jobs) {
-      const name = String(job?.name ?? "");
-      if (name !== statusJob && !name.endsWith(` / ${statusJob}`)) continue;
-      if (!Number.isFinite(Date.parse(job.completed_at))) continue;
       const annotations = await github.paginate(github.rest.checks.listAnnotations, {
         owner,
         repo,
         check_run_id: job.id,
         per_page: 100,
       });
-      const findings = findingNotices(annotations, env.LANE_ID, head);
-      if (!findings) return { why: `a findings notice of this lane at ${head} is not readable whole` };
-      records.push({ head, at: job.completed_at, findings });
+      const read = stateNotice(annotations, env.LANE_ID, head);
+      cut ||= Boolean(read.cut);
+      if (read.cut || (read.absent && job.conclusion !== "success")) continue;
+      if (!(await clean(head))) continue;
+      return { state: read.state ?? { findings: [], lifts: [] }, head, at: job.completed_at };
     }
   }
-  return { records, workflow };
+  return cut ? { why: "a record of this lane is cut short and no older one is readable" } : { none: true };
 }
 
-// The findings a listed person lifted, by identity: for each removal of the
-// hold label by a User in LIFT_AUTHOR_IDS with no App, the findings of the
-// newest status-job record before it, that is those standing when the label
-// came off. Two heads recorded at that newest time lift nothing, and neither
-// does a record whose head changes this lane's workflow or whose compare
-// lists 300 or more files: a pull_request run takes its workflow from its
-// head, so such a run could write any notice.
-async function liftedFindings(github, owner, repo, env, events, records, workflow, label) {
+// The findings the record's state lifts, by identity: its own lifts, then,
+// for the first removal of the hold label after the record by a User in
+// LIFT_AUTHOR_IDS with no App, every finding the record holds, the findings
+// standing when the label came off.
+function liftsOf(env, events, record, label) {
   const ids = new Set(
     String(env.LIFT_AUTHOR_IDS ?? "")
       .split(",")
@@ -630,92 +688,37 @@ async function liftedFindings(github, owner, repo, env, events, records, workflo
       .filter((id) => /^[1-9][0-9]*$/u.test(id))
       .map(Number),
   );
-  const lifted = new Map();
-  if (ids.size === 0 || !BRANCH.test(String(env.BASE_REF ?? ""))) return lifted;
-  const vetted = new Map();
-  const clean = async (head) => {
-    if (!vetted.has(head)) {
-      let ok = false;
-      try {
-        const files = (
-          await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${env.BASE_REF}...${head}` })
-        ).data?.files;
-        ok = Array.isArray(files) && files.length < MAX_COMPARE_FILES && !files.some((f) => f?.filename === workflow);
-      } catch {
-        ok = false;
-      }
-      vetted.set(head, ok);
-    }
-    return vetted.get(head);
-  };
-  for (const e of events) {
-    const at = Date.parse(e?.created_at);
-    if (
-      e?.event !== "unlabeled" ||
-      e.label?.name !== label ||
-      e.actor?.type !== "User" ||
-      !ids.has(e.actor.id) ||
-      e.performed_via_github_app != null ||
-      !Number.isFinite(at)
+  const lifted = new Map(record.state.lifts.map((f) => [identity(f), f.lift]));
+  if (ids.size === 0) return lifted;
+  const after = Date.parse(record.at);
+  const removal = events
+    .filter(
+      (e) =>
+        e?.event === "unlabeled" &&
+        e.label?.name === label &&
+        e.actor?.type === "User" &&
+        ids.has(e.actor.id) &&
+        LOGIN.test(String(e.actor.login ?? "")) &&
+        e.performed_via_github_app == null &&
+        Date.parse(e.created_at) > after,
     )
-      continue;
-    const before = records.filter((r) => Date.parse(r.at) < at);
-    const newest = Math.max(...before.map((r) => Date.parse(r.at)));
-    const last = before.filter((r) => Date.parse(r.at) === newest);
-    if (last.length === 0 || new Set(last.map((r) => r.head)).size !== 1) continue;
-    if (!(await clean(last[0].head))) continue;
-    for (const f of last.flatMap((r) => r.findings))
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
+  if (removal)
+    for (const f of record.state.findings)
       if (!lifted.has(identity(f)))
         lifted.set(identity(f), {
-          by: String(e.actor.login ?? ""),
-          by_id: e.actor.id,
-          lifted_at: e.created_at,
-          head: last[0].head,
+          by: removal.actor.login,
+          by_id: removal.actor.id,
+          lifted_at: removal.created_at,
+          head: record.head,
         });
-  }
   return lifted;
-}
-
-// The critical-security findings that stand at the head: each finding this
-// lane recorded since the label was first added whose exact text the head
-// still holds once in the same file, newest record first, split into
-// { carried, lifted } by the lifts. { why } when a read fails or the walk
-// is capped: then a standing hold cannot be ruled out.
-async function standingFindings(github, owner, repo, env, runId, events, label, read) {
-  const since = Math.min(
-    ...events
-      .filter((e) => laneLabeled(e, label))
-      .map((e) => Date.parse(e.created_at))
-      .filter(Number.isFinite),
-  );
-  try {
-    const walk = await laneRecords(github, owner, repo, env, runId, Number.isFinite(since) ? since : 0);
-    if (walk.why) return { why: walk.why };
-    const lifted = await liftedFindings(github, owner, repo, env, events, walk.records, walk.workflow, label);
-    const recorded = new Map();
-    for (const r of [...walk.records].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)))
-      for (const f of r.findings) recorded.set(identity(f), { ...f, from: r.head });
-    const carried = [];
-    const liftedNow = [];
-    for (const [key, f] of recorded) {
-      const lines = await read(f.path);
-      const size = f.end - f.start + 1;
-      const start = lines ? locate(lines, f.fp, size) : 0;
-      if (!start) continue;
-      const now = { path: f.path, start, end: start + size - 1, fp: f.fp, from: f.from };
-      if (lifted.has(key)) liftedNow.push({ ...now, lift: lifted.get(key) });
-      else carried.push(now);
-    }
-    return { carried, lifted: liftedNow };
-  } catch {
-    return { why: "a read of this lane's earlier runs or of the head failed" };
-  }
 }
 
 // One comment for the head naming each lifted finding that would otherwise
 // hold, who lifted it and at which head, so a person can see why no hold was
-// posted for it; a re-run that finds its marker posts none. Returns the
-// `claude-lane-lifts` notice. A failed write goes on `errors`.
+// posted for it; a re-run that finds its marker posts none. A failed write
+// goes on `errors`.
 async function postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors) {
   const lane = env.LANE_ID;
   const marker = `<!-- claude-lane-lift lane=${lane} sha=${env.HEAD_SHA} -->`;
@@ -751,8 +754,6 @@ async function postLift(github, core, env, { owner, repo, number }, lifted, find
   } catch (error) {
     errors.push(`could not post the lift comment: ${error.message}`);
   }
-  const record = lifted.map((f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp, ...f.lift }));
-  return `claude-lane-lifts lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(record)}`;
 }
 
 async function run({ github, context, core, env = process.env }) {
@@ -835,13 +836,45 @@ async function run({ github, context, core, env = process.env }) {
       else reported.set(identity({ ...loc, fp }), { ...loc, fp });
     }
   }
-  let standing = { carried: [], lifted: [] };
-  if (events.some((e) => laneLabeled(e, label)))
-    standing = await standingFindings(github, owner, repo, env, context.runId, events, label, read);
-  const lifted = standing.why ? [] : standing.lifted;
-  const liftedKeys = new Set(lifted.map(identity));
-  const carried = standing.why ? [] : standing.carried.filter((f) => !reported.has(identity(f)));
-  const held = [...reported.values()].filter((f) => !liftedKeys.has(identity(f)));
+  // This lane's standing state, read only once its bot has added the label.
+  // A walk that cannot finish fails the step and posts nothing: a hold is
+  // carried only from a vetted record of this lane's own.
+  const gate = events.some((e) => laneLabeled(e, label));
+  let record = null;
+  if (gate) {
+    const since = Math.min(...events.filter((e) => laneLabeled(e, label)).map((e) => Date.parse(e.created_at)));
+    let walk;
+    try {
+      walk = await newestRecord(github, owner, repo, env, context.runId, Number.isFinite(since) ? since : 0);
+    } catch (error) {
+      walk = { why: `a read failed: ${error.message}` };
+    }
+    if (walk.why) throw new Error(`${lane}: could not read this lane's standing critical-security hold: ${walk.why}`);
+    if (walk.skip) core.info(`${lane}: no standing hold is read: ${walk.skip}.`);
+    if (walk.state) record = walk;
+  }
+  const lifts = record ? liftsOf(env, events, record, label) : new Map();
+  const first = new Map((record?.state.findings ?? []).map((f) => [identity(f), f.first]));
+  const lifted = [];
+  const carried = [];
+  try {
+    const seen = new Set();
+    for (const f of [...(record?.state.findings ?? []), ...(record?.state.lifts ?? [])]) {
+      const key = identity(f);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const lines = await read(f.path);
+      const size = f.end - f.start + 1;
+      const start = lines ? locate(lines, f.fp, size) : 0;
+      if (!start) continue;
+      const now = { path: f.path, start, end: start + size - 1, fp: f.fp };
+      if (lifts.has(key)) lifted.push({ ...now, lift: lifts.get(key) });
+      else if (!reported.has(key)) carried.push({ ...now, first: first.get(key) ?? record.head });
+    }
+  } catch (error) {
+    throw new Error(`${lane}: could not read this lane's standing critical-security hold: a read of the head failed: ${error.message}`);
+  }
+  const held = [...reported.values()].filter((f) => !lifts.has(identity(f)));
   if (model?.criteria.includes("critical-security")) {
     if (loose)
       notes.push(
@@ -854,19 +887,34 @@ async function run({ github, context, core, env = process.env }) {
       model.criteria = model.criteria.filter((c) => c !== "critical-security");
     }
   }
-  if (standing.why) {
-    found.add("critical-security");
-    notes.push(`A standing critical-security hold of this lane could not be ruled out: ${standing.why}.`);
-  }
   for (const f of carried) {
     found.add("critical-security");
     notes.push(
-      `Carried from \`${f.from}\`: critical-security at ${where(f)}, unchanged since that head; the review of this head did not return it.`,
+      `Carried from \`${f.first}\`: critical-security at ${where(f)}, unchanged since that head; the review of this head did not return it.`,
     );
   }
   reasons.push(...notes);
-  const recordOf = (f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp });
-  const findings = (model?.criteria.includes("critical-security") ? held : []).concat(carried).map(recordOf);
+  const range = (f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp });
+  const state = {
+    findings: [
+      ...(model?.criteria.includes("critical-security") ? held : []).map((f) => ({
+        ...range(f),
+        first: first.get(identity(f)) ?? env.HEAD_SHA,
+      })),
+      ...carried.map((f) => ({ ...range(f), first: f.first })),
+    ],
+    lifts: lifted.map((f) => ({ ...range(f), ...f.lift })),
+  };
+  // A head with anything standing records its whole state; a finished status
+  // job with no notice records an empty one.
+  const stateLine =
+    state.findings.length > 0 || state.lifts.length > 0
+      ? `claude-lane-findings lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(state)}`
+      : "";
+  if (Buffer.byteLength(stateLine) > MAX_STATE_BYTES)
+    throw new Error(
+      `${lane}: this lane's standing critical-security state is over ${MAX_STATE_BYTES} bytes, more than one notice records whole`,
+    );
 
   if (model && model.criteria.length > 0) {
     for (const c of model.criteria) found.add(c);
@@ -876,7 +924,10 @@ async function run({ github, context, core, env = process.env }) {
   const criteria = CRITERIA.filter((c) => found.has(c));
   core.setOutput("hold", criteria.length > 0 ? "true" : "false");
   core.setOutput("criteria", criteria.join(","));
-  if (criteria.length === 0 && lifted.length === 0) return { hold: false, criteria };
+  if (criteria.length === 0 && lifted.length === 0) {
+    if (stateLine) core.notice(stateLine);
+    return { hold: false, criteria };
+  }
   const findSecret = await loadGate(env);
   const records = [];
   if (criteria.length > 0) {
@@ -950,11 +1001,10 @@ async function run({ github, context, core, env = process.env }) {
     records.push(
       `claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} label=${label}`,
     );
-    if (findings.length > 0)
-      records.push(`claude-lane-findings lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(findings)}`);
   }
   if (lifted.length > 0)
-    records.push(await postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors));
+    await postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors);
+  if (stateLine) records.push(stateLine);
   if (errors.length > 0) throw new Error(`${lane}: ${errors.join("; ")}`);
   for (const record of records) core.notice(record);
   return { hold: criteria.length > 0, criteria };

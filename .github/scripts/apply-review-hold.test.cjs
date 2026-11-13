@@ -1591,7 +1591,8 @@ test("a re-run records only a hold comment word for word its own, never a look-a
 // across heads. A finding's identity is its path and the sha256 of its line
 // range's text (the lines joined by "\n") at the head it was held at; the
 // fingerprints below were computed with sha256sum, outside the code. The
-// record of truth is this lane's own status-job notice, never a comment.
+// record of truth is this lane's own status-job notice, never a comment, and
+// each notice carries the lane's whole standing state at its head.
 const PREV = "c".repeat(40);
 const PREV2 = "d".repeat(40);
 const SEC = "claude-security-review";
@@ -1613,13 +1614,24 @@ const FP_EXPORTS =
 const FP_CHANGED =
   "317c26d62173d4075c565130c12dae7608af96e31dd4fa55a8b381c5aee17b02";
 const found = (path, start, end, fp) => ({ path, start, end, fp });
-const findingsNotice = (
+const LIFT = {
+  by: "kyle-sexton",
+  by_id: OWNER_ID,
+  lifted_at: "2026-11-12T10:30:00Z",
+  head: PREV,
+};
+// A state notice at `sha`: each finding first held at `sha` unless it names
+// its own `first`.
+const stateNotice = (
   sha,
   findings,
-  { lane = SEC, level = "notice" } = {},
+  { lane = SEC, level = "notice", lifts = [] } = {},
 ) => ({
   annotation_level: level,
-  message: `claude-lane-findings lane=${lane} sha=${sha} ${JSON.stringify(findings)}`,
+  message: `claude-lane-findings lane=${lane} sha=${sha} ${JSON.stringify({
+    findings: findings.map((f) => ({ ...f, first: f.first ?? sha })),
+    lifts,
+  })}`,
 });
 const holdNotice = (sha) =>
   notice({ sha, lane: SEC, criteria: "critical-security" });
@@ -1643,8 +1655,12 @@ const unlabeled = ({
   performed_via_github_app: app,
   created_at: at,
 });
+const done = (id, completedAt) => ({
+  ...statusJob({ id, completedAt }),
+  conclusion: "success",
+});
 // One earlier run of this lane at PREV whose status job, done at 10:00,
-// recorded the hold and its findings.
+// recorded the hold and its state.
 const priorRun = laneRun({
   id: 21,
   sha: PREV,
@@ -1653,8 +1669,8 @@ const priorRun = laneRun({
 const priorLane = ({
   findings = [found(FILE, 2, 3, FP_TOKEN)],
   runs = [priorRun],
-  jobs = { 21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })] },
-  annotations = { 211: [holdNotice(PREV), findingsNotice(PREV, findings)] },
+  jobs = { 21: [done(211, "2026-11-12T10:00:00Z")] },
+  annotations = { 211: [holdNotice(PREV), stateNotice(PREV, findings)] },
 } = {}) => laneOf({ runs, jobs, annotations });
 const vet = (sha, filename = FILE) => ({
   [`main...${sha}`]: {
@@ -1681,12 +1697,15 @@ const carry = (env, options = {}) =>
   });
 const bodies = (writes) =>
   writes.filter(([name]) => name === "createComment").map(([, p]) => p.body);
-const recorded = (core, kind) =>
+// The state notices this run wrote.
+const states = (core) =>
   core.notices
-    .filter((m) => m.startsWith(`claude-lane-${kind} `))
-    .map((m) => JSON.parse(m.slice(m.indexOf("["))));
+    .filter((m) => m.startsWith("claude-lane-findings "))
+    .map((m) => JSON.parse(m.slice(m.indexOf("{"))));
 const LIFTED = { LIFT_AUTHOR_IDS: String(OWNER_ID) };
 const at34 = [{ path: FILE, start_line: 3, line: 4 }];
+const WALK_FAILED =
+  /could not read this lane's standing critical-security hold: /u;
 
 test("a standing critical-security hold on unchanged lines is posted again when the review of a later head does not return it, marked carried", async () => {
   const { core, error, writes } = await carry(secEnv());
@@ -1708,12 +1727,33 @@ test("a standing critical-security hold on unchanged lines is posted again when 
       "u",
     ),
   );
-  assert.deepEqual(recorded(core, "findings"), [[found(FILE, 3, 4, FP_TOKEN)]]);
+  assert.deepEqual(states(core), [
+    { findings: [{ ...found(FILE, 3, 4, FP_TOKEN), first: PREV }], lifts: [] },
+  ]);
   assert.ok(
     core.notices.includes(
       `claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security label=needs-human`,
     ),
   );
+});
+
+test("a hold carried twice still names the head it was first held at", async () => {
+  const lane = priorLane({
+    runs: [laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:40:00Z" })],
+    jobs: { 22: [done(221, "2026-11-12T11:00:00Z")] },
+    annotations: {
+      221: [
+        holdNotice(PREV2),
+        stateNotice(PREV2, [{ ...found(FILE, 3, 4, FP_TOKEN), first: PREV }]),
+      ],
+    },
+  });
+  const { core, writes } = await carry(secEnv(), {
+    lane,
+    compares: vet(PREV2),
+  });
+  assert.match(bodies(writes)[0], new RegExp(`Carried from \`${PREV}\``, "u"));
+  assert.equal(states(core)[0].findings[0].first, PREV);
 });
 
 test("a trusted person's lift carries to a later head with the lines unchanged: no hold, one visible lift line", async () => {
@@ -1741,22 +1781,35 @@ test("a trusted person's lift carries to a later head with the lines unchanged: 
       ),
     );
     assert.match(body, new RegExp(`\nclaude-lane: ${SEC}$`, "u"));
-    assert.deepEqual(recorded(core, "lifts"), [
-      [
-        {
-          ...found(FILE, 3, 4, FP_TOKEN),
-          by: "kyle-sexton",
-          by_id: OWNER_ID,
-          lifted_at: "2026-11-12T10:30:00Z",
-          head: PREV,
-        },
-      ],
+    assert.deepEqual(states(core), [
+      { findings: [], lifts: [{ ...found(FILE, 3, 4, FP_TOKEN), ...LIFT }] },
     ]);
-    assert.deepEqual(recorded(core, "findings"), []);
   }
 });
 
-test("a lift by anyone but a listed person, by an App, before the hold, or with lift-author-ids empty carries nothing", async () => {
+test("a lift a later head recorded carries without reading the removal again", async () => {
+  const lane = priorLane({
+    runs: [laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:40:00Z" })],
+    jobs: { 22: [done(221, "2026-11-12T11:00:00Z")] },
+    annotations: {
+      221: [
+        stateNotice(PREV2, [], {
+          lifts: [{ ...found(FILE, 3, 4, FP_TOKEN), ...LIFT }],
+        }),
+      ],
+    },
+  });
+  // No removal in the events and lift-author-ids empty: the recorded lift
+  // alone keeps the hold off.
+  const { core, writes } = await carry(secEnv(), {
+    lane,
+    compares: vet(PREV2),
+  });
+  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+  assert.match(bodies(writes)[0], /lines 3-4: lifted by kyle-sexton/u);
+});
+
+test("a lift by anyone but a listed person, by an App, before the record, or with lift-author-ids empty carries nothing", async () => {
   for (const [why, events, env] of [
     [
       "empty lift-author-ids",
@@ -1787,7 +1840,7 @@ test("a lift by anyone but a listed person, by an App, before the hold, or with 
       secEnv(LIFTED),
     ],
     [
-      "a removal before the hold was recorded",
+      "a removal before the record",
       [labeled(), unlabeled({ at: "2026-11-12T09:59:30Z" })],
       secEnv(LIFTED),
     ],
@@ -1801,7 +1854,7 @@ test("a lift by anyone but a listed person, by an App, before the hold, or with 
     );
     assert.equal(bodies(writes).length, 1, why);
     assert.match(bodies(writes)[0], /Carried from/u, why);
-    assert.deepEqual(recorded(core, "lifts"), [], why);
+    assert.deepEqual(states(core)[0].lifts, [], why);
   }
 });
 
@@ -1821,8 +1874,11 @@ test("after a lift, changed lines the review reports are a new finding and hold"
   assert.equal(all.length, 1);
   assert.doesNotMatch(all[0], /Carried from|lifted by/u);
   assert.match(all[0], /A CRITICAL finding\./u);
-  assert.deepEqual(recorded(core, "findings"), [
-    [found(FILE, 3, 4, FP_CHANGED)],
+  assert.deepEqual(states(core), [
+    {
+      findings: [{ ...found(FILE, 3, 4, FP_CHANGED), first: HEAD }],
+      lifts: [],
+    },
   ]);
 });
 
@@ -1838,6 +1894,7 @@ test("changed lines the review does not report hold nothing, lifted or not", asy
     assert.equal(error, undefined);
     assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
     assert.deepEqual(writes, []);
+    assert.deepEqual(core.notices, []);
   }
 });
 
@@ -1853,29 +1910,31 @@ test("a range found twice at the head, a deleted file, or a moved file counts as
 });
 
 test("one removal lifts the findings standing at that moment; a finding first held after it still holds", async () => {
+  // Run 22's state, written after the 10:30 removal: the token lines lifted,
+  // the exports line first held at PREV2.
   const lane = priorLane({
     runs: [
-      priorRun,
       laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:40:00Z" }),
+      priorRun,
     ],
     jobs: {
-      21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })],
-      22: [statusJob({ id: 221, completedAt: "2026-11-12T11:00:00Z" })],
+      21: [done(211, "2026-11-12T10:00:00Z")],
+      22: [done(221, "2026-11-12T11:00:00Z")],
     },
     annotations: {
-      211: [
-        holdNotice(PREV),
-        findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)]),
-      ],
+      211: [stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)])],
       221: [
         holdNotice(PREV2),
-        findingsNotice(PREV2, [found(FILE, 4, 4, FP_EXPORTS)]),
+        stateNotice(PREV2, [found(FILE, 4, 4, FP_EXPORTS)], {
+          lifts: [{ ...found(FILE, 2, 3, FP_TOKEN), ...LIFT }],
+        }),
       ],
     },
   });
   const later = await carry(secEnv(LIFTED), {
     lane,
     events: [labeled(), unlabeled()],
+    compares: vet(PREV2),
   });
   assert.deepEqual(later.core.outputs, {
     hold: "true",
@@ -1895,8 +1954,11 @@ test("one removal lifts the findings standing at that moment; a finding first he
     /critical-security at `src\/app\.js` lines 3-4: lifted by kyle-sexton/u,
   );
   assert.doesNotMatch(lift, /line 5/u);
-  assert.deepEqual(recorded(later.core, "findings"), [
-    [found(FILE, 5, 5, FP_EXPORTS)],
+  assert.deepEqual(states(later.core), [
+    {
+      findings: [{ ...found(FILE, 5, 5, FP_EXPORTS), first: PREV2 }],
+      lifts: [{ ...found(FILE, 3, 4, FP_TOKEN), ...LIFT }],
+    },
   ]);
 
   // Both findings standing when the label came off: that one removal lifts both.
@@ -1907,12 +1969,12 @@ test("one removal lifts the findings standing at that moment; a finding first he
     events: [labeled(), unlabeled()],
   });
   assert.deepEqual(both.core.outputs, { hold: "false", criteria: "" });
-  assert.equal(recorded(both.core, "lifts")[0].length, 2);
+  assert.equal(states(both.core)[0].lifts.length, 2);
 });
 
 test("a record anywhere but this lane's own status-job notice for its run's head is ignored", async () => {
   const marker = `<!-- claude-lane-hold lane=${SEC} sha=${PREV} criteria=critical-security -->`;
-  const forged = `claude-lane-findings lane=${SEC} sha=${PREV} ${JSON.stringify([found(FILE, 2, 3, FP_TOKEN)])}`;
+  const forged = stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)]).message;
   const botComment = {
     id: 2,
     user: { login: "github-actions[bot]", type: "Bot" },
@@ -1944,13 +2006,13 @@ test("a record anywhere but this lane's own status-job notice for its run's head
   // naming another head than its run's, of another lane, or not a notice.
   for (const annotations of [
     [],
-    [findingsNotice(PREV2, [found(FILE, 2, 3, FP_TOKEN)])],
+    [stateNotice(PREV2, [found(FILE, 2, 3, FP_TOKEN)])],
     [
-      findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], {
+      stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], {
         lane: "claude-review",
       }),
     ],
-    [findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], { level: "warning" })],
+    [stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], { level: "warning" })],
   ]) {
     const { core, writes } = await carry(secEnv(), {
       lane: priorLane({ annotations: { 211: annotations } }),
@@ -1965,29 +2027,52 @@ test("a record anywhere but this lane's own status-job notice for its run's head
   }
 });
 
-test("a notice from a run whose head changes this lane's workflow cannot widen a lift", async () => {
-  // A planted run at PREV2 changes the caller workflow and records the exports
-  // line as held just before the person lifts the label.
+// A lane that never held, on a pull request another lane labeled: the walk
+// finds a finished status job with no notice of this lane, an empty state,
+// and the step writes and notes what origin/main does.
+test("another lane's hold label opens the walk, and a lane that never held posts nothing", async () => {
+  const { core, writes, github, error } = await carry(secEnv(), {
+    lane: priorLane({
+      annotations: {
+        211: [notice({ sha: PREV, lane: "claude-review", criteria: "cost" })],
+      },
+    }),
+  });
+  assert.equal(error, undefined);
+  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(core.notices, []);
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    [
+      "listEvents",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "listJobs",
+      "listAnnotations",
+      "compare",
+    ],
+  );
+});
+
+test("a run whose head changes this lane's workflow is passed over for the next vetted record", async () => {
+  // A planted run at PREV2 changes the caller workflow and records the
+  // exports line, and a lift of it, just before the person lifts the label.
   const lane = priorLane({
     runs: [
-      priorRun,
       laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:10:00Z" }),
+      priorRun,
     ],
     jobs: {
-      21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })],
-      22: [statusJob({ id: 221, completedAt: "2026-11-12T10:20:00Z" })],
+      21: [done(211, "2026-11-12T10:00:00Z")],
+      22: [done(221, "2026-11-12T10:20:00Z")],
     },
     annotations: {
-      211: [
-        holdNotice(PREV),
-        findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)]),
-      ],
+      211: [holdNotice(PREV), stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)])],
       221: [
-        holdNotice(PREV2),
-        findingsNotice(PREV2, [
-          found(FILE, 2, 3, FP_TOKEN),
-          found(FILE, 4, 4, FP_EXPORTS),
-        ]),
+        stateNotice(PREV2, [found(FILE, 2, 3, FP_TOKEN)], {
+          lifts: [{ ...found(FILE, 4, 4, FP_EXPORTS), ...LIFT, head: PREV2 }],
+        }),
       ],
     },
   });
@@ -2002,19 +2087,19 @@ test("a notice from a run whose head changes this lane's workflow cannot widen a
       compares: { ...vet(PREV), ...vet(PREV2, RUN_PATH) },
     },
   );
+  // The vetted record at PREV holds only the token lines, which the person's
+  // removal lifts; the exports line still holds.
   assert.deepEqual(core.outputs, {
     hold: "true",
     criteria: "critical-security",
   });
-  const all = bodies(writes);
-  assert.equal(all.length, 1);
-  assert.doesNotMatch(all[0], /lifted by/u);
-  assert.deepEqual(
-    recorded(core, "findings")[0]
-      .map((f) => f.fp)
-      .sort(),
-    [FP_EXPORTS, FP_TOKEN].sort(),
-  );
+  const [hold, lift] = bodies(writes);
+  assert.match(hold, /A CRITICAL finding\./u);
+  assert.match(lift, /lines 3-4: lifted by kyle-sexton/u);
+  assert.doesNotMatch(lift, /line 5/u);
+  assert.deepEqual(states(core)[0].findings, [
+    { ...found(FILE, 5, 5, FP_EXPORTS), first: HEAD },
+  ]);
 });
 
 test("a partial or failed review of the head still posts a standing hold", async () => {
@@ -2040,8 +2125,9 @@ test("a partial or failed review of the head still posts a standing hold", async
 
 // A pin: the bodies below are what origin/main's hold.cjs run() writes for
 // these reviews (the marker, the sentence, a blank line, the reason, a blank
-// line and the footer), so a pull request whose hold label was never added
-// sees the same writes, outputs and notices, after one read of its events.
+// line and the footer), so a pull request whose hold label this lane's bot
+// never added sees the same writes, outputs and notices, after one read of
+// its events.
 test("with no hold label ever added, the step writes and notes what it wrote before", async () => {
   const cost = await apply(
     baseEnv({
@@ -2084,7 +2170,10 @@ test("with no hold label ever added, the step writes and notes what it wrote bef
   );
   assert.deepEqual(located.core.notices, [
     `claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security label=needs-human`,
-    `claude-lane-findings lane=${SEC} sha=${HEAD} ${JSON.stringify([found(FILE, 3, 4, FP_TOKEN)])}`,
+    `claude-lane-findings lane=${SEC} sha=${HEAD} ${JSON.stringify({
+      findings: [{ ...found(FILE, 3, 4, FP_TOKEN), first: HEAD }],
+      lifts: [],
+    })}`,
   ]);
 
   const none = await apply(baseEnv());
@@ -2130,7 +2219,7 @@ test("a critical-security hold with no usable location is posted as before and s
       /names no usable location, so a later head cannot carry it and a lift cannot be matched to it/u,
       why,
     );
-    assert.deepEqual(recorded(core, "findings"), [], why);
+    assert.deepEqual(states(core), [], why);
   }
 });
 
@@ -2149,17 +2238,21 @@ test("a lift covers a located hold only when every location is lifted", async ()
   const [hold, lift] = bodies(writes);
   assert.match(hold, /A CRITICAL finding\./u);
   assert.match(lift, /lines 3-4: lifted by kyle-sexton/u);
-  assert.deepEqual(recorded(core, "findings"), [
-    [found(FILE, 5, 5, FP_EXPORTS)],
+  assert.deepEqual(states(core)[0].findings, [
+    { ...found(FILE, 5, 5, FP_EXPORTS), first: HEAD },
   ]);
 });
 
-// The reads behind a standing hold, for one earlier run: the events, the
-// current run, the lane's runs, that run's jobs and its status job's
-// annotations, one compare per lifted record's head, and one file read per
-// path at the head.
-test("a standing hold reads the events, this run, the runs, each run's jobs and notices, the head's file, and one compare per lift", async () => {
-  const carried = await carry(secEnv());
+// The reads behind a standing hold: the events, the current run, the lane's
+// runs, the newest run's jobs and its status job's annotations, one compare
+// to vet that record, and one file read per path at the head, whatever the
+// number of earlier runs.
+test("a standing hold reads a constant number of requests: the newest vetted record only", async () => {
+  const many = Array.from({ length: 12 }, (_, i) =>
+    laneRun({ id: 40 + i, sha: PREV2, createdAt: "2026-11-12T09:00:00Z" }),
+  );
+  const lane = priorLane({ runs: [priorRun, ...many] });
+  const carried = await carry(secEnv(), { lane });
   assert.deepEqual(
     carried.github.calls.map(([name]) => name),
     [
@@ -2168,6 +2261,7 @@ test("a standing hold reads the events, this run, the runs, each run's jobs and 
       "listWorkflowRuns",
       "listJobs",
       "listAnnotations",
+      "compare",
       "getContent",
       "addLabels",
       "listComments",
@@ -2175,6 +2269,7 @@ test("a standing hold reads the events, this run, the runs, each run's jobs and 
     ],
   );
   const lifted = await carry(secEnv(LIFTED), {
+    lane,
     events: [labeled(), unlabeled()],
   });
   assert.deepEqual(
@@ -2211,19 +2306,7 @@ test("a lifted range beside an unusable one still holds, and says only the usabl
     /Part of this critical-security hold names no usable location/u,
   );
   assert.match(lift, /lines 3-4: lifted by kyle-sexton/u);
-  assert.deepEqual(recorded(core, "findings"), []);
-});
-
-test("a hold label with no finding record of this lane carries nothing and posts nothing", async () => {
-  const { core, writes } = await carry(secEnv(), {
-    lane: priorLane({
-      annotations: {
-        211: [notice({ sha: PREV, lane: SEC, criteria: "cost" })],
-      },
-    }),
-  });
-  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
-  assert.deepEqual(writes, []);
+  assert.deepEqual(states(core)[0].findings, []);
 });
 
 // Only this lane's bot adding the label opens the walk: a person's label
@@ -2241,64 +2324,98 @@ test("a hold label only a person added reads nothing more and holds nothing", as
   );
 });
 
-test("a findings notice of this lane cut short or holding a bad entry posts the hold", async () => {
-  const head = `claude-lane-findings lane=${SEC} sha=${PREV} `;
+test("a cut-short newest record falls back to the next vetted one; with none, the step fails", async () => {
+  const head = `claude-lane-findings lane=${SEC} sha=${PREV2} `;
   for (const message of [
-    `${head}[{"path":"src/app.js","start":2,"end":3,"fp":"da58`,
-    `${head}${JSON.stringify([found(FILE, 2, 3, "x")])}`,
-    `${head}{}`,
+    `${head}{"findings":[{"path":"src/app.js","start":2,"end":3,"fp":"da58`,
+    `${head}${JSON.stringify({ findings: [found(FILE, 2, 3, "x")], lifts: [] })}`,
+    `${head}[]`,
     head.trimEnd(),
   ]) {
-    const { core, writes } = await carry(secEnv(), {
-      lane: priorLane({
-        annotations: { 211: [{ annotation_level: "notice", message }] },
-      }),
+    const newest = laneRun({
+      id: 22,
+      sha: PREV2,
+      createdAt: "2026-11-12T10:40:00Z",
+    });
+    const jobs = {
+      21: [done(211, "2026-11-12T10:00:00Z")],
+      22: [done(221, "2026-11-12T11:00:00Z")],
+    };
+    const annotations = {
+      211: [holdNotice(PREV), stateNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)])],
+      221: [{ annotation_level: "notice", message }],
+    };
+    const back = await carry(secEnv(), {
+      lane: priorLane({ runs: [newest, priorRun], jobs, annotations }),
     });
     assert.deepEqual(
-      core.outputs,
+      back.core.outputs,
       { hold: "true", criteria: "critical-security" },
       message,
     );
     assert.match(
-      bodies(writes)[0],
-      new RegExp(
-        `could not be ruled out: a findings notice of this lane at ${PREV} is not readable whole\\.`,
-        "u",
-      ),
+      bodies(back.writes)[0],
+      new RegExp(`Carried from \`${PREV}\``, "u"),
     );
+
+    const alone = await carry(secEnv(), {
+      lane: priorLane({ runs: [newest], jobs, annotations }),
+    });
+    assert.match(
+      String(alone.error?.message),
+      /a record of this lane is cut short and no older one is readable/u,
+    );
+    assert.deepEqual(alone.writes, [], message);
   }
 });
 
-test("an earlier-run walk that fails or passes 30 runs posts the hold; a failed events read fails the step", async () => {
+test("a walk that fails or passes 30 runs fails the step and posts nothing; a run of another event does what it did before", async () => {
   const many = Array.from({ length: 31 }, (_, i) =>
     laneRun({ id: 100 + i, sha: PREV }),
   );
-  const dispatched = priorLane();
-  dispatched.current = { ...dispatched.current, event: "workflow_dispatch" };
   for (const [why, options] of [
     ["the runs", { fail: { runs: true } }],
     ["the jobs", { fail: { jobs: true } }],
     ["the annotations", { fail: { annotations: true } }],
+    ["the vetting compare", { fail: { compare: true } }],
     ["the head's file", { fail: { content: true } }],
     ["31 runs", { lane: priorLane({ runs: many }) }],
-    ["a run of another event", { lane: dispatched }],
   ]) {
-    const { core, writes, error } = await carry(secEnv(), options);
-    assert.equal(error, undefined, why);
-    assert.deepEqual(
-      core.outputs,
-      { hold: "true", criteria: "critical-security" },
-      why,
+    const { core, writes, error } = await carry(
+      secEnv({ KEY_REVIEW: criticalReview(at34) }),
+      options,
     );
-    assert.match(
-      bodies(writes)[0],
-      /A standing critical-security hold of this lane could not be ruled out: /u,
-      why,
-    );
+    assert.match(String(error?.message), WALK_FAILED, why);
+    assert.deepEqual(writes, [], why);
+    assert.deepEqual(core.notices, [], why);
   }
+  const dispatched = priorLane();
+  dispatched.current = { ...dispatched.current, event: "workflow_dispatch" };
+  const today = await carry(secEnv(), { lane: dispatched });
+  assert.equal(today.error, undefined);
+  assert.deepEqual(today.core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(today.writes, []);
+
   const failed = await carry(secEnv(), { fail: { events: true } });
   assert.match(String(failed.error?.message), /HTTP 502/u);
   assert.deepEqual(failed.writes, []);
+});
+
+test("a standing state over one notice's cap fails the step and posts nothing", async () => {
+  const paths = Array.from(
+    { length: 8 },
+    (_, i) => `${"d".repeat(390)}/f${i}.js`,
+  );
+  const { core, writes, error } = await carry(secEnv(), {
+    lane: priorLane({ findings: paths.map((p) => found(p, 2, 3, FP_TOKEN)) }),
+    contents: Object.fromEntries(paths.map((p) => [`${HEAD}:${p}`, TEXT_PREV])),
+  });
+  assert.match(
+    String(error?.message),
+    /standing critical-security state is over 4000 bytes/u,
+  );
+  assert.deepEqual(writes, []);
+  assert.deepEqual(core.notices, []);
 });
 
 test("lift-author-ids counts numeric ids only, each whole", async () => {
