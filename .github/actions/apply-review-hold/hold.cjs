@@ -20,6 +20,7 @@ const {
   stripHtml,
   writeRecord,
 } = require("../publish-review/publish.cjs");
+const { createRetry } = require("../check-managed-files/retry.cjs");
 
 // The criteria that stop a pull request: a real-charge cost and a CRITICAL
 // security finding. A trusted path (the review's trust-gate, or hold-paths)
@@ -68,12 +69,32 @@ function modelHold(env, core) {
   };
 }
 
-// A finding's identity: its path and the sha256 of its range's lines joined
-// by "\n", exactly as the head held them. The same text at other line
-// numbers in the same file is the same finding; any other change, a second
-// copy of the text in the file, or another path is a different one.
-const fingerprint = (lines, start, end) =>
-  crypto.createHash("sha256").update(lines.slice(start - 1, end).join("\n"), "utf8").digest("hex");
+// A file's lines: its bytes split on 0x0A, a final 0x0A ending the last
+// line and adding none.
+function splitLines(bytes) {
+  const lines = [];
+  let from = 0;
+  for (let at = bytes.indexOf(0x0a); at !== -1; at = bytes.indexOf(0x0a, from)) {
+    lines.push(bytes.subarray(from, at));
+    from = at + 1;
+  }
+  if (from < bytes.length) lines.push(bytes.subarray(from));
+  return lines;
+}
+
+// A finding's identity: its path and the sha256 of its range's bytes, the
+// lines joined by 0x0A, exactly as the head held them. The same bytes at
+// other line numbers in the same file are the same finding; any other
+// change, a second copy in the file, or another path is a different one.
+const NEWLINE = Buffer.from([0x0a]);
+function fingerprint(lines, start, end) {
+  const hash = crypto.createHash("sha256");
+  for (let i = start - 1; i < end; i += 1) {
+    if (i > start - 1) hash.update(NEWLINE);
+    hash.update(lines[i]);
+  }
+  return hash.digest("hex");
+}
 const identity = (f) => `${f.path}\n${f.fp}\n${f.end - f.start + 1}`;
 
 // The first line of the one range of `size` lines in `lines` whose
@@ -88,27 +109,37 @@ function locate(lines, fp, size) {
   return at;
 }
 
-// The lines of `path` at `ref`, or null when the ref holds no regular text
-// file there that the contents API returns whole (a 404, a directory, a
-// symlink, a submodule, a file over 1 MB, a NUL byte). Any other failed read
-// throws. A final newline ends the last line; it adds none.
+// `path` at `ref`: { lines }, { gone } on a 404, or { unreadable: why } when
+// something is there that cannot be read whole (a directory, a symlink, a
+// submodule, a blob the API will not return). A file over 1 MB, which the
+// contents API returns with encoding "none", is read through its blob
+// (https://docs.github.com/en/rest/repos/contents#get-repository-content).
+// Any other failed read throws.
 async function readLines(github, owner, repo, ref, path, cache) {
   const key = `${ref}:${path}`;
   if (!cache.has(key)) {
-    let lines = null;
+    let result;
     try {
       const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
-      if (data?.type === "file" && data.encoding === "base64" && typeof data.content === "string") {
-        const text = Buffer.from(data.content, "base64").toString("utf8");
-        if (!text.includes("\0")) {
-          lines = text.split("\n");
-          if (lines.at(-1) === "") lines.pop();
+      if (data?.type !== "file") result = { unreadable: "it is not a regular file at this head" };
+      else if (data.encoding === "base64" && typeof data.content === "string")
+        result = { lines: splitLines(Buffer.from(data.content, "base64")) };
+      else if (SHA.test(String(data.sha ?? ""))) {
+        try {
+          const blob = (await github.rest.git.getBlob({ owner, repo, file_sha: data.sha })).data;
+          result =
+            blob?.encoding === "base64" && typeof blob.content === "string"
+              ? { lines: splitLines(Buffer.from(blob.content, "base64")) }
+              : { unreadable: "its blob is not returned whole" };
+        } catch (error) {
+          result = { unreadable: `its blob could not be read (${error.message})` };
         }
-      }
+      } else result = { unreadable: "the contents API does not return it whole" };
     } catch (error) {
       if (error?.status !== 404) throw error;
+      result = { gone: true };
     }
-    cache.set(key, lines);
+    cache.set(key, result);
   }
   return cache.get(key);
 }
@@ -512,12 +543,13 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     : { carry: false, why: `the net diff against ${base} differs from the decided head ${decided}` };
 }
 
-// This lane's standing critical-security state at one head, as the hold
-// step records it in its status job's `claude-lane-findings` notice: every
+// This lane's standing critical-security state for one pull request at one
+// head, as the hold step records it in its status job's notice
+// `claude-lane-findings lane=<lane> pr=<number> sha=<head> <state>`: every
 // finding it holds there, each with the head it was first held at, and
 // every lifted finding whose lines that head still holds, each with who
-// lifted it and at which head. Each later head's notice carries the whole
-// state, so a reader needs only the newest vetted one.
+// lifted it and at which head. Every run of the step writes one, an empty
+// state included, so a reader needs only the newest bound, vetted one.
 const SHA_FIELD = /^[0-9a-f]{40}$/u;
 const LOGIN = /^[A-Za-z0-9-]{1,39}$/u;
 function readState(text) {
@@ -554,20 +586,25 @@ function readState(text) {
   return { findings, lifts };
 }
 
-// The state one status job's annotations record for lane `lane` at `head`,
-// its run's own head: { state }, { cut } when this lane's notice is there
-// but not readable whole, or { absent } when there is none.
+// This lane's state notice among one status job's annotations at `head`, its
+// run's own head: { pr, state }, { pr, cut } when it is there but not
+// readable whole, or { absent } when there is none, which is no record.
 function stateNotice(annotations, lane, head) {
-  const prefix = new RegExp(`^claude-lane-findings lane=${lane} sha=([0-9a-f]{40})(?: |$)`, "u");
+  const prefix = new RegExp(`^claude-lane-findings lane=${lane} pr=([1-9][0-9]{0,9}) sha=([0-9a-f]{40})(?: |$)`, "u");
   for (const a of Array.isArray(annotations) ? annotations : []) {
     const message = String(a?.message ?? "");
     const m = a?.annotation_level === "notice" ? prefix.exec(message) : null;
-    if (!m || m[1] !== head) continue;
+    if (!m || m[2] !== head) continue;
     const state = readState(message.slice(m[0].length));
-    return state ? { state } : { cut: true };
+    return state ? { pr: Number(m[1]), state } : { pr: Number(m[1]), cut: true };
   }
   return { absent: true };
 }
+
+// Why a state is not recorded: more than one notice records whole. The hold
+// itself is posted first.
+const overCap = (lane) =>
+  `${lane}: this lane's standing critical-security state is over ${MAX_STATE_BYTES} bytes, more than one notice records whole, so it is not recorded`;
 
 // Whether `e` is this lane's bot adding the hold label, as every hold of
 // this lane does when the label is off.
@@ -585,23 +622,75 @@ const MAX_LANE_RUNS = 30;
 // that might be cut short.
 const MAX_STATE_BYTES = 4000;
 
-// This lane's newest vetted record: { state, head, at } from the newest
-// finished status job (this run's earlier attempts included) of the newest
-// pull_request run of this run's workflow on the pull request's branch of
-// this repository, `at` the job's completion. A finished job with no notice
-// of this lane records an empty state, but only when it succeeded. The walk
-// goes back a run, or an attempt, while the record is missing, cut short,
-// or unvetted: its head's compare lists 300 or more files or changes this
-// lane's workflow, which a pull_request run takes from its head, so such a
-// run could write any notice. A run last updated before `since`, when this
-// lane's bot first added the label, holds no hold. { none } when no run
-// holds a record and none is cut short, { skip } when this run cannot walk at all (it is not a
-// pull_request run of this repository), { why } when the walk passes
-// MAX_LANE_RUNS or a name is not usable. A failed read throws.
-async function newestRecord(github, owner, repo, env, runId, since) {
+// Whether run `r` belongs to pull request `pull` on its current base. A run's
+// pull_requests field lists the pull requests open from its branch when it
+// is read, not the one that started it, so the binding comes from times: the
+// run started after the pull request opened and after its base last changed
+// (`rebased`), while no other pull request from the branch (`others`) was
+// open. A pull_request run takes its workflow from the merge of its head
+// into the base it ran against, so a run of another pull request or of
+// another base could write any notice.
+function boundTo(r, pull, others, rebased) {
+  const t = Date.parse(r.created_at);
+  if (!Number.isFinite(t) || !(t >= Date.parse(pull.created_at)) || !(t > rebased)) return false;
+  return !others.some((o) => {
+    const opened = Date.parse(o?.created_at);
+    const closed = o?.closed_at == null ? Number.POSITIVE_INFINITY : Date.parse(o.closed_at);
+    return !(opened > t) && !(closed <= t);
+  });
+}
+
+// Why the branch's push history shows a head pushed since `since` with no
+// run of this lane (`ran`), else null: a deleted run could have held a
+// record. The history is read newest first until an entry older than
+// `since`. A failed read throws.
+async function pushGap(github, owner, repo, branch, ran, since) {
+  const seen = new Set(ran);
+  let after;
+  for (let pages = 0; pages < MAX_ACTIVITY_PAGES; pages += 1) {
+    const { data, headers } = await github.request("GET /repos/{owner}/{repo}/activity", {
+      owner,
+      repo,
+      ref: `refs/heads/${branch}`,
+      direction: "desc",
+      per_page: ACTIVITY_PAGE,
+      ...(after === undefined ? {} : { after }),
+    });
+    if (!Array.isArray(data)) throw new Error("an activity page is not a list");
+    for (const move of data) {
+      const at = Date.parse(move?.timestamp);
+      if (!Number.isFinite(at)) return "the branch's push history is unreadable";
+      if (at < since) return null;
+      const sha = String(move.after ?? "");
+      if (SHA.test(sha) && !/^0{40}$/u.test(sha) && !seen.has(sha))
+        return `${sha} was pushed after the label with no run of this lane`;
+    }
+    const next = NEXT_LINK.exec(String(headers?.link ?? ""));
+    if (!next) return data.length < ACTIVITY_PAGE ? null : "the branch's activity page is full but carries no next cursor";
+    after = new URL(next[1]).searchParams.get("after");
+    if (!after) throw new Error("the next activity page has no cursor");
+  }
+  return `the branch's push history runs past ${MAX_ACTIVITY_PAGES} pages`;
+}
+
+// This lane's newest record for pull request `number`: { state, head, at }
+// from the newest finished status job (this run's earlier attempts
+// included) of the newest pull_request run of this run's workflow on the
+// branch whose notice names `number`, `at` the job's completion. A job with
+// no such notice is no record, and the walk goes on. A record from a run
+// this pull request cannot be bound to (boundTo), or whose head's compare
+// lists 300 or more files or changes this lane's workflow, fails the walk:
+// { why }. So does a cut-short record with none older, and, with no record
+// at all, a push since the label with no run (pushGap). A run last updated
+// before `since`, when this lane's bot first added the label, holds no
+// hold. { none } when no record names the pull request, { skip } when this
+// run cannot walk (it is not a pull_request run of this repository). A
+// failed read throws.
+async function newestRecord(github, owner, repo, env, runId, since, events, number) {
   const statusJob = String(env.STATUS_JOB ?? "");
   if (!/^[A-Za-z0-9._ -]{1,100}$/u.test(statusJob)) return { why: "the status job name is not usable" };
   if (!BRANCH.test(String(env.BASE_REF ?? ""))) return { why: "the base branch name is not usable" };
+  if (!Number.isSafeInteger(number) || number < 1) return { why: "the pull request number is not usable" };
   const self = `${owner}/${repo}`.toLowerCase();
   const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
   if (current?.event !== "pull_request" || String(current.head_repository?.full_name).toLowerCase() !== self)
@@ -610,7 +699,23 @@ async function newestRecord(github, owner, repo, env, runId, since) {
   const workflow = String(current.path ?? "");
   if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
     return { why: "this run's workflow or branch is not usable" };
-  const runs = (
+  const pulls = await github.paginate(github.rest.pulls.list, {
+    owner,
+    repo,
+    head: `${owner}:${branch}`,
+    state: "all",
+    per_page: 100,
+  });
+  const pull = pulls.find((p) => p?.number === number);
+  if (!pull) return { why: "this pull request is not among its branch's pull requests" };
+  const others = pulls.filter((p) => p?.number !== number);
+  const rebased = Math.max(
+    ...events
+      .filter((e) => ["base_ref_changed", "automatic_base_change_succeeded"].includes(e?.event))
+      .map((e) => Date.parse(e.created_at))
+      .filter(Number.isFinite),
+  );
+  const all = (
     await github.paginate(github.rest.actions.listWorkflowRuns, {
       owner,
       repo,
@@ -619,31 +724,14 @@ async function newestRecord(github, owner, repo, env, runId, since) {
       branch,
       per_page: 100,
     })
-  )
-    .filter(
-      (r) =>
-        String(r?.head_repository?.full_name).toLowerCase() === self &&
-        SHA.test(String(r.head_sha ?? "")) &&
-        !(Date.parse(r.updated_at) < since),
-    )
+  ).filter((r) => String(r?.head_repository?.full_name).toLowerCase() === self && SHA.test(String(r.head_sha ?? "")));
+  const runs = all
+    .filter((r) => !(Date.parse(r.updated_at) < since))
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
-  const vetted = new Map();
-  const clean = async (head) => {
-    if (!vetted.has(head)) {
-      const files = (
-        await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${env.BASE_REF}...${head}` })
-      ).data?.files;
-      vetted.set(
-        head,
-        Array.isArray(files) && files.length < MAX_COMPARE_FILES && !files.some((f) => f?.filename === workflow),
-      );
-    }
-    return vetted.get(head);
-  };
-  let cut = false;
+  let cut = "";
   for (const [i, run] of runs.entries()) {
     if (i === MAX_LANE_RUNS)
-      return { why: `none of this lane's newest ${MAX_LANE_RUNS} runs holds a readable record` };
+      return { why: `none of this lane's newest ${MAX_LANE_RUNS} runs holds a readable record of this pull request` };
     const head = run.head_sha;
     const jobs = (
       await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
@@ -667,19 +755,42 @@ async function newestRecord(github, owner, repo, env, runId, since) {
         per_page: 100,
       });
       const read = stateNotice(annotations, env.LANE_ID, head);
-      cut ||= Boolean(read.cut);
-      if (read.cut || (read.absent && job.conclusion !== "success")) continue;
-      if (!(await clean(head))) continue;
-      return { state: read.state ?? { findings: [], lifts: [] }, head, at: job.completed_at };
+      if (read.absent || read.pr !== number) continue;
+      if (!boundTo(run, pull, others, rebased))
+        return {
+          why: `the record at ${head} is from a run this pull request cannot be bound to: another pull request from this branch was open, or the base changed since`,
+        };
+      if (read.cut) {
+        cut ||= `the record at ${head} is cut short and no older one is readable`;
+        continue;
+      }
+      const files = (
+        await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${env.BASE_REF}...${head}` })
+      ).data?.files;
+      if (!Array.isArray(files) || files.length >= MAX_COMPARE_FILES || files.some((f) => f?.filename === workflow))
+        return {
+          why: `the record at ${head} is from a run whose head changes this lane's workflow or lists ${MAX_COMPARE_FILES} or more files`,
+        };
+      return { state: read.state, head, at: job.completed_at };
     }
   }
-  return cut ? { why: "a record of this lane is cut short and no older one is readable" } : { none: true };
+  if (cut) return { why: cut };
+  const gap = await pushGap(
+    github,
+    owner,
+    repo,
+    branch,
+    all.map((r) => r.head_sha),
+    since,
+  );
+  return gap ? { why: gap } : { none: true };
 }
 
-// The findings the record's state lifts, by identity: its own lifts, then,
-// for the first removal of the hold label after the record by a User in
-// LIFT_AUTHOR_IDS with no App, every finding the record holds, the findings
-// standing when the label came off.
+// The findings lifted for the head, by identity, only while LIFT_AUTHOR_IDS
+// lists someone: each lift the record holds whose removal of the hold label
+// the events still show (same person, same time, a User on the list, no
+// App), then, for the first such removal after the record, every finding the
+// record holds, the findings standing when the label came off.
 function liftsOf(env, events, record, label) {
   const ids = new Set(
     String(env.LIFT_AUTHOR_IDS ?? "")
@@ -688,20 +799,28 @@ function liftsOf(env, events, record, label) {
       .filter((id) => /^[1-9][0-9]*$/u.test(id))
       .map(Number),
   );
-  const lifted = new Map(record.state.lifts.map((f) => [identity(f), f.lift]));
+  const lifted = new Map();
   if (ids.size === 0) return lifted;
-  const after = Date.parse(record.at);
-  const removal = events
-    .filter(
-      (e) =>
-        e?.event === "unlabeled" &&
-        e.label?.name === label &&
-        e.actor?.type === "User" &&
-        ids.has(e.actor.id) &&
-        LOGIN.test(String(e.actor.login ?? "")) &&
-        e.performed_via_github_app == null &&
-        Date.parse(e.created_at) > after,
+  const removals = events.filter(
+    (e) =>
+      e?.event === "unlabeled" &&
+      e.label?.name === label &&
+      e.actor?.type === "User" &&
+      ids.has(e.actor.id) &&
+      LOGIN.test(String(e.actor.login ?? "")) &&
+      e.performed_via_github_app == null &&
+      Number.isFinite(Date.parse(e.created_at)),
+  );
+  for (const f of record.state.lifts)
+    if (
+      removals.some(
+        (e) => e.actor.id === f.lift.by_id && e.actor.login === f.lift.by && e.created_at === f.lift.lifted_at,
+      )
     )
+      lifted.set(identity(f), f.lift);
+  const after = Date.parse(record.at);
+  const removal = removals
+    .filter((e) => Date.parse(e.created_at) > after)
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
   if (removal)
     for (const f of record.state.findings)
@@ -756,7 +875,7 @@ async function postLift(github, core, env, { owner, repo, number }, lifted, find
   }
 }
 
-async function run({ github, context, core, env = process.env }) {
+async function run({ github, context, core, env = process.env, sleep }) {
   const label = env.HOLD_LABEL ?? "";
   if (label === "") {
     core.setOutput("hold", "false");
@@ -778,13 +897,19 @@ async function run({ github, context, core, env = process.env }) {
   const model = modelHold(env, core);
   // The pull request's events, read on every run: with no event of this
   // lane's bot adding the hold label, no earlier hold of this lane stands
-  // and nothing more is read. A failed read fails the step.
-  const events = await github.paginate(github.rest.issues.listEvents, {
-    owner,
-    repo,
-    issue_number: number,
-    per_page: 100,
-  });
+  // and nothing more is read. A server error is tried again
+  // (check-managed-files/retry.cjs); a read that still fails fails the step.
+  const withRetry = createRetry({ ...(sleep ? { sleep } : {}), log: (line) => core.info(`${lane}: ${line}`) });
+  const events = await withRetry(
+    () =>
+      github.paginate(github.rest.issues.listEvents, {
+        owner,
+        repo,
+        issue_number: number,
+        per_page: 100,
+      }),
+    "the pull request's events",
+  );
   // The pull request's comments, read once: for the cost decision and for
   // the marker this step posts.
   let prComments;
@@ -827,7 +952,7 @@ async function run({ github, context, core, env = process.env }) {
     for (const loc of model.locations) {
       let lines = null;
       try {
-        lines = loc ? await read(loc.path) : null;
+        lines = loc ? (await read(loc.path)).lines : null;
       } catch {
         lines = null;
       }
@@ -838,21 +963,22 @@ async function run({ github, context, core, env = process.env }) {
   }
   // This lane's standing state, read only once its bot has added the label.
   // A walk that cannot finish fails the step and posts nothing: a hold is
-  // carried only from a vetted record of this lane's own.
+  // carried only from a bound, vetted record of this lane's own.
   const gate = events.some((e) => laneLabeled(e, label));
   let record = null;
   if (gate) {
     const since = Math.min(...events.filter((e) => laneLabeled(e, label)).map((e) => Date.parse(e.created_at)));
     let walk;
     try {
-      walk = await newestRecord(github, owner, repo, env, context.runId, Number.isFinite(since) ? since : 0);
+      walk = await newestRecord(github, owner, repo, env, context.runId, Number.isFinite(since) ? since : 0, events, number);
     } catch (error) {
       walk = { why: `a read failed: ${error.message}` };
     }
     if (walk.why) throw new Error(`${lane}: could not read this lane's standing critical-security hold: ${walk.why}`);
-    if (walk.skip) core.info(`${lane}: no standing hold is read: ${walk.skip}.`);
+    if (walk.skip) core.warning(`${lane}: no standing critical-security hold is read: ${walk.skip}.`);
     if (walk.state) record = walk;
   }
+  const range = (f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp });
   const lifts = record ? liftsOf(env, events, record, label) : new Map();
   const first = new Map((record?.state.findings ?? []).map((f) => [identity(f), f.first]));
   const lifted = [];
@@ -863,9 +989,16 @@ async function run({ github, context, core, env = process.env }) {
       const key = identity(f);
       if (seen.has(key)) continue;
       seen.add(key);
-      const lines = await read(f.path);
+      const file = await read(f.path);
       const size = f.end - f.start + 1;
-      const start = lines ? locate(lines, f.fp, size) : 0;
+      // A file still there that cannot be read whole keeps the finding standing
+      // where it was recorded, lifted or not: a lift needs its lines read
+      // unchanged.
+      if (file.unreadable) {
+        carried.push({ ...range(f), first: first.get(key) ?? record.head, unreadable: file.unreadable });
+        continue;
+      }
+      const start = file.lines ? locate(file.lines, f.fp, size) : 0;
       if (!start) continue;
       const now = { path: f.path, start, end: start + size - 1, fp: f.fp };
       if (lifts.has(key)) lifted.push({ ...now, lift: lifts.get(key) });
@@ -890,11 +1023,12 @@ async function run({ github, context, core, env = process.env }) {
   for (const f of carried) {
     found.add("critical-security");
     notes.push(
-      `Carried from \`${f.first}\`: critical-security at ${where(f)}, unchanged since that head; the review of this head did not return it.`,
+      f.unreadable
+        ? `Carried from \`${f.first}\`: critical-security at ${where(f)} as recorded; the file cannot be read whole at this head (${f.unreadable}), so the finding stays.`
+        : `Carried from \`${f.first}\`: critical-security at ${where(f)}, unchanged since that head; the review of this head did not return it.`,
     );
   }
   reasons.push(...notes);
-  const range = (f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp });
   const state = {
     findings: [
       ...(model?.criteria.includes("critical-security") ? held : []).map((f) => ({
@@ -905,16 +1039,14 @@ async function run({ github, context, core, env = process.env }) {
     ],
     lifts: lifted.map((f) => ({ ...range(f), ...f.lift })),
   };
-  // A head with anything standing records its whole state; a finished status
-  // job with no notice records an empty one.
+  // Every run after this lane's bot added the label records its state, an
+  // empty one included, and so does any run that holds a finding: a status
+  // job with no notice of this lane is no record.
   const stateLine =
-    state.findings.length > 0 || state.lifts.length > 0
-      ? `claude-lane-findings lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(state)}`
+    gate || state.findings.length > 0
+      ? `claude-lane-findings lane=${lane} pr=${number} sha=${env.HEAD_SHA} ${JSON.stringify(state)}`
       : "";
-  if (Buffer.byteLength(stateLine) > MAX_STATE_BYTES)
-    throw new Error(
-      `${lane}: this lane's standing critical-security state is over ${MAX_STATE_BYTES} bytes, more than one notice records whole`,
-    );
+  const fits = Buffer.byteLength(stateLine) <= MAX_STATE_BYTES;
 
   if (model && model.criteria.length > 0) {
     for (const c of model.criteria) found.add(c);
@@ -925,6 +1057,7 @@ async function run({ github, context, core, env = process.env }) {
   core.setOutput("hold", criteria.length > 0 ? "true" : "false");
   core.setOutput("criteria", criteria.join(","));
   if (criteria.length === 0 && lifted.length === 0) {
+    if (!fits) throw new Error(overCap(lane));
     if (stateLine) core.notice(stateLine);
     return { hold: false, criteria };
   }
@@ -1004,9 +1137,11 @@ async function run({ github, context, core, env = process.env }) {
   }
   if (lifted.length > 0)
     await postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors);
-  if (stateLine) records.push(stateLine);
+  if (stateLine && fits) records.push(stateLine);
+  // The record stands even when a write failed, so the next head carries it.
+  for (const line of records) core.notice(line);
+  if (!fits) errors.push(overCap(lane));
   if (errors.length > 0) throw new Error(`${lane}: ${errors.join("; ")}`);
-  for (const record of records) core.notice(record);
   return { hold: criteria.length > 0, criteria };
 }
 

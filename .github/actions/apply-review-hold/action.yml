@@ -5,8 +5,8 @@ description: >-
   it ran, else the key job's) returned a hold with criterion cost or
   critical-security. A trust-gate criterion holds nothing. A hold adds
   HOLD_LABEL and posts one `claude-lane-hold` marker comment with the
-  reason. A critical-security finding the newest vetted status-job notice
-  of this lane records holds again while its lines are unchanged, until a
+  reason. A critical-security finding the newest bound, vetted status-job
+  notice of this lane records for this pull request holds again while its lines are unchanged, until a
   person in LIFT_AUTHOR_IDS removes HOLD_LABEL; then that lift carries for
   those findings, named in one comment. It only adds: it never removes or
   replaces a label. A failed write, or a walk of this lane's runs that
