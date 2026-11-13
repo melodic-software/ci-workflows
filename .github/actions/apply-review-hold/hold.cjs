@@ -541,7 +541,7 @@ function findingNotices(annotations, lane, head) {
 }
 
 // Whether `e` is this lane's bot adding the hold label, as every hold of
-// this lane does when the label is off. GitHub keeps every labeled event.
+// this lane does when the label is off.
 const laneLabeled = (e, label) =>
   e?.event === "labeled" &&
   e.label?.name === label &&
