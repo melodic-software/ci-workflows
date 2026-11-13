@@ -16,5 +16,5 @@ Each line names a rule CI does not enforce; the linked file states it in full.
   [rule](README.md#policy-ownership-and-action-inputs).
 - Local-lane guard wrappers keep parity with the standards component:
   [rule](README.md#actions).
-- Lanes consolidate as composite actions; `ci-status` stays the single required check:
+- Lanes consolidate as composite actions; `CI Status` stays the single required check:
   [rule](README.md#contract).

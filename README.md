@@ -53,8 +53,8 @@ checkout of this repo. (Public is required because a public consumer such as
   checksum-verified install URLs) have no package manifest it can track, so
   bumping one is a reviewed pull request in this repository.
 - **Each consumer aggregates locally.** One action runs one tool inside a
-  consumer job. The required-check contract is a single check named `ci-status`,
-  produced by a thin gateway job the consumer keeps local so the required-check
+  consumer job. The required-check contract is a single check named `CI Status`,
+  produced by a thin gateway job (`ci-status`) the consumer keeps local so the required-check
   name stays un-nested. The gateway `needs:` the lane jobs and fails if any
   failed or was cancelled. Whether a skipped lane passes is the consumer's
   policy via the `ci-status` action's `treat-skipped-as` input — see that
@@ -1209,7 +1209,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
 - `.github/workflows/pr-automerge-dependabot.yml` — arms squash auto-merge on a
-  Dependabot pull request, so GitHub merges it once `ci-status` and every other
+  Dependabot pull request, so GitHub merges it once `CI Status` and every other
   required check pass. It never merges directly. All gates must hold: the PR
   author and the event sender are account id `49699333` (dependabot[bot]);
   fetch-metadata succeeded; every update is `github_actions` or, unless the
@@ -1273,7 +1273,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   commit's Dependabot metadata, runs the same gate with the reusable's
   default inputs (a synced dependabot-policy copy in the checked-out main
   would set the publishers the same way; this repository has none yet), and
-  requires a `ci-status` check run that succeeded on the head. Every package
+  requires a `CI Status` check run that succeeded on the head. Every package
   `check-dependabot-policy/package-lock.json` installs, transitive ones
   included, is review-only, since consumers run that checker. It then arms each passing PR with the melodic-release App token from
   the `plugin-release` environment, at the verified head and with no merge

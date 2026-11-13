@@ -128,9 +128,6 @@ const jobCondition = (block) => /^ {4}if: (.*)$/mu.exec(block)?.[1] ?? "";
 // that ran there would have no pull request to check, and `ci-status` would
 // publish a verdict for an issue.
 const ISSUE_JOB = "intake-label-needs-triage";
-// Mirrors the ci-status conclusion under the old check name; like ci-status,
-// it must run on contract-only events, so it carries no contract-only gate.
-const MIRROR_JOB = "report-ci-status";
 
 test("only the issue labeler runs on an issues event", () => {
   assert.match(ciWorkflow, /^ {2}issues:\n {4}types: \[opened, reopened\]$/mu);
@@ -243,7 +240,6 @@ test("every job except ci-status and the issue labeler carries the contract-only
     if (
       name === undefined ||
       name === "ci-status" ||
-      name === MIRROR_JOB ||
       name === ISSUE_JOB
     ) {
       continue;
@@ -257,15 +253,6 @@ test("every job except ci-status and the issue labeler carries the contract-only
   const ciStatusBlock = jobBlocks.find((block) => /^ci-status:$/mu.test(block));
   assert.ok(ciStatusBlock !== undefined);
   assert.ok(!ciStatusBlock.includes(CONTRACT_ONLY_GATE));
-  const mirrorBlock = jobBlocks.find((block) =>
-    new RegExp(`^${MIRROR_JOB}:$`, "mu").test(block),
-  );
-  assert.ok(mirrorBlock !== undefined);
-  assert.ok(!mirrorBlock.includes(CONTRACT_ONLY_GATE));
-  assert.match(
-    mirrorBlock,
-    /^ {4}if: \$\{\{ github\.event_name != 'issues' && always\(\) \}\}$/mu,
-  );
 });
 
 test("the ci-status contract-only default matches every job gate", () => {
@@ -291,7 +278,6 @@ test("the ci-status contract-only default matches every job gate", () => {
     if (
       name === undefined ||
       name === "ci-status" ||
-      name === MIRROR_JOB ||
       name === ISSUE_JOB
     ) {
       continue;

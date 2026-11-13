@@ -1,7 +1,7 @@
 # pr-contract
 
 One composite step carrying the whole pull-request contract, so a consumer needs
-one required status check (`ci-status`) instead of four.
+one required status check (`CI Status`) instead of four.
 
 | Check | Outcome |
 |---|---|
