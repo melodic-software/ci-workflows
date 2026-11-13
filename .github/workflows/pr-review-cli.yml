@@ -317,6 +317,15 @@ on:
           base is the one decided.
         type: string
         default: ""
+      lift-author-ids:
+        description: >-
+          Comma-separated numeric GitHub user ids of people whose removal of
+          hold-label lifts the critical-security findings standing then, so
+          a later head whose lines for them are unchanged is not held for
+          them again. Empty carries no lift: a standing critical-security
+          hold is posted again on every head while its lines are unchanged.
+        type: string
+        default: ""
       hold-label:
         description: >-
           The label the status job adds when the review holds the pull
@@ -2318,6 +2327,21 @@ jobs:
                       items: { type: "string", enum: ["cost", "trust-gate", "critical-security"] },
                     },
                     reason: { type: "string", minLength: 1, maxLength: 2000 },
+                    locations: {
+                      type: "array",
+                      minItems: 1,
+                      maxItems: 5,
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        properties: {
+                          path: { type: "string", minLength: 1, maxLength: 500 },
+                          line: { type: "integer", minimum: 1 },
+                          start_line: { type: "integer", minimum: 1 },
+                        },
+                        required: ["path", "line"],
+                      },
+                    },
                   },
                   required: ["criteria", "reason"],
                 },
@@ -2428,6 +2452,8 @@ jobs:
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
+              "  locations: for critical-security, each range of the finding in the head file: path (from the",
+              "  repository root), line, and start_line for a range; at most 5.",
               "  - critical-security: as the review command defines it (a CRITICAL security finding).",
               "  - cost: only when the change can cause a real charge: enabling or changing a paid plan, extra",
               "    usage, auto-reload or a payment method; Azure resources or deploys that bill; or",
@@ -2922,7 +2948,20 @@ jobs:
                 ) {
                   return "the review's hold is malformed";
                 }
-                hold = { criteria, reason };
+                // Its head-side ranges: a malformed one is dropped, never the hold.
+                const locations = (Array.isArray(raw.hold.locations) ? raw.hold.locations : [])
+                  .filter(
+                    (l) =>
+                      typeof l?.path === "string" &&
+                      l.path.length >= 1 &&
+                      l.path.length <= 500 &&
+                      Number.isSafeInteger(l.line) &&
+                      l.line >= 1 &&
+                      (l.start_line === undefined || (Number.isSafeInteger(l.start_line) && l.start_line >= 1 && l.start_line <= l.line)),
+                  )
+                  .slice(0, 5)
+                  .map((l) => ({ path: l.path, line: l.line, ...(l.start_line === undefined ? {} : { start_line: l.start_line }) }));
+                hold = { criteria, reason, ...(locations.length > 0 ? { locations } : {}) };
               }
               if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return "the review returned no files_read count";
               // Every comment and every `manifest <field>: flag` summary line is
@@ -3177,17 +3216,25 @@ jobs:
               );
             };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
+            // Every chunk's ranges, each once, at most 20.
+            const locations = [
+              ...new Map(
+                holds.flatMap((h) => h.locations ?? []).map((l) => [JSON.stringify([l.path, l.start_line ?? l.line, l.line]), l]),
+              ).values(),
+            ].slice(0, 20);
+            const located = locations.length > 0 ? { locations } : {};
             const hold =
               holds.length === 0
                 ? undefined
                 : chunks === 1
-                  ? { criteria: holds[0].criteria, reason: holds[0].reason }
+                  ? { criteria: holds[0].criteria, reason: holds[0].reason, ...located }
                   : {
                       criteria: [...new Set(holds.flatMap((h) => h.criteria))],
                       reason: holds
                         .map((h) => `Chunk ${h.chunk}: ${h.reason}`)
                         .join("\n")
                         .slice(0, 2000),
+                      ...located,
                     };
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
@@ -4999,6 +5046,21 @@ jobs:
                       items: { type: "string", enum: ["cost", "trust-gate", "critical-security"] },
                     },
                     reason: { type: "string", minLength: 1, maxLength: 2000 },
+                    locations: {
+                      type: "array",
+                      minItems: 1,
+                      maxItems: 5,
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        properties: {
+                          path: { type: "string", minLength: 1, maxLength: 500 },
+                          line: { type: "integer", minimum: 1 },
+                          start_line: { type: "integer", minimum: 1 },
+                        },
+                        required: ["path", "line"],
+                      },
+                    },
                   },
                   required: ["criteria", "reason"],
                 },
@@ -5109,6 +5171,8 @@ jobs:
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
+              "  locations: for critical-security, each range of the finding in the head file: path (from the",
+              "  repository root), line, and start_line for a range; at most 5.",
               "  - critical-security: as the review command defines it (a CRITICAL security finding).",
               "  - cost: only when the change can cause a real charge: enabling or changing a paid plan, extra",
               "    usage, auto-reload or a payment method; Azure resources or deploys that bill; or",
@@ -5571,7 +5635,20 @@ jobs:
                 ) {
                   return "the review's hold is malformed";
                 }
-                hold = { criteria, reason };
+                // Its head-side ranges: a malformed one is dropped, never the hold.
+                const locations = (Array.isArray(raw.hold.locations) ? raw.hold.locations : [])
+                  .filter(
+                    (l) =>
+                      typeof l?.path === "string" &&
+                      l.path.length >= 1 &&
+                      l.path.length <= 500 &&
+                      Number.isSafeInteger(l.line) &&
+                      l.line >= 1 &&
+                      (l.start_line === undefined || (Number.isSafeInteger(l.start_line) && l.start_line >= 1 && l.start_line <= l.line)),
+                  )
+                  .slice(0, 5)
+                  .map((l) => ({ path: l.path, line: l.line, ...(l.start_line === undefined ? {} : { start_line: l.start_line }) }));
+                hold = { criteria, reason, ...(locations.length > 0 ? { locations } : {}) };
               }
               if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return "the review returned no files_read count";
               // Every comment and every `manifest <field>: flag` summary line is
@@ -5826,17 +5903,25 @@ jobs:
               );
             };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
+            // Every chunk's ranges, each once, at most 20.
+            const locations = [
+              ...new Map(
+                holds.flatMap((h) => h.locations ?? []).map((l) => [JSON.stringify([l.path, l.start_line ?? l.line, l.line]), l]),
+              ).values(),
+            ].slice(0, 20);
+            const located = locations.length > 0 ? { locations } : {};
             const hold =
               holds.length === 0
                 ? undefined
                 : chunks === 1
-                  ? { criteria: holds[0].criteria, reason: holds[0].reason }
+                  ? { criteria: holds[0].criteria, reason: holds[0].reason, ...located }
                   : {
                       criteria: [...new Set(holds.flatMap((h) => h.criteria))],
                       reason: holds
                         .map((h) => `Chunk ${h.chunk}: ${h.reason}`)
                         .join("\n")
                         .slice(0, 2000),
+                      ...located,
                     };
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
@@ -7653,6 +7738,21 @@ jobs:
                       items: { type: "string", enum: ["cost", "trust-gate", "critical-security"] },
                     },
                     reason: { type: "string", minLength: 1, maxLength: 2000 },
+                    locations: {
+                      type: "array",
+                      minItems: 1,
+                      maxItems: 5,
+                      items: {
+                        type: "object",
+                        additionalProperties: false,
+                        properties: {
+                          path: { type: "string", minLength: 1, maxLength: 500 },
+                          line: { type: "integer", minimum: 1 },
+                          start_line: { type: "integer", minimum: 1 },
+                        },
+                        required: ["path", "line"],
+                      },
+                    },
                   },
                   required: ["criteria", "reason"],
                 },
@@ -7763,6 +7863,8 @@ jobs:
               "- summary: your review summary in Markdown.",
               "- hold: criteria and reason, only for the classes below, which replace the review command's own",
               "  \"Hold for a person\" classes. Omit it otherwise.",
+              "  locations: for critical-security, each range of the finding in the head file: path (from the",
+              "  repository root), line, and start_line for a range; at most 5.",
               "  - critical-security: as the review command defines it (a CRITICAL security finding).",
               "  - cost: only when the change can cause a real charge: enabling or changing a paid plan, extra",
               "    usage, auto-reload or a payment method; Azure resources or deploys that bill; or",
@@ -8223,7 +8325,20 @@ jobs:
                 ) {
                   return "the review's hold is malformed";
                 }
-                hold = { criteria, reason };
+                // Its head-side ranges: a malformed one is dropped, never the hold.
+                const locations = (Array.isArray(raw.hold.locations) ? raw.hold.locations : [])
+                  .filter(
+                    (l) =>
+                      typeof l?.path === "string" &&
+                      l.path.length >= 1 &&
+                      l.path.length <= 500 &&
+                      Number.isSafeInteger(l.line) &&
+                      l.line >= 1 &&
+                      (l.start_line === undefined || (Number.isSafeInteger(l.start_line) && l.start_line >= 1 && l.start_line <= l.line)),
+                  )
+                  .slice(0, 5)
+                  .map((l) => ({ path: l.path, line: l.line, ...(l.start_line === undefined ? {} : { start_line: l.start_line }) }));
+                hold = { criteria, reason, ...(locations.length > 0 ? { locations } : {}) };
               }
               if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return "the review returned no files_read count";
               // Every comment and every `manifest <field>: flag` summary line is
@@ -8478,17 +8593,25 @@ jobs:
               );
             };
             const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
+            // Every chunk's ranges, each once, at most 20.
+            const locations = [
+              ...new Map(
+                holds.flatMap((h) => h.locations ?? []).map((l) => [JSON.stringify([l.path, l.start_line ?? l.line, l.line]), l]),
+              ).values(),
+            ].slice(0, 20);
+            const located = locations.length > 0 ? { locations } : {};
             const hold =
               holds.length === 0
                 ? undefined
                 : chunks === 1
-                  ? { criteria: holds[0].criteria, reason: holds[0].reason }
+                  ? { criteria: holds[0].criteria, reason: holds[0].reason, ...located }
                   : {
                       criteria: [...new Set(holds.flatMap((h) => h.criteria))],
                       reason: holds
                         .map((h) => `Chunk ${h.chunk}: ${h.reason}`)
                         .join("\n")
                         .slice(0, 2000),
+                      ...located,
                     };
             // The status job receives the review as one environment string, which
             // Linux caps at 128 KiB (MAX_ARG_STRLEN), so a review over 100 KB is
@@ -8941,11 +9064,13 @@ jobs:
 
       # Add-only: in comments mode with hold-label set, the label and one
       # marker comment when the counted leg's review returned a cost or
-      # critical-security hold. It never removes a label. A failed write
-      # fails the job.
+      # critical-security hold, or an earlier head's critical-security hold
+      # still stands. It runs after a held leg too, which reviewed nothing,
+      # so a standing hold is still posted. It never removes a label. A
+      # failed write fails the job.
       - name: Apply the hold
         id: hold
-        if: always() && inputs.hold-label != '' && inputs.publish == 'comments' && steps.held.outcome != 'success'
+        if: always() && inputs.hold-label != '' && inputs.publish == 'comments'
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 2
         uses: $/.github/actions/apply-review-hold
@@ -8954,6 +9079,7 @@ jobs:
           LANE_RECORD: ${{ runner.temp }}/claude-lane-comments/comments.jsonl
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
+          LIFT_AUTHOR_IDS: ${{ inputs.lift-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
           STATUS_JOB: review-status
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}

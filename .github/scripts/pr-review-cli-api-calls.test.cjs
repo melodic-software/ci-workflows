@@ -68,6 +68,7 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
   let used = 0;
   const data = {
     "issues.listComments": () => comments,
+    "issues.listEvents": () => [],
     "pulls.listFiles": () => prFiles,
     "pulls.get": () => ({ head: { sha: HEAD }, changed_files: prFiles.length }),
     "pulls.listReviewComments": () => [],
@@ -571,14 +572,15 @@ test("each run shape spends the requests pinned here, reading the file list once
       assert.equal(counts[gone], undefined, `${name}: ${gone}`);
   }
   // A posted review adds one read of its comments' ids for the lane's
-  // comment record.
+  // comment record. The hold step reads the pull request's events once to
+  // see whether a hold label was ever added; with none, it reads nothing more.
   assert.deepEqual(totals, {
-    "a whole review with an inline comment": 9,
-    "a whole review with no inline comment": 6,
-    "an incremental review with an inline comment": 11,
-    "a no-change skip after a base-branch merge": 8,
-    "a whole review that changes a hold-paths file and holds nothing": 9,
-    "a whole review that returns a critical-security hold": 12,
+    "a whole review with an inline comment": 10,
+    "a whole review with no inline comment": 7,
+    "an incremental review with an inline comment": 12,
+    "a no-change skip after a base-branch merge": 9,
+    "a whole review that changes a hold-paths file and holds nothing": 10,
+    "a whole review that returns a critical-security hold": 13,
   });
 });
 
@@ -633,6 +635,7 @@ test("a whole review reads pulls.get in scope and once more in publish, and nowh
     "pulls.createReview": 1,
     "pulls.listCommentsForReview": 1,
     "issues.createComment": 1,
+    "issues.listEvents": 1,
   });
 });
 
@@ -716,7 +719,7 @@ test("the hold reads no file list, with or without the scope list", async () => 
       },
     });
     assert.equal(outputs.hold, "false");
-    assert.deepEqual(api.calls, []);
+    assert.deepEqual(api.calls, ["issues.listEvents"]);
   }
 });
 

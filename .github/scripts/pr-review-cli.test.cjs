@@ -7018,3 +7018,128 @@ test("the compose step reads the full-diff step's to-read count, in every leg", 
       job.name,
     );
 });
+
+// A critical-security hold names the head-side ranges it flags, so the hold
+// step can carry it, or a person's lift of it, to a later head by the
+// ranges' text.
+test("every leg's schema, prompt and extract step are the same and offer a hold's locations", async () => {
+  for (const job of [subscription, fallback]) {
+    assert.equal(
+      step(job, "compose").with.script,
+      step(key, "compose").with.script,
+      job.name,
+    );
+    assert.equal(
+      step(job, "extract").with.script,
+      step(key, "extract").with.script,
+      job.name,
+    );
+  }
+  const script = step(key, "compose").with.script;
+  assert.match(
+    script,
+    /locations: \{\n\s+type: "array",\n\s+minItems: 1,\n\s+maxItems: 5,\n\s+items: \{\n\s+type: "object",\n\s+additionalProperties: false,\n\s+properties: \{\n\s+path: \{ type: "string", minLength: 1, maxLength: 500 \},\n\s+line: \{ type: "integer", minimum: 1 \},\n\s+start_line: \{ type: "integer", minimum: 1 \},\n\s+\},\n\s+required: \["path", "line"\],/u,
+  );
+  assert.match(script, /required: \["criteria", "reason"\],/u);
+  const prompt = await compose({});
+  assert.match(
+    prompt,
+    /\n {2}locations: for critical-security, each range of the finding in the head file: path \(from the\n {2}repository root\), line, and start_line for a range; at most 5\.\n/u,
+  );
+});
+
+test("the extract step keeps a hold's well-formed locations, drops the others, and keeps the hold", async () => {
+  const good = { files_read: 1, findings: 0, summary: "S", comments: [] };
+  const run = async (locations) =>
+    JSON.parse(
+      (
+        await extract({
+          structured: JSON.stringify({
+            ...good,
+            hold: { criteria: ["critical-security"], reason: "R", locations },
+          }),
+        })
+      ).review,
+    ).hold;
+  assert.deepEqual(
+    await run([
+      { path: "src/a.js", line: 4, start_line: 2 },
+      { path: "b.js", line: 1 },
+      { path: "", line: 1 },
+      { path: "c.js", line: 0 },
+      { path: "d.js", line: 2, start_line: 3 },
+      { path: "e.js" },
+      "f.js",
+    ]),
+    {
+      criteria: ["critical-security"],
+      reason: "R",
+      locations: [
+        { path: "src/a.js", line: 4, start_line: 2 },
+        { path: "b.js", line: 1 },
+      ],
+    },
+  );
+  for (const locations of [undefined, [], "src/a.js", [{ path: "", line: 1 }]])
+    assert.deepEqual(
+      await run(locations),
+      { criteria: ["critical-security"], reason: "R" },
+      JSON.stringify(locations),
+    );
+});
+
+test("a chunked review joins its chunks' hold locations, each range once, at most 20", async () => {
+  const chunk = (hold) => ({
+    findings: 0,
+    files_read: 2,
+    comments: [],
+    summary: "S",
+    hold,
+  });
+  const at = (path, line) => ({ path, line });
+  const outputs = await extractChunks([
+    chunk({
+      criteria: ["critical-security"],
+      reason: "One.",
+      locations: [at("a.js", 1), at("b.js", 2)],
+    }),
+    chunk(undefined),
+    chunk({
+      criteria: ["critical-security"],
+      reason: "Two.",
+      locations: [at("b.js", 2), at("c.js", 3)],
+    }),
+  ]);
+  assert.deepEqual(JSON.parse(outputs.review).hold, {
+    criteria: ["critical-security"],
+    reason: "Chunk 1: One.\nChunk 3: Two.",
+    locations: [at("a.js", 1), at("b.js", 2), at("c.js", 3)],
+  });
+  const many = await extractChunks(
+    Array.from({ length: 5 }, (_, k) =>
+      chunk({
+        criteria: ["critical-security"],
+        reason: "R",
+        locations: Array.from({ length: 5 }, (_, i) => at(`f${k}.js`, i + 1)),
+      }),
+    ),
+  );
+  assert.equal(JSON.parse(many.review).hold.locations.length, 20);
+});
+
+test("the hold step gets lift-author-ids, empty by default, and runs when a leg held", () => {
+  const input = workflow.on.workflow_call.inputs["lift-author-ids"];
+  assert.equal(input.type, "string");
+  assert.equal(input.default, "");
+  const hold = step(status, "hold");
+  assert.equal(hold.env.LIFT_AUTHOR_IDS, `\${{ inputs.lift-author-ids }}`);
+  assert.equal(
+    Boolean(
+      evaluate(hold.if, {
+        inputs: { "hold-label": "needs-human", publish: "comments" },
+        steps: { held: { outcome: "success" } },
+      }),
+    ),
+    true,
+  );
+});

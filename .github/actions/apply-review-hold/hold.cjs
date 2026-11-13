@@ -1,12 +1,17 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
 // HOLD_LABEL, LANE_ID, STATUS_JOB (the name of the status job this step runs
-// in, whose earlier runs' notices give a cost decision's decided head),
+// in, whose earlier runs' notices give a cost decision's decided head and
+// the critical-security findings that still stand),
 // PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
-// counts), and the legs' KEY_* and SUB_* outputs that publish-review's judge
-// reads. It only adds: the label and one marker comment. Every write goes
-// through issues.addLabels or issues.createComment.
+// counts), LIFT_AUTHOR_IDS (the people whose removal of the hold label lifts
+// the critical-security findings standing then; empty lifts none), and the
+// legs' KEY_* and SUB_* outputs that publish-review's judge reads. It only
+// adds: the label, one marker comment, and one comment naming the lifted
+// findings it posts no hold for. Every write goes through issues.addLabels
+// or issues.createComment.
 "use strict";
 
+const crypto = require("node:crypto");
 const {
   bindingLine,
   judge,
@@ -22,6 +27,31 @@ const {
 const CRITERIA = ["cost", "critical-security"];
 const MAX_REASON = 2000;
 
+// A critical-security hold names at most this many head-side ranges.
+const MAX_LOCATIONS = 20;
+
+// The review's flagged ranges, head side, as { path, start, end }, with null
+// in place of each one no file read can check: a path that is not a plain
+// repository path (a backtick would end the code span the comments quote it
+// in), or a range that is not one. A list past MAX_LOCATIONS adds one null.
+function holdLocations(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = raw.slice(0, MAX_LOCATIONS).map((l) => {
+    const path = l?.path;
+    const end = l?.line;
+    const start = l?.start_line ?? end;
+    const plain =
+      typeof path === "string" &&
+      path.length <= 500 &&
+      !/[\0\r\n\\`]/u.test(path) &&
+      path.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+    return plain && Number.isSafeInteger(end) && Number.isSafeInteger(start) && start >= 1 && start <= end
+      ? { path, start, end }
+      : null;
+  });
+  return raw.length > MAX_LOCATIONS ? [...out, null] : out;
+}
+
 // The hold the counted leg's checked review returned, or null.
 function modelHold(env, core) {
   const verdict = judge(env);
@@ -34,8 +64,58 @@ function modelHold(env, core) {
   return {
     criteria,
     reason: typeof hold.reason === "string" ? hold.reason : "",
+    locations: holdLocations(hold.locations),
   };
 }
+
+// A finding's identity: its path and the sha256 of its range's lines joined
+// by "\n", exactly as the head held them. The same text at other line
+// numbers in the same file is the same finding; any other change, a second
+// copy of the text in the file, or another path is a different one.
+const fingerprint = (lines, start, end) =>
+  crypto.createHash("sha256").update(lines.slice(start - 1, end).join("\n"), "utf8").digest("hex");
+const identity = (f) => `${f.path}\n${f.fp}\n${f.end - f.start + 1}`;
+
+// The first line of the one range of `size` lines in `lines` whose
+// fingerprint is `fp`, or 0 when there is none or more than one.
+function locate(lines, fp, size) {
+  let at = 0;
+  for (let start = 1; start + size - 1 <= lines.length; start += 1) {
+    if (fingerprint(lines, start, start + size - 1) !== fp) continue;
+    if (at) return 0;
+    at = start;
+  }
+  return at;
+}
+
+// The lines of `path` at `ref`, or null when the ref holds no regular text
+// file there that the contents API returns whole (a 404, a directory, a
+// symlink, a submodule, a file over 1 MB, a NUL byte). Any other failed read
+// throws. A final newline ends the last line; it adds none.
+async function readLines(github, owner, repo, ref, path, cache) {
+  const key = `${ref}:${path}`;
+  if (!cache.has(key)) {
+    let lines = null;
+    try {
+      const { data } = await github.rest.repos.getContent({ owner, repo, path, ref });
+      if (data?.type === "file" && data.encoding === "base64" && typeof data.content === "string") {
+        const text = Buffer.from(data.content, "base64").toString("utf8");
+        if (!text.includes("\0")) {
+          lines = text.split("\n");
+          if (lines.at(-1) === "") lines.pop();
+        }
+      }
+    } catch (error) {
+      if (error?.status !== 404) throw error;
+    }
+    cache.set(key, lines);
+  }
+  return cache.get(key);
+}
+
+// `where` as the comment names it: `path` line n, or lines n-m.
+const where = (f) =>
+  `\`${f.path}\` ${f.start === f.end ? `line ${f.start}` : `lines ${f.start}-${f.end}`}`;
 
 // A cost decision: an unedited comment by a trusted person whose first line
 // opens `**Decision recorded.** Cost:` (claude-code-plugins@eda837d4c8
@@ -432,6 +512,249 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     : { carry: false, why: `the net diff against ${base} differs from the decided head ${decided}` };
 }
 
+// The findings one status job's annotations record for lane `lane` at
+// `head`, its run's own head: the `claude-lane-findings` notices this step
+// writes, each entry a well-formed { path, start, end, fp }. null when one of
+// them cannot be read whole (cut short, or an entry that is not one), since
+// a finding it held could then be dropped.
+function findingNotices(annotations, lane, head) {
+  const prefix = new RegExp(`^claude-lane-findings lane=${lane} sha=([0-9a-f]{40})(?: |$)`, "u");
+  const found = [];
+  for (const a of Array.isArray(annotations) ? annotations : []) {
+    const message = String(a?.message ?? "");
+    const m = a?.annotation_level === "notice" ? prefix.exec(message) : null;
+    if (!m || m[1] !== head) continue;
+    let list;
+    try {
+      list = JSON.parse(message.slice(m[0].length));
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(list)) return null;
+    for (const f of list) {
+      const [loc] = holdLocations([{ path: f?.path, start_line: f?.start, line: f?.end }]);
+      if (!loc || !/^[0-9a-f]{64}$/u.test(f.fp ?? "")) return null;
+      found.push({ ...loc, fp: f.fp });
+    }
+  }
+  return found;
+}
+
+// Whether `e` is this lane's bot adding the hold label, as every hold of
+// this lane does when the label is off. GitHub keeps every labeled event.
+const laneLabeled = (e, label) =>
+  e?.event === "labeled" &&
+  e.label?.name === label &&
+  e.actor?.login === "github-actions[bot]" &&
+  e.actor?.type === "Bot";
+
+// At most this many runs of this lane are read for a standing hold; past it
+// the hold is posted.
+const MAX_LANE_RUNS = 30;
+
+// This lane's status-job records since the hold label was first added
+// (`since`): one { head, at, findings } per finished status job (this run's
+// earlier attempts included) of each pull_request run of this run's
+// workflow on the pull request's branch of this repository, `at` the job's
+// completion. A run last updated before `since` holds no hold, since a hold
+// adds the label before its job ends.
+// { why } when no record can be read; a failed read throws.
+async function laneRecords(github, owner, repo, env, runId, since) {
+  const statusJob = String(env.STATUS_JOB ?? "");
+  if (!/^[A-Za-z0-9._ -]{1,100}$/u.test(statusJob)) return { why: "the status job name is not usable" };
+  const self = `${owner}/${repo}`.toLowerCase();
+  const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
+  if (current?.event !== "pull_request" || String(current.head_repository?.full_name).toLowerCase() !== self)
+    return { why: "this run is not a pull_request run of this repository" };
+  const branch = String(current.head_branch ?? "");
+  const workflow = String(current.path ?? "");
+  if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
+    return { why: "this run's workflow or branch is not usable" };
+  const runs = (
+    await github.paginate(github.rest.actions.listWorkflowRuns, {
+      owner,
+      repo,
+      workflow_id: current.workflow_id,
+      event: "pull_request",
+      branch,
+      per_page: 100,
+    })
+  ).filter(
+    (r) =>
+      String(r?.head_repository?.full_name).toLowerCase() === self &&
+      !(Date.parse(r.updated_at) < since),
+  );
+  if (runs.length > MAX_LANE_RUNS)
+    return { why: `this lane ran more than ${MAX_LANE_RUNS} times since the label was first added` };
+  const records = [];
+  for (const run of runs) {
+    const head = String(run.head_sha ?? "");
+    if (!SHA.test(head)) return { why: "a run of this lane has no head commit" };
+    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+      owner,
+      repo,
+      run_id: run.id,
+      filter: "all",
+      per_page: 100,
+    });
+    for (const job of jobs) {
+      const name = String(job?.name ?? "");
+      if (name !== statusJob && !name.endsWith(` / ${statusJob}`)) continue;
+      if (!Number.isFinite(Date.parse(job.completed_at))) continue;
+      const annotations = await github.paginate(github.rest.checks.listAnnotations, {
+        owner,
+        repo,
+        check_run_id: job.id,
+        per_page: 100,
+      });
+      const findings = findingNotices(annotations, env.LANE_ID, head);
+      if (!findings) return { why: `a findings notice of this lane at ${head} is not readable whole` };
+      records.push({ head, at: job.completed_at, findings });
+    }
+  }
+  return { records, workflow };
+}
+
+// The findings a listed person lifted, by identity: for each removal of the
+// hold label by a User in LIFT_AUTHOR_IDS with no App, the findings of the
+// newest status-job record before it, that is those standing when the label
+// came off. Two heads recorded at that newest time lift nothing, and neither
+// does a record whose head changes this lane's workflow or whose compare
+// lists 300 or more files: a pull_request run takes its workflow from its
+// head, so such a run could write any notice.
+async function liftedFindings(github, owner, repo, env, events, records, workflow, label) {
+  const ids = new Set(
+    String(env.LIFT_AUTHOR_IDS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => /^[1-9][0-9]*$/u.test(id))
+      .map(Number),
+  );
+  const lifted = new Map();
+  if (ids.size === 0 || !BRANCH.test(String(env.BASE_REF ?? ""))) return lifted;
+  const vetted = new Map();
+  const clean = async (head) => {
+    if (!vetted.has(head)) {
+      let ok = false;
+      try {
+        const files = (
+          await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${env.BASE_REF}...${head}` })
+        ).data?.files;
+        ok = Array.isArray(files) && files.length < MAX_COMPARE_FILES && !files.some((f) => f?.filename === workflow);
+      } catch {
+        ok = false;
+      }
+      vetted.set(head, ok);
+    }
+    return vetted.get(head);
+  };
+  for (const e of events) {
+    const at = Date.parse(e?.created_at);
+    if (
+      e?.event !== "unlabeled" ||
+      e.label?.name !== label ||
+      e.actor?.type !== "User" ||
+      !ids.has(e.actor.id) ||
+      e.performed_via_github_app != null ||
+      !Number.isFinite(at)
+    )
+      continue;
+    const before = records.filter((r) => Date.parse(r.at) < at);
+    const newest = Math.max(...before.map((r) => Date.parse(r.at)));
+    const last = before.filter((r) => Date.parse(r.at) === newest);
+    if (last.length === 0 || new Set(last.map((r) => r.head)).size !== 1) continue;
+    if (!(await clean(last[0].head))) continue;
+    for (const f of last.flatMap((r) => r.findings))
+      if (!lifted.has(identity(f)))
+        lifted.set(identity(f), {
+          by: String(e.actor.login ?? ""),
+          by_id: e.actor.id,
+          lifted_at: e.created_at,
+          head: last[0].head,
+        });
+  }
+  return lifted;
+}
+
+// The critical-security findings that stand at the head: each finding this
+// lane recorded since the label was first added whose exact text the head
+// still holds once in the same file, newest record first, split into
+// { carried, lifted } by the lifts. { why } when a read fails or the walk
+// is capped: then a standing hold cannot be ruled out.
+async function standingFindings(github, owner, repo, env, runId, events, label, read) {
+  const since = Math.min(
+    ...events
+      .filter((e) => laneLabeled(e, label))
+      .map((e) => Date.parse(e.created_at))
+      .filter(Number.isFinite),
+  );
+  try {
+    const walk = await laneRecords(github, owner, repo, env, runId, Number.isFinite(since) ? since : 0);
+    if (walk.why) return { why: walk.why };
+    const lifted = await liftedFindings(github, owner, repo, env, events, walk.records, walk.workflow, label);
+    const recorded = new Map();
+    for (const r of [...walk.records].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)))
+      for (const f of r.findings) recorded.set(identity(f), { ...f, from: r.head });
+    const carried = [];
+    const liftedNow = [];
+    for (const [key, f] of recorded) {
+      const lines = await read(f.path);
+      const size = f.end - f.start + 1;
+      const start = lines ? locate(lines, f.fp, size) : 0;
+      if (!start) continue;
+      const now = { path: f.path, start, end: start + size - 1, fp: f.fp, from: f.from };
+      if (lifted.has(key)) liftedNow.push({ ...now, lift: lifted.get(key) });
+      else carried.push(now);
+    }
+    return { carried, lifted: liftedNow };
+  } catch {
+    return { why: "a read of this lane's earlier runs or of the head failed" };
+  }
+}
+
+// One comment for the head naming each lifted finding that would otherwise
+// hold, who lifted it and at which head, so a person can see why no hold was
+// posted for it; a re-run that finds its marker posts none. Returns the
+// `claude-lane-lifts` notice. A failed write goes on `errors`.
+async function postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors) {
+  const lane = env.LANE_ID;
+  const marker = `<!-- claude-lane-lift lane=${lane} sha=${env.HEAD_SHA} -->`;
+  let lines = lifted
+    .map((f) => `- critical-security at ${where(f)}: lifted by ${f.lift.by} at \`${f.lift.head}\`.`)
+    .join("\n");
+  const scanned = findSecret
+    ? scan(findSecret, [["the lifted findings", lines]])
+    : { withheld: "the publish gate could not be loaded", warnings: [] };
+  if (scanned.withheld) {
+    core.warning(`${lane}: the lifted findings were withheld: ${scanned.withheld}.`);
+    lines = `The findings were withheld: ${scanned.withheld}.`;
+  }
+  const binding = bindingLine(env);
+  const body = [
+    marker,
+    `**${lane}** posts no hold for these findings at \`${env.HEAD_SHA}\`: a listed person lifted each one, and its lines are unchanged.`,
+    stripHtml(lines),
+    ...(binding ? [binding] : []),
+    "",
+    `claude-lane: ${lane}`,
+  ].join("\n");
+  try {
+    const comments = (await listPrComments()).filter((c) => c.user?.login === "github-actions[bot]");
+    writeRecord(
+      env,
+      comments.filter((c) => c.body === body).map((c) => ({ kind: "issue_comment", id: c.id, body: c.body })),
+    );
+    if (!comments.some((c) => c.body?.startsWith(`${marker}\n`))) {
+      const { data: created } = await github.rest.issues.createComment({ owner, repo, issue_number: number, body });
+      writeRecord(env, [{ kind: "issue_comment", id: created.id, body: created.body }]);
+    }
+  } catch (error) {
+    errors.push(`could not post the lift comment: ${error.message}`);
+  }
+  const record = lifted.map((f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp, ...f.lift }));
+  return `claude-lane-lifts lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(record)}`;
+}
+
 async function run({ github, context, core, env = process.env }) {
   const label = env.HOLD_LABEL ?? "";
   if (label === "") {
@@ -452,6 +775,15 @@ async function run({ github, context, core, env = process.env }) {
   const found = new Set();
   const reasons = [];
   const model = modelHold(env, core);
+  // The pull request's events, read on every run: with no event of this
+  // lane's bot adding the hold label, no earlier hold of this lane stands
+  // and nothing more is read. A failed read fails the step.
+  const events = await github.paginate(github.rest.issues.listEvents, {
+    owner,
+    repo,
+    issue_number: number,
+    per_page: 100,
+  });
   // The pull request's comments, read once: for the cost decision and for
   // the marker this step posts.
   let prComments;
@@ -481,6 +813,61 @@ async function run({ github, context, core, env = process.env }) {
       core.info(`${lane}: no recorded cost decision carries (${result.why}); the cost hold stays.`);
     }
   }
+
+  // Critical-security findings by identity: the review's located ones at
+  // this head, then those an earlier head recorded that still stand.
+  const cache = new Map();
+  const read = (path) => readLines(github, owner, repo, env.HEAD_SHA, path, cache);
+  const notes = [];
+  const reported = new Map();
+  let loose = false;
+  if (model?.criteria.includes("critical-security")) {
+    if (model.locations.length === 0) loose = true;
+    for (const loc of model.locations) {
+      let lines = null;
+      try {
+        lines = loc ? await read(loc.path) : null;
+      } catch {
+        lines = null;
+      }
+      const fp = lines && loc.end <= lines.length ? fingerprint(lines, loc.start, loc.end) : "";
+      if (!fp || locate(lines, fp, loc.end - loc.start + 1) !== loc.start) loose = true;
+      else reported.set(identity({ ...loc, fp }), { ...loc, fp });
+    }
+  }
+  let standing = { carried: [], lifted: [] };
+  if (events.some((e) => laneLabeled(e, label)))
+    standing = await standingFindings(github, owner, repo, env, context.runId, events, label, read);
+  const lifted = standing.why ? [] : standing.lifted;
+  const liftedKeys = new Set(lifted.map(identity));
+  const carried = standing.why ? [] : standing.carried.filter((f) => !reported.has(identity(f)));
+  const held = [...reported.values()].filter((f) => !liftedKeys.has(identity(f)));
+  if (model?.criteria.includes("critical-security")) {
+    if (loose)
+      notes.push(
+        reported.size === 0
+          ? "This critical-security hold names no usable location, so a later head cannot carry it and a lift cannot be matched to it."
+          : "Part of this critical-security hold names no usable location: a later head carries only its usable ranges, and no lift clears it.",
+      );
+    else if (held.length === 0) {
+      core.info(`${lane}: a listed person lifted every finding of this critical-security hold; it is not added again.`);
+      model.criteria = model.criteria.filter((c) => c !== "critical-security");
+    }
+  }
+  if (standing.why) {
+    found.add("critical-security");
+    notes.push(`A standing critical-security hold of this lane could not be ruled out: ${standing.why}.`);
+  }
+  for (const f of carried) {
+    found.add("critical-security");
+    notes.push(
+      `Carried from \`${f.from}\`: critical-security at ${where(f)}, unchanged since that head; the review of this head did not return it.`,
+    );
+  }
+  reasons.push(...notes);
+  const recordOf = (f) => ({ path: f.path, start: f.start, end: f.end, fp: f.fp });
+  const findings = (model?.criteria.includes("critical-security") ? held : []).concat(carried).map(recordOf);
+
   if (model && model.criteria.length > 0) {
     for (const c of model.criteria) found.add(c);
     reasons.push(model.reason);
@@ -489,81 +876,88 @@ async function run({ github, context, core, env = process.env }) {
   const criteria = CRITERIA.filter((c) => found.has(c));
   core.setOutput("hold", criteria.length > 0 ? "true" : "false");
   core.setOutput("criteria", criteria.join(","));
-  if (criteria.length === 0) return { hold: false, criteria };
-
-  let reason = stripHtml(reasons.filter(Boolean).join("\n\n")).slice(
-    0,
-    2 * MAX_REASON,
-  );
+  if (criteria.length === 0 && lifted.length === 0) return { hold: false, criteria };
   const findSecret = await loadGate(env);
-  const scanned = findSecret
-    ? scan(findSecret, [["the hold reason", reason]])
-    : { withheld: "the publish gate could not be loaded", warnings: [] };
-  for (const warning of scanned.warnings)
-    core.warning(`${lane}: ${warning}; published anyway.`);
-  const { withheld } = scanned;
-  if (withheld) {
-    core.warning(`${lane}: the hold reason was withheld: ${withheld}.`);
-    reason = `The reason was withheld: ${withheld}.`;
-  }
+  const records = [];
+  if (criteria.length > 0) {
+    let reason = stripHtml(reasons.filter(Boolean).join("\n\n")).slice(
+      0,
+      2 * MAX_REASON,
+    );
+    const scanned = findSecret
+      ? scan(findSecret, [["the hold reason", reason]])
+      : { withheld: "the publish gate could not be loaded", warnings: [] };
+    for (const warning of scanned.warnings)
+      core.warning(`${lane}: ${warning}; published anyway.`);
+    const { withheld } = scanned;
+    if (withheld) {
+      core.warning(`${lane}: the hold reason was withheld: ${withheld}.`);
+      reason = `The reason was withheld: ${withheld}.`;
+    }
 
-  // Both writes are tried; either failing fails the step afterwards.
-  try {
-    await github.rest.issues.addLabels({
-      owner,
-      repo,
-      issue_number: number,
-      labels: [label],
-    });
-  } catch (error) {
-    errors.push(`could not add the ${label} label: ${error.message}`);
-  }
-  const marker = `<!-- claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} -->`;
-  const binding = bindingLine(env);
-  const body = [
-    marker,
-    `**${lane}** holds this pull request for a person (${criteria.join(", ")}) at \`${env.HEAD_SHA}\`.`,
-    "",
-    reason,
-    ...(binding ? [binding] : []),
-    "",
-    `claude-lane: ${lane}`,
-  ].join("\n");
-  try {
-    const comments = (await listPrComments()).filter(
-      (c) => c.user?.login === "github-actions[bot]",
-    );
-    // The same hold an earlier attempt of this run posted, word for word:
-    // this attempt's record lists it too (publish.cjs writeRecord). Only an
-    // exact match counts, so no other workflow's comment is ever recorded.
-    writeRecord(
-      env,
-      comments
-        .filter((c) => c.body === body)
-        .map((c) => ({ kind: "issue_comment", id: c.id, body: c.body })),
-    );
-    // A hold with this marker is already on the pull request: one per head
-    // and criteria. The label above holds either way, so a look-alike marker
-    // can at most keep the reason text off.
-    if (!comments.some((c) => c.body === marker || c.body?.startsWith(`${marker}\n`))) {
-      const { data: created } = await github.rest.issues.createComment({
+    // Both writes are tried; either failing fails the step afterwards.
+    try {
+      await github.rest.issues.addLabels({
         owner,
         repo,
         issue_number: number,
-        body,
+        labels: [label],
       });
-      writeRecord(env, [
-        { kind: "issue_comment", id: created.id, body: created.body },
-      ]);
+    } catch (error) {
+      errors.push(`could not add the ${label} label: ${error.message}`);
     }
-  } catch (error) {
-    errors.push(`could not post the hold comment: ${error.message}`);
+    const marker = `<!-- claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} -->`;
+    const binding = bindingLine(env);
+    const body = [
+      marker,
+      `**${lane}** holds this pull request for a person (${criteria.join(", ")}) at \`${env.HEAD_SHA}\`.`,
+      "",
+      reason,
+      ...(binding ? [binding] : []),
+      "",
+      `claude-lane: ${lane}`,
+    ].join("\n");
+    try {
+      const comments = (await listPrComments()).filter(
+        (c) => c.user?.login === "github-actions[bot]",
+      );
+      // The same hold an earlier attempt of this run posted, word for word:
+      // this attempt's record lists it too (publish.cjs writeRecord). Only an
+      // exact match counts, so no other workflow's comment is ever recorded.
+      writeRecord(
+        env,
+        comments
+          .filter((c) => c.body === body)
+          .map((c) => ({ kind: "issue_comment", id: c.id, body: c.body })),
+      );
+      // A hold with this marker is already on the pull request: one per head
+      // and criteria. The label above holds either way, so a look-alike marker
+      // can at most keep the reason text off.
+      if (!comments.some((c) => c.body === marker || c.body?.startsWith(`${marker}\n`))) {
+        const { data: created } = await github.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: number,
+          body,
+        });
+        writeRecord(env, [
+          { kind: "issue_comment", id: created.id, body: created.body },
+        ]);
+      }
+    } catch (error) {
+      errors.push(`could not post the hold comment: ${error.message}`);
+    }
+    records.push(
+      `claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} label=${label}`,
+    );
+    if (findings.length > 0)
+      records.push(`claude-lane-findings lane=${lane} sha=${env.HEAD_SHA} ${JSON.stringify(findings)}`);
   }
+  if (lifted.length > 0)
+    records.push(await postLift(github, core, env, { owner, repo, number }, lifted, findSecret, listPrComments, errors));
   if (errors.length > 0) throw new Error(`${lane}: ${errors.join("; ")}`);
-  core.notice(
-    `claude-lane-hold lane=${lane} sha=${env.HEAD_SHA} criteria=${criteria.join(",")} label=${label}`,
-  );
-  return { hold: true, criteria };
+  for (const record of records) core.notice(record);
+  return { hold: criteria.length > 0, criteria };
 }
 
 module.exports = {

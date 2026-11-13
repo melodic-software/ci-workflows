@@ -260,7 +260,7 @@ test("each leg passes its full-diff step's hold out as the job's held output", (
     );
 });
 
-test("a held leg notes the hold and the status job publishes and labels nothing", () => {
+test("a held leg notes the hold, the status job publishes nothing, and the hold step still runs for a standing hold", () => {
   const note = statusStep("Note the hold");
   for (const held of [{ key: "x" }, { sub: "x" }, { fb: "x" }]) {
     assert.equal(
@@ -275,7 +275,9 @@ test("a held leg notes the hold and the status job publishes and labels nothing"
     inputs: { "hold-label": "needs-human", publish: "comments" },
   };
   assert.equal(evaluate(statusStep("Publish the review").if, after), false);
-  assert.equal(evaluate(statusStep("Apply the hold").if, after), false);
+  // The hold step still runs: it labels only for an earlier head's standing
+  // critical-security hold, since a held leg returns no review.
+  assert.equal(evaluate(statusStep("Apply the hold").if, after), true);
   const unheld = { ...after, steps: { held: { outcome: "skipped" } } };
   assert.equal(evaluate(statusStep("Publish the review").if, unheld), true);
   assert.equal(evaluate(statusStep("Apply the hold").if, unheld), true);

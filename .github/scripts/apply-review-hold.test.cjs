@@ -132,6 +132,8 @@ function fakeGithub({
   deletions = [],
   deletedItems,
   failDeleted = false,
+  events = [],
+  contents = {},
 }) {
   const calls = [];
   const refuse = (name) => () => {
@@ -244,6 +246,24 @@ function fakeGithub({
             throw new Error(`unexpected compare ${params.basehead}`);
           return { data: answers[params.basehead] };
         },
+        // `contents` maps `<ref>:<path>` to the file's text, as the contents
+        // API answers a file under 1 MB (docs.github.com/en/rest/repos/contents:
+        // type "file", encoding "base64", content); an absent key is a 404.
+        getContent: async (params) => {
+          calls.push(["getContent", params]);
+          if (fail.content)
+            throw Object.assign(new Error("HTTP 502"), { status: 502 });
+          const text = contents[`${params.ref}:${params.path}`];
+          if (text === undefined)
+            throw Object.assign(new Error("Not Found"), { status: 404 });
+          return {
+            data: {
+              type: "file",
+              encoding: "base64",
+              content: Buffer.from(text, "utf8").toString("base64"),
+            },
+          };
+        },
       },
       pulls: {
         listFiles: (params) => {
@@ -259,6 +279,11 @@ function fakeGithub({
         },
       },
       issues: {
+        listEvents: (params) => {
+          calls.push(["listEvents", params]);
+          if (fail.events) throw new Error("HTTP 502");
+          return events;
+        },
         addLabels: async (params) => {
           calls.push(["addLabels", params]);
           if (fail.addLabels)
@@ -430,7 +455,12 @@ test("a changed file matching hold-paths holds nothing and reads no file list", 
     assert.equal(error, undefined, JSON.stringify(file));
     assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
     assert.deepEqual(writes, []);
-    assert.deepEqual(github.calls, [], JSON.stringify(file));
+    // The one read: the pull request's events, which show no hold label.
+    assert.deepEqual(
+      github.calls.map(([name]) => name),
+      ["listEvents"],
+      JSON.stringify(file),
+    );
   }
 });
 
@@ -637,6 +667,7 @@ test("a cost decision on the pull request keeps the cost hold from coming back",
   assert.deepEqual(
     github.calls.map(([name]) => name),
     [
+      "listEvents",
       "listComments",
       "graphql",
       "getWorkflowRun",
@@ -698,6 +729,7 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
   assert.deepEqual(
     github.calls.map(([name]) => name),
     [
+      "listEvents",
       "listComments",
       "graphql",
       "issues.get",
@@ -1446,6 +1478,7 @@ test("the carry check reads this lane's runs, its jobs and notices, the push his
   assert.deepEqual(
     github.calls.map(([name]) => name),
     [
+      "listEvents",
       "listComments",
       "graphql",
       "getWorkflowRun",
@@ -1552,4 +1585,731 @@ test("a re-run records only a hold comment word for word its own, never a look-a
   );
   assert.equal(writes.filter(([name]) => name === "createComment").length, 0);
   assert.equal(fs.existsSync(record), false);
+});
+
+// Carrying a critical-security hold, and a trusted person's lift of it,
+// across heads. A finding's identity is its path and the sha256 of its line
+// range's text (the lines joined by "\n") at the head it was held at; the
+// fingerprints below were computed with sha256sum, outside the code. The
+// record of truth is this lane's own status-job notice, never a comment.
+const PREV = "c".repeat(40);
+const PREV2 = "d".repeat(40);
+const SEC = "claude-security-review";
+const FILE = "src/app.js";
+const TEXT_PREV = [
+  '"use strict";',
+  "const token = process.env.T;",
+  'require("child_process").execSync(token);',
+  "module.exports = {};",
+  "",
+].join("\n");
+// The same file with one line added above: the flagged lines move to 3-4.
+const TEXT_MOVED = `// header\n${TEXT_PREV}`;
+const TEXT_CHANGED = TEXT_MOVED.replace("execSync", "execFileSync");
+const FP_TOKEN =
+  "da5803f48e1b69feb23c02f6a2aedda7374df8db21d79758d6d04ce759d694d4";
+const FP_EXPORTS =
+  "1cf3e1eeed2d717d4dba8a101c28b71f65e908beb02f90371b11f927125b8390";
+const FP_CHANGED =
+  "317c26d62173d4075c565130c12dae7608af96e31dd4fa55a8b381c5aee17b02";
+const found = (path, start, end, fp) => ({ path, start, end, fp });
+const findingsNotice = (
+  sha,
+  findings,
+  { lane = SEC, level = "notice" } = {},
+) => ({
+  annotation_level: level,
+  message: `claude-lane-findings lane=${lane} sha=${sha} ${JSON.stringify(findings)}`,
+});
+const holdNotice = (sha) =>
+  notice({ sha, lane: SEC, criteria: "critical-security" });
+const BOT_ACTOR = { login: "github-actions[bot]", id: 41898282, type: "Bot" };
+const OWNER = { login: "kyle-sexton", id: OWNER_ID, type: "User" };
+const labeled = (at = "2026-11-12T09:59:00Z", actor = BOT_ACTOR) => ({
+  event: "labeled",
+  label: { name: "needs-human" },
+  actor,
+  performed_via_github_app: null,
+  created_at: at,
+});
+const unlabeled = ({
+  at = "2026-11-12T10:30:00Z",
+  actor = OWNER,
+  app = null,
+} = {}) => ({
+  event: "unlabeled",
+  label: { name: "needs-human" },
+  actor,
+  performed_via_github_app: app,
+  created_at: at,
+});
+// One earlier run of this lane at PREV whose status job, done at 10:00,
+// recorded the hold and its findings.
+const priorRun = laneRun({
+  id: 21,
+  sha: PREV,
+  createdAt: "2026-11-12T09:50:00Z",
+});
+const priorLane = ({
+  findings = [found(FILE, 2, 3, FP_TOKEN)],
+  runs = [priorRun],
+  jobs = { 21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })] },
+  annotations = { 211: [holdNotice(PREV), findingsNotice(PREV, findings)] },
+} = {}) => laneOf({ runs, jobs, annotations });
+const vet = (sha, filename = FILE) => ({
+  [`main...${sha}`]: {
+    files: [{ filename, status: "modified", patch: "@@ -1 +1 @@\n-a\n+b" }],
+  },
+});
+const secEnv = (extra = {}) =>
+  baseEnv({ LANE_ID: SEC, KEY_REVIEW: review(), ...extra });
+const criticalReview = (locations, reason = "A CRITICAL finding.") =>
+  review({
+    hold: {
+      criteria: ["critical-security"],
+      reason,
+      ...(locations ? { locations } : {}),
+    },
+  });
+const carry = (env, options = {}) =>
+  apply(env, {
+    lane: priorLane(),
+    events: [labeled()],
+    contents: { [`${HEAD}:${FILE}`]: TEXT_MOVED },
+    compares: vet(PREV),
+    ...options,
+  });
+const bodies = (writes) =>
+  writes.filter(([name]) => name === "createComment").map(([, p]) => p.body);
+const recorded = (core, kind) =>
+  core.notices
+    .filter((m) => m.startsWith(`claude-lane-${kind} `))
+    .map((m) => JSON.parse(m.slice(m.indexOf("["))));
+const LIFTED = { LIFT_AUTHOR_IDS: String(OWNER_ID) };
+const at34 = [{ path: FILE, start_line: 3, line: 4 }];
+
+test("a standing critical-security hold on unchanged lines is posted again when the review of a later head does not return it, marked carried", async () => {
+  const { core, error, writes } = await carry(secEnv());
+  assert.equal(error, undefined);
+  assert.deepEqual(core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  assert.deepEqual(writes[0][1].labels, ["needs-human"]);
+  const [body] = bodies(writes);
+  assert.equal(
+    body.split("\n")[0],
+    `<!-- claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security -->`,
+  );
+  assert.match(
+    body,
+    new RegExp(
+      `Carried from \`${PREV}\`: critical-security at \`src/app\\.js\` lines 3-4`,
+      "u",
+    ),
+  );
+  assert.deepEqual(recorded(core, "findings"), [[found(FILE, 3, 4, FP_TOKEN)]]);
+  assert.ok(
+    core.notices.includes(
+      `claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security label=needs-human`,
+    ),
+  );
+});
+
+test("a trusted person's lift carries to a later head with the lines unchanged: no hold, one visible lift line", async () => {
+  for (const env of [
+    secEnv(LIFTED),
+    secEnv({ ...LIFTED, KEY_REVIEW: criticalReview(at34) }),
+  ]) {
+    const { core, error, writes } = await carry(env, {
+      events: [labeled(), unlabeled()],
+    });
+    assert.equal(error, undefined);
+    assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+    assert.equal(writes.filter(([name]) => name === "addLabels").length, 0);
+    const [body, more] = bodies(writes);
+    assert.equal(more, undefined);
+    assert.equal(
+      body.split("\n")[0],
+      `<!-- claude-lane-lift lane=${SEC} sha=${HEAD} -->`,
+    );
+    assert.match(
+      body,
+      new RegExp(
+        `\n- critical-security at \`src/app\\.js\` lines 3-4: lifted by kyle-sexton at \`${PREV}\`\\.\n`,
+        "u",
+      ),
+    );
+    assert.match(body, new RegExp(`\nclaude-lane: ${SEC}$`, "u"));
+    assert.deepEqual(recorded(core, "lifts"), [
+      [
+        {
+          ...found(FILE, 3, 4, FP_TOKEN),
+          by: "kyle-sexton",
+          by_id: OWNER_ID,
+          lifted_at: "2026-11-12T10:30:00Z",
+          head: PREV,
+        },
+      ],
+    ]);
+    assert.deepEqual(recorded(core, "findings"), []);
+  }
+});
+
+test("a lift by anyone but a listed person, by an App, before the hold, or with lift-author-ids empty carries nothing", async () => {
+  for (const [why, events, env] of [
+    [
+      "empty lift-author-ids",
+      [labeled(), unlabeled()],
+      secEnv({ TRUSTED_AUTHOR_IDS: String(OWNER_ID) }),
+    ],
+    [
+      "an unlisted person",
+      [
+        labeled(),
+        unlabeled({ actor: { login: "author", id: 999, type: "User" } }),
+      ],
+      secEnv(LIFTED),
+    ],
+    [
+      "through an App",
+      [labeled(), unlabeled({ app: { slug: "lanes" } })],
+      secEnv(LIFTED),
+    ],
+    [
+      "a bot account with a listed id",
+      [labeled(), unlabeled({ actor: { ...OWNER, type: "Bot" } })],
+      secEnv(LIFTED),
+    ],
+    [
+      "a removal of another label",
+      [labeled(), { ...unlabeled(), label: { name: "bug" } }],
+      secEnv(LIFTED),
+    ],
+    [
+      "a removal before the hold was recorded",
+      [labeled(), unlabeled({ at: "2026-11-12T09:59:30Z" })],
+      secEnv(LIFTED),
+    ],
+  ]) {
+    const { core, error, writes } = await carry(env, { events });
+    assert.equal(error, undefined, why);
+    assert.deepEqual(
+      core.outputs,
+      { hold: "true", criteria: "critical-security" },
+      why,
+    );
+    assert.equal(bodies(writes).length, 1, why);
+    assert.match(bodies(writes)[0], /Carried from/u, why);
+    assert.deepEqual(recorded(core, "lifts"), [], why);
+  }
+});
+
+test("after a lift, changed lines the review reports are a new finding and hold", async () => {
+  const { core, writes } = await carry(
+    secEnv({ ...LIFTED, KEY_REVIEW: criticalReview(at34) }),
+    {
+      events: [labeled(), unlabeled()],
+      contents: { [`${HEAD}:${FILE}`]: TEXT_CHANGED },
+    },
+  );
+  assert.deepEqual(core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  const all = bodies(writes);
+  assert.equal(all.length, 1);
+  assert.doesNotMatch(all[0], /Carried from|lifted by/u);
+  assert.match(all[0], /A CRITICAL finding\./u);
+  assert.deepEqual(recorded(core, "findings"), [
+    [found(FILE, 3, 4, FP_CHANGED)],
+  ]);
+});
+
+// The lines held at PREV no longer exist at the head, so neither the hold nor
+// the lift has a finding to apply to: the head holds only what its own review
+// returns. A changed range is a new finding, and only a review can flag one.
+test("changed lines the review does not report hold nothing, lifted or not", async () => {
+  for (const events of [[labeled(), unlabeled()], [labeled()]]) {
+    const { core, error, writes } = await carry(secEnv(LIFTED), {
+      events,
+      contents: { [`${HEAD}:${FILE}`]: TEXT_CHANGED },
+    });
+    assert.equal(error, undefined);
+    assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+    assert.deepEqual(writes, []);
+  }
+});
+
+test("a range found twice at the head, a deleted file, or a moved file counts as changed", async () => {
+  for (const contents of [
+    { [`${HEAD}:${FILE}`]: `${TEXT_MOVED}${TEXT_PREV}` },
+    { [`${HEAD}:src/moved.js`]: TEXT_MOVED },
+  ]) {
+    const { core, writes } = await carry(secEnv(), { contents });
+    assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+    assert.deepEqual(writes, []);
+  }
+});
+
+test("one removal lifts the findings standing at that moment; a finding first held after it still holds", async () => {
+  const lane = priorLane({
+    runs: [
+      priorRun,
+      laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:40:00Z" }),
+    ],
+    jobs: {
+      21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })],
+      22: [statusJob({ id: 221, completedAt: "2026-11-12T11:00:00Z" })],
+    },
+    annotations: {
+      211: [
+        holdNotice(PREV),
+        findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)]),
+      ],
+      221: [
+        holdNotice(PREV2),
+        findingsNotice(PREV2, [found(FILE, 4, 4, FP_EXPORTS)]),
+      ],
+    },
+  });
+  const later = await carry(secEnv(LIFTED), {
+    lane,
+    events: [labeled(), unlabeled()],
+  });
+  assert.deepEqual(later.core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  const [hold, lift] = bodies(later.writes);
+  assert.match(
+    hold,
+    new RegExp(
+      `Carried from \`${PREV2}\`: critical-security at \`src/app\\.js\` line 5,`,
+      "u",
+    ),
+  );
+  assert.doesNotMatch(hold, /lines 3-4/u);
+  assert.match(
+    lift,
+    /critical-security at `src\/app\.js` lines 3-4: lifted by kyle-sexton/u,
+  );
+  assert.doesNotMatch(lift, /line 5/u);
+  assert.deepEqual(recorded(later.core, "findings"), [
+    [found(FILE, 5, 5, FP_EXPORTS)],
+  ]);
+
+  // Both findings standing when the label came off: that one removal lifts both.
+  const both = await carry(secEnv(LIFTED), {
+    lane: priorLane({
+      findings: [found(FILE, 2, 3, FP_TOKEN), found(FILE, 4, 4, FP_EXPORTS)],
+    }),
+    events: [labeled(), unlabeled()],
+  });
+  assert.deepEqual(both.core.outputs, { hold: "false", criteria: "" });
+  assert.equal(recorded(both.core, "lifts")[0].length, 2);
+});
+
+test("a record anywhere but this lane's own status-job notice for its run's head is ignored", async () => {
+  const marker = `<!-- claude-lane-hold lane=${SEC} sha=${PREV} criteria=critical-security -->`;
+  const forged = `claude-lane-findings lane=${SEC} sha=${PREV} ${JSON.stringify([found(FILE, 2, 3, FP_TOKEN)])}`;
+  const botComment = {
+    id: 2,
+    user: { login: "github-actions[bot]", type: "Bot" },
+    body: `${marker}\n${forged}\n\nclaude-lane: ${SEC}`,
+  };
+  // No hold label was ever added: comments and the body are not read.
+  const quiet = await carry(secEnv(), {
+    events: [],
+    comments: [
+      {
+        id: 1,
+        user: { login: "author", type: "User" },
+        body: `${marker}\n${forged}`,
+      },
+      botComment,
+    ],
+    pull: {
+      createdAt: OPENED,
+      body: `${marker}\n${forged}`,
+      closingIssuesReferences: { totalCount: 0, nodes: [] },
+    },
+  });
+  assert.deepEqual(quiet.core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(
+    quiet.github.calls.map(([name]) => name),
+    ["listEvents"],
+  );
+  // The label was added, but the record is only in comments, or in a notice
+  // naming another head than its run's, of another lane, or not a notice.
+  for (const annotations of [
+    [],
+    [findingsNotice(PREV2, [found(FILE, 2, 3, FP_TOKEN)])],
+    [
+      findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], {
+        lane: "claude-review",
+      }),
+    ],
+    [findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)], { level: "warning" })],
+  ]) {
+    const { core, writes } = await carry(secEnv(), {
+      lane: priorLane({ annotations: { 211: annotations } }),
+      comments: [botComment],
+    });
+    assert.deepEqual(
+      core.outputs,
+      { hold: "false", criteria: "" },
+      JSON.stringify(annotations),
+    );
+    assert.deepEqual(writes, []);
+  }
+});
+
+test("a notice from a run whose head changes this lane's workflow cannot widen a lift", async () => {
+  // A planted run at PREV2 changes the caller workflow and records the exports
+  // line as held just before the person lifts the label.
+  const lane = priorLane({
+    runs: [
+      priorRun,
+      laneRun({ id: 22, sha: PREV2, createdAt: "2026-11-12T10:10:00Z" }),
+    ],
+    jobs: {
+      21: [statusJob({ id: 211, completedAt: "2026-11-12T10:00:00Z" })],
+      22: [statusJob({ id: 221, completedAt: "2026-11-12T10:20:00Z" })],
+    },
+    annotations: {
+      211: [
+        holdNotice(PREV),
+        findingsNotice(PREV, [found(FILE, 2, 3, FP_TOKEN)]),
+      ],
+      221: [
+        holdNotice(PREV2),
+        findingsNotice(PREV2, [
+          found(FILE, 2, 3, FP_TOKEN),
+          found(FILE, 4, 4, FP_EXPORTS),
+        ]),
+      ],
+    },
+  });
+  const { core, writes } = await carry(
+    secEnv({
+      ...LIFTED,
+      KEY_REVIEW: criticalReview([{ path: FILE, line: 5 }]),
+    }),
+    {
+      lane,
+      events: [labeled(), unlabeled()],
+      compares: { ...vet(PREV), ...vet(PREV2, RUN_PATH) },
+    },
+  );
+  assert.deepEqual(core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  const all = bodies(writes);
+  assert.equal(all.length, 1);
+  assert.doesNotMatch(all[0], /lifted by/u);
+  assert.deepEqual(
+    recorded(core, "findings")[0]
+      .map((f) => f.fp)
+      .sort(),
+    [FP_EXPORTS, FP_TOKEN].sort(),
+  );
+});
+
+test("a partial or failed review of the head still posts a standing hold", async () => {
+  for (const extra of [
+    {
+      KEY_FAILED: "true",
+      KEY_CLASS: "incomplete",
+      KEY_VERDICT: "incomplete",
+      KEY_REVIEW: "",
+    },
+    { KEY_FAILED: "", KEY_CLASS: "", KEY_VERDICT: "", KEY_REVIEW: "" },
+    { KEY_FAILED: "true", KEY_CLASS: "timeout", KEY_REVIEW: "" },
+  ]) {
+    const { core, writes } = await carry(secEnv(extra));
+    assert.deepEqual(
+      core.outputs,
+      { hold: "true", criteria: "critical-security" },
+      JSON.stringify(extra),
+    );
+    assert.match(bodies(writes)[0], /Carried from/u);
+  }
+});
+
+// A pin: the bodies below are what origin/main's hold.cjs run() writes for
+// these reviews (the marker, the sentence, a blank line, the reason, a blank
+// line and the footer), so a pull request whose hold label was never added
+// sees the same writes, outputs and notices, after one read of its events.
+test("with no hold label ever added, the step writes and notes what it wrote before", async () => {
+  const cost = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["cost"], reason: "Spends money." },
+      }),
+    }),
+  );
+  assert.deepEqual(cost.writes, [
+    [
+      "addLabels",
+      { owner: "o", repo: "r", issue_number: 7, labels: ["needs-human"] },
+    ],
+    [
+      "createComment",
+      {
+        owner: "o",
+        repo: "r",
+        issue_number: 7,
+        body: `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->\n**claude-review** holds this pull request for a person (cost) at \`${HEAD}\`.\n\nSpends money.\n\nclaude-lane: claude-review`,
+      },
+    ],
+  ]);
+  assert.deepEqual(cost.core.notices, [
+    `claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost label=needs-human`,
+  ]);
+  // origin/main reads the comments for a cost decision before the label.
+  assert.deepEqual(
+    cost.github.calls.map(([name]) => name),
+    ["listEvents", "listComments", "addLabels", "createComment"],
+  );
+
+  // A located critical-security hold: the same comment, one more notice.
+  const located = await apply(secEnv({ KEY_REVIEW: criticalReview(at34) }), {
+    contents: { [`${HEAD}:${FILE}`]: TEXT_MOVED },
+  });
+  assert.equal(
+    bodies(located.writes)[0],
+    `<!-- claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security -->\n**${SEC}** holds this pull request for a person (critical-security) at \`${HEAD}\`.\n\nA CRITICAL finding.\n\nclaude-lane: ${SEC}`,
+  );
+  assert.deepEqual(located.core.notices, [
+    `claude-lane-hold lane=${SEC} sha=${HEAD} criteria=critical-security label=needs-human`,
+    `claude-lane-findings lane=${SEC} sha=${HEAD} ${JSON.stringify([found(FILE, 3, 4, FP_TOKEN)])}`,
+  ]);
+
+  const none = await apply(baseEnv());
+  assert.deepEqual(none.writes, []);
+  assert.deepEqual(none.core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(none.core.notices, []);
+});
+
+test("a critical-security hold with no usable location is posted as before and says it cannot be carried", async () => {
+  for (const [why, locations, contents] of [
+    ["no location", undefined, {}],
+    [
+      "a range found twice",
+      [{ path: FILE, start_line: 2, line: 2 }],
+      { [`${HEAD}:${FILE}`]: '"use strict";\n"use strict";\n' },
+    ],
+    ["a missing file", [{ path: "gone.js", line: 1 }], {}],
+    [
+      "a range past the file's end",
+      [{ path: FILE, start_line: 4, line: 9 }],
+      { [`${HEAD}:${FILE}`]: TEXT_MOVED },
+    ],
+    [
+      "a dot segment",
+      [{ path: "src/../src/app.js", line: 3 }],
+      { [`${HEAD}:src/../src/app.js`]: TEXT_MOVED },
+    ],
+  ]) {
+    const { core, writes, error } = await apply(
+      secEnv({ KEY_REVIEW: criticalReview(locations) }),
+      { contents },
+    );
+    assert.equal(error, undefined, why);
+    assert.deepEqual(
+      core.outputs,
+      { hold: "true", criteria: "critical-security" },
+      why,
+    );
+    const [body] = bodies(writes);
+    assert.match(body, /A CRITICAL finding\./u, why);
+    assert.match(
+      body,
+      /names no usable location, so a later head cannot carry it and a lift cannot be matched to it/u,
+      why,
+    );
+    assert.deepEqual(recorded(core, "findings"), [], why);
+  }
+});
+
+test("a lift covers a located hold only when every location is lifted", async () => {
+  const { core, writes } = await carry(
+    secEnv({
+      ...LIFTED,
+      KEY_REVIEW: criticalReview([...at34, { path: FILE, line: 5 }]),
+    }),
+    { events: [labeled(), unlabeled()] },
+  );
+  assert.deepEqual(core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  const [hold, lift] = bodies(writes);
+  assert.match(hold, /A CRITICAL finding\./u);
+  assert.match(lift, /lines 3-4: lifted by kyle-sexton/u);
+  assert.deepEqual(recorded(core, "findings"), [
+    [found(FILE, 5, 5, FP_EXPORTS)],
+  ]);
+});
+
+// The reads behind a standing hold, for one earlier run: the events, the
+// current run, the lane's runs, that run's jobs and its status job's
+// annotations, one compare per lifted record's head, and one file read per
+// path at the head.
+test("a standing hold reads the events, this run, the runs, each run's jobs and notices, the head's file, and one compare per lift", async () => {
+  const carried = await carry(secEnv());
+  assert.deepEqual(
+    carried.github.calls.map(([name]) => name),
+    [
+      "listEvents",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "listJobs",
+      "listAnnotations",
+      "getContent",
+      "addLabels",
+      "listComments",
+      "createComment",
+    ],
+  );
+  const lifted = await carry(secEnv(LIFTED), {
+    events: [labeled(), unlabeled()],
+  });
+  assert.deepEqual(
+    lifted.github.calls.map(([name]) => name),
+    [
+      "listEvents",
+      "getWorkflowRun",
+      "listWorkflowRuns",
+      "listJobs",
+      "listAnnotations",
+      "compare",
+      "getContent",
+      "listComments",
+      "createComment",
+    ],
+  );
+});
+
+test("a lifted range beside an unusable one still holds, and says only the usable ranges carry", async () => {
+  const { core, writes } = await carry(
+    secEnv({
+      ...LIFTED,
+      KEY_REVIEW: criticalReview([...at34, { path: "gone.js", line: 1 }]),
+    }),
+    { events: [labeled(), unlabeled()] },
+  );
+  assert.deepEqual(core.outputs, {
+    hold: "true",
+    criteria: "critical-security",
+  });
+  const [hold, lift] = bodies(writes);
+  assert.match(
+    hold,
+    /Part of this critical-security hold names no usable location/u,
+  );
+  assert.match(lift, /lines 3-4: lifted by kyle-sexton/u);
+  assert.deepEqual(recorded(core, "findings"), []);
+});
+
+test("a hold label with no finding record of this lane carries nothing and posts nothing", async () => {
+  const { core, writes } = await carry(secEnv(), {
+    lane: priorLane({
+      annotations: {
+        211: [notice({ sha: PREV, lane: SEC, criteria: "cost" })],
+      },
+    }),
+  });
+  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(writes, []);
+});
+
+// Only this lane's bot adding the label opens the walk: a person's label
+// costs no read and, with no lane hold behind it, never holds.
+test("a hold label only a person added reads nothing more and holds nothing", async () => {
+  const { core, writes, github } = await carry(secEnv(), {
+    events: [labeled("2026-11-12T09:59:00Z", OWNER)],
+    fail: { runs: true },
+  });
+  assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    ["listEvents"],
+  );
+});
+
+test("a findings notice of this lane cut short or holding a bad entry posts the hold", async () => {
+  const head = `claude-lane-findings lane=${SEC} sha=${PREV} `;
+  for (const message of [
+    `${head}[{"path":"src/app.js","start":2,"end":3,"fp":"da58`,
+    `${head}${JSON.stringify([found(FILE, 2, 3, "x")])}`,
+    `${head}{}`,
+    head.trimEnd(),
+  ]) {
+    const { core, writes } = await carry(secEnv(), {
+      lane: priorLane({
+        annotations: { 211: [{ annotation_level: "notice", message }] },
+      }),
+    });
+    assert.deepEqual(
+      core.outputs,
+      { hold: "true", criteria: "critical-security" },
+      message,
+    );
+    assert.match(
+      bodies(writes)[0],
+      new RegExp(
+        `could not be ruled out: a findings notice of this lane at ${PREV} is not readable whole\\.`,
+        "u",
+      ),
+    );
+  }
+});
+
+test("an earlier-run walk that fails or passes 30 runs posts the hold; a failed events read fails the step", async () => {
+  const many = Array.from({ length: 31 }, (_, i) =>
+    laneRun({ id: 100 + i, sha: PREV }),
+  );
+  const dispatched = priorLane();
+  dispatched.current = { ...dispatched.current, event: "workflow_dispatch" };
+  for (const [why, options] of [
+    ["the runs", { fail: { runs: true } }],
+    ["the jobs", { fail: { jobs: true } }],
+    ["the annotations", { fail: { annotations: true } }],
+    ["the head's file", { fail: { content: true } }],
+    ["31 runs", { lane: priorLane({ runs: many }) }],
+    ["a run of another event", { lane: dispatched }],
+  ]) {
+    const { core, writes, error } = await carry(secEnv(), options);
+    assert.equal(error, undefined, why);
+    assert.deepEqual(
+      core.outputs,
+      { hold: "true", criteria: "critical-security" },
+      why,
+    );
+    assert.match(
+      bodies(writes)[0],
+      /A standing critical-security hold of this lane could not be ruled out: /u,
+      why,
+    );
+  }
+  const failed = await carry(secEnv(), { fail: { events: true } });
+  assert.match(String(failed.error?.message), /HTTP 502/u);
+  assert.deepEqual(failed.writes, []);
+});
+
+test("lift-author-ids counts numeric ids only, each whole", async () => {
+  for (const ids of [` ${OWNER_ID} `, `x,${OWNER_ID}`]) {
+    const { core } = await carry(secEnv({ LIFT_AUTHOR_IDS: ids }), {
+      events: [labeled(), unlabeled()],
+    });
+    assert.equal(core.outputs.hold, "false", ids);
+  }
+  const { core } = await carry(secEnv({ LIFT_AUTHOR_IDS: `${OWNER_ID}0` }), {
+    events: [labeled(), unlabeled()],
+  });
+  assert.equal(core.outputs.hold, "true");
 });
