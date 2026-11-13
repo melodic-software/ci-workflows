@@ -1673,8 +1673,8 @@ shows no successful Read of the diff file and no successful `gh pr diff` warns.
 **Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
 many of the changed files in scope it read whole; the job counts the files in
 scope and the diff's bytes itself. A review that read fewer files than it
-changed, whose diff is over one review's 300000-byte read budget, or that was
-one review of more than 40 files that are not identical copies or verified
+changed, whose diff is over one review's 1000000-byte read budget, or that was
+one review of more than 20000 files that are not identical copies or verified
 renames, is
 `partial`: red, no completion notice, and its comment's first visible line
 states `read <n> of <m> changed file(s)` and, for a diff over the read budget
@@ -1778,8 +1778,7 @@ declares leaves the diff, the file list and the file total, on a whole and an
 incremental review alike, so a large generated file no review can read whole
 does not make every review `partial`. Only a modification or addition of a
 non-executable regular file at a path of letters, digits and `._/@+-`, whose
-diff section is over 7500 bytes (one review's 300000-byte read budget over the
-40 files it reads whole), is left out; a smaller edit, an executable file, a
+diff section is over 7500 bytes is left out; a smaller edit, an executable file, a
 symlink, a rename, or a `hold-paths` or SENSITIVE_PATHS match is still
 reviewed. The comment's first visible line names the first 10 files left out
 (`; <n> data file(s) not reviewed: <path>, ... and <m> more`), and the
@@ -1801,10 +1800,15 @@ the file list and the file total, so a review that leaves them unread is still
 
 **Chunks.** Three limits in the workflow's `env`, each defined there once and
 read by every leg's shell and script steps, size a review: `READ_BUDGET`
-(300000 bytes), `MAX_CHUNK_FILES` (40 files) and the chunk ceiling
-`MAX_CHUNKS` (20). A diff in scope over the read budget, or with more than 40 files,
-is split at file boundaries, each file whole, into at most 20 chunks of at most
-300000 bytes and 40 files by claude-code-plugins'
+(1000000 bytes), `MAX_CHUNK_FILES` (20000 files) and the chunk ceiling
+`MAX_CHUNKS` (1). At a ceiling of 1 every diff is one review of the whole
+diff in scope: a diff within both caps is never split, and a diff over either
+is reviewed whole and stays `partial`, its warning and summary naming the
+chunks it needs. The file cap is at least the read budget over 51 bytes, the
+smallest section a file counts in, so the bytes always reach their cap first.
+With a higher ceiling, a diff in scope over the read budget or the file cap
+is split at file boundaries, each file whole, into at most `MAX_CHUNKS` chunks
+of at most `READ_BUDGET` bytes and `MAX_CHUNK_FILES` files by claude-code-plugins'
 `.github/scripts/pr-review-main/split-diff.py`, read from that repository's
 default-branch tip. Each leg reviews the first chunk in its review step
 and the rest, in order, in one step (`.github/actions/run-review-chunks`),
@@ -1819,7 +1823,7 @@ before the job starts, never its own steps, so each leg's job limit is sized
 for the ceiling (305 or 345 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
-when the whole diff fits the read budget and the rest fits 40 files it is one
+when the whole diff fits the read budget and the rest fits the file cap it is one
 review; when only the rest fits both caps it is one review of the rest,
 written to `.claude-lane/chunks/distinct.diff`, whose size is the one checked
 against the read budget; when the rest alone is over either cap only the rest
@@ -1855,8 +1859,8 @@ the files read their sum, each chunk's capped at the files the job counted
 in it. A chunk whose step failed, did not run, handed off or returned no
 well-formed review leaves no verdict, so the review is `incomplete`; a handoff
 sends the next leg to review every chunk again. A diff the split refuses (a
-file over the budget, more than 20 chunks, so more than 800 files that are not
-copies or verified renames, or a chunk over 40 files) is reviewed whole and stays `partial`;
+file over the budget, more than `MAX_CHUNKS` chunks, or a chunk over the file
+cap) is reviewed whole and stays `partial`;
 when the refusal is the ceiling, the step's warning and the review's summary
 name the chunk count the diff needs and the ceiling.
 

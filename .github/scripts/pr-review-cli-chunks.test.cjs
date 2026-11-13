@@ -44,16 +44,11 @@ test("each chunk limit is defined once, in the workflow env, and read from there
       for (const name of LIMITS)
         assert.equal(s.env?.[name], undefined, `${job.name} / ${s.name}`);
       const body = `${s.run ?? ""}\n${s.with?.script ?? ""}`;
-      assert.doesNotMatch(body, /\b300000\b/u, `${job.name} / ${s.name}`);
+      assert.doesNotMatch(body, /\b1000000\b/u, `${job.name} / ${s.name}`);
     }
   }
-  // The data floor is one file's even share of one review's read budget.
-  assert.equal(
-    Number(workflow.env.DATA_FLOOR_BYTES),
-    Math.floor(
-      Number(workflow.env.READ_BUDGET) / Number(workflow.env.MAX_CHUNK_FILES),
-    ),
-  );
+  // The data floor stays 7500 bytes whatever the read budget.
+  assert.equal(workflow.env.DATA_FLOOR_BYTES, "7500");
 });
 
 // A stand-in for claude-code-plugins' split-diff.py with its documented
@@ -280,7 +275,7 @@ test("no leg assumes a fixed chunk count", () => {
     text,
     /(STRUCTURED|EXECUTION|LOG)_FILE_[0-9]|prompt-file-/u,
   );
-  assert.equal(workflow.env.MAX_CHUNKS, "20");
+  assert.equal(workflow.env.MAX_CHUNKS, "1");
 });
 
 // --- the chunk loop ---

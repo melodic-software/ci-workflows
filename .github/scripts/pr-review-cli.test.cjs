@@ -3821,7 +3821,7 @@ function split(env = {}, prepare = () => {}) {
 
 test("the split step cuts only a diff over the read budget or the file cap, counting each chunk's files", () => {
   const s = step(key, "split");
-  assert.equal(workflow.env.READ_BUDGET, "300000");
+  assert.equal(workflow.env.READ_BUDGET, "1000000");
   assert.match(
     s.run,
     /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,

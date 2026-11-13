@@ -875,6 +875,104 @@ test("a chunk with no piece keeps today's note, byte for byte", async () => {
   }
 });
 
+// --- one review of the whole diff, whatever its size below the ceiling ---
+
+// `count` files of one hunk each, the hunk's added line `width` characters.
+const filesOf = (count, width) =>
+  Array.from(
+    { length: count },
+    (_, i) => `${HEADER(`src/f${i}.js`)}${HUNK(1, width)}`,
+  ).join("");
+
+// The extract step of `job` over the split `cut`, every limit the
+// workflow's own, one review reading `files` of `files` changed files.
+async function coverageOf(job, cut, files) {
+  const out = await extract(
+    job,
+    cut,
+    [files],
+    files,
+    {},
+    workflow.env.READ_BUDGET,
+  );
+  assert.ok(out.review, out.verdict);
+  return JSON.parse(out.review).coverage;
+}
+
+test("a diff over 40 files, over 300000 bytes, or with one file over 300000 bytes is one complete review", async () => {
+  const fixtures = [
+    ["81 files", filesOf(81, 10), 81],
+    ["5 files of 350000 bytes together", filesOf(5, 70000), 5],
+    [
+      "one file of 4 hunks, 320000 bytes",
+      `${HEADER(BIG)}${[1, 2, 3, 4].map((n) => HUNK(n, 80000)).join("")}`,
+      1,
+    ],
+  ];
+  for (const job of LEGS) {
+    for (const [name, diff, files] of fixtures) {
+      const cut = split(job, diff);
+      const label = `${job.name}: ${name}`;
+      assert.equal(cut.outputs.chunks, "1", label);
+      assert.equal(cut.outputs["over-chunks"], undefined, label);
+      assert.equal(cut.outputs.sliced, undefined, label);
+      // The splitter never ran: no chunk, no cut, no warning.
+      assert.equal(cut.received, null, label);
+      assert.doesNotMatch(cut.stdout, /::warning::/u, label);
+      const coverage = await coverageOf(job, cut, files);
+      assert.deepEqual(coverage, { read: files, changed: files }, label);
+      assert.equal(isPartial(coverage), false, label);
+    }
+  }
+});
+
+test("a diff over the read budget stays partial, the bytes and the chunk count it needs named", async () => {
+  const budget = Number(workflow.env.READ_BUDGET);
+  const width = 90000;
+  const files = Math.ceil(budget / width) + 1;
+  const fixtures = [
+    ["files over the budget together", filesOf(files, width), files],
+    [
+      "one file over the budget",
+      `${HEADER(BIG)}${Array.from({ length: files }, (_, i) => HUNK(i + 1, width)).join("")}`,
+      1,
+    ],
+  ];
+  for (const job of LEGS) {
+    for (const [name, diff, changed] of fixtures) {
+      const cut = split(job, diff);
+      const label = `${job.name}: ${name}`;
+      assert.ok(Buffer.byteLength(diff) > budget, label);
+      assert.equal(cut.outputs.chunks, "1", label);
+      assert.match(cut.outputs["over-chunks"] ?? "", /^[2-9]$/u, label);
+      assert.match(
+        cut.stdout,
+        new RegExp(
+          `more than the ceiling of ${workflow.env.MAX_CHUNKS}; it is reviewed unsplit, as a partial review$`,
+          "mu",
+        ),
+        label,
+      );
+      const coverage = await coverageOf(job, cut, changed);
+      assert.equal(coverage.over_budget, Buffer.byteLength(diff), label);
+      assert.equal(isPartial(coverage), true, label);
+    }
+  }
+});
+
+test("below the read budget no diff reaches the file cap, so the bytes are the one ceiling", () => {
+  // The smallest section a file counts in: a one-letter path's mode change,
+  // "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n".
+  const smallest = Buffer.byteLength(
+    "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n",
+  );
+  assert.ok(
+    Number(workflow.env.MAX_CHUNK_FILES) * smallest >=
+      Number(workflow.env.READ_BUDGET),
+  );
+  assert.equal(workflow.env.MAX_CHUNKS, "1");
+});
+
 test("a cut file's path that is not plain is named by its header's line", async () => {
   for (const job of LEGS) {
     const odd = "src/we ird.js";
