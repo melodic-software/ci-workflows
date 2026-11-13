@@ -237,11 +237,7 @@ test("every job except ci-status and the issue labeler carries the contract-only
   const ungated = [];
   for (const block of jobBlocks) {
     const name = jobName(block);
-    if (
-      name === undefined ||
-      name === "ci-status" ||
-      name === ISSUE_JOB
-    ) {
+    if (name === undefined || name === "ci-status" || name === ISSUE_JOB) {
       continue;
     }
     if (!jobCondition(block).includes(CONTRACT_ONLY_GATE)) {
@@ -275,11 +271,7 @@ test("the ci-status contract-only default matches every job gate", () => {
   let compared = 0;
   for (const block of jobBlocks) {
     const name = jobName(block);
-    if (
-      name === undefined ||
-      name === "ci-status" ||
-      name === ISSUE_JOB
-    ) {
+    if (name === undefined || name === "ci-status" || name === ISSUE_JOB) {
       continue;
     }
     const body = /^ {4}if: \$\{\{ (?<body>.*) \}\}$/mu.exec(block)?.groups
