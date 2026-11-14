@@ -1,0 +1,43 @@
+# Shell in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint is CI's two shell lanes. shellcheck with the root .shellcheckrc and no
+# severity filter or exclusion (.github/workflows/pr-require-checks.yml:511-512;
+# .github/actions/shellcheck/run.sh:172-176). shfmt -d through the action's own
+# runner over the exact root list CI passes (pr-require-checks.yml:531-536), so
+# its scope does not depend on the change. The test is every shell test CI
+# runs by name: pr-require-checks.yml:513-518, :538, :394, and the test-contracts
+# steps at :563-602. Commands run from the repository root.
+enabled: true
+globs: ["*.sh", "*.bash"]
+project-discovery: []
+build-cmd: null
+test-cmd: >-
+  bash .github/actions/shellcheck/run.test.sh &&
+  bash .github/actions/check-exec-bit/check-exec-bit.test.sh &&
+  bash .github/actions/lychee-offline/run.test.sh &&
+  bash .github/actions/shfmt/run.test.sh &&
+  bash .github/scripts/composite-run-shellcheck.test.sh &&
+  bash .github/actions/detect-changes/match.test.sh &&
+  bash .github/scripts/osv-scan-guard.test.sh &&
+  bash .github/actions/gitleaks/scan.test.sh &&
+  bash .github/actions/check-comment-markers/superset-test.sh &&
+  bash .github/actions/check-machine-paths/check-machine-specific-paths.test.sh &&
+  bash .github/actions/check-comment-markers/scan-tree.test.sh &&
+  bash .github/actions/check-workflow-naming/run.test.sh &&
+  bash .github/actions/pr-require-checks/check-contract/run.test.sh &&
+  bash .github/actions/pr-require-checks/aggregate-results/run.test.sh &&
+  bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh &&
+  bash .github/scripts/govulncheck-sarif-guard.test.sh
+check-cmd: >-
+  shellcheck --rcfile=.shellcheckrc <files> &&
+  PATHS='fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt'
+  bash .github/actions/shfmt/run.sh
+fix-cmd: "shfmt -w <files>"
+code-fix-cmd: null
+opt-in: "shellcheck always applies to shell files; shfmt checks CI's fixed root list"
+install-hint: "shellcheck 0.11.0 and shfmt 3.14.1 (the versions CI pins): winget install ShellCheck.ShellCheck mvdan.shfmt | brew install shellcheck shfmt. The tests also call jq, yq (mikefarah), git, lychee and gitleaks."
+tool-pin:
+  shellcheck: "0.11.0"
+  shfmt: "3.14.1"
+gates: []
+notes: "Pins: .github/actions/shellcheck/action.yml:66, .github/actions/shfmt/action.yml:22. CI lints every tracked *.sh and *.bash; check-cmd lints only the changed ones. The check-cmd stops at the first failing tool; CI runs the two lanes as separate jobs. fix-cmd can reformat changed files outside CI's shfmt root list, which CI never format-checks. Skips that still exit 0: check-workflow-naming/run.test.sh skips its real-analyzer cases without REAL_STANDARDS_ROOT (run.test.sh:104), which CI sets only in its check-workflow-naming job (pr-require-checks.yml:470-476, a clone of melodic-software/standards); gitleaks/scan.test.sh skips its symlink cases on a filesystem without symlinks. Left out because they need a GitHub token: verify-actionlint-attestation.sh and its test (pr-require-checks.yml:357-367). Glob gaps: CI's shell filter also fires on any .github/** change, fixtures/shell/**, **/.editorconfig and .shellcheckrc (pr-require-checks.yml:131-137), and its test-contracts tests on any .github/** change (:155-160); these globs select only *.sh and *.bash."

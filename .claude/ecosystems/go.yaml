@@ -1,0 +1,40 @@
+# Go in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# The only Go is the fixtures/go/windows-race module, which CI checks through
+# the reusable Go workflow with config .golangci.yml in that directory
+# (.github/workflows/pr-require-checks.yml:649-662). Each command is a step of
+# .github/workflows/pr-run-checks-go.yml's Linux job: golangci-lint config verify
+# and run (:111-115), gofmt over the tracked .go files, failing on a gofmt error (:128-133), the race test
+# (:170); the gates are go mod tidy -diff (:151), go mod verify (:165) and
+# govulncheck (:369-370). Commands run from each go.mod directory.
+enabled: true
+globs: ["*.go", "go.mod", "go.sum"]
+project-discovery: ["go.mod"]
+build-cmd: null
+test-cmd: "go test -race -count=1 -timeout=10m ./..."
+check-cmd: >-
+  golangci-lint config verify --config .golangci.yml &&
+  golangci-lint run --config .golangci.yml --timeout=10m --max-issues-per-linter=0 --max-same-issues=0 ./... &&
+  set -o pipefail &&
+  test -n "$(git ls-files -- '*.go')" &&
+  unformatted="$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)" &&
+  test -z "$unformatted"
+fix-cmd: "gofmt -w ."
+code-fix-cmd: null
+opt-in: ".golangci.yml in the module directory"
+install-hint: "Go 1.26.5 or later (go.mod), golangci-lint 2.14.0 and govulncheck 1.7.0 (the versions CI pins): https://go.dev/dl/, https://golangci-lint.run/docs/welcome/install/, go install golang.org/x/vuln/cmd/govulncheck@v1.7.0. The race test needs cgo and a C compiler."
+tool-pin:
+  go: "1.26.5"
+  golangci-lint: "2.14.0"
+  govulncheck: "1.7.0"
+gates:
+  - name: go-mod-tidy-drift
+    cmd: "GOWORK=off go mod tidy -diff"
+    remediation: "Run go mod tidy in the module directory and commit go.mod and go.sum."
+  - name: go-mod-verify
+    cmd: "go mod verify"
+    remediation: "The module cache does not match go.sum; clear the cache entry and re-download."
+  - name: govulncheck
+    cmd: "govulncheck -db=https://vuln.go.dev ./..."
+    remediation: "Upgrade the module that carries the reachable vulnerable symbol."
+notes: "Pins: go from fixtures/go/windows-race/go.mod:3 (CI's go-version-file, pr-require-checks.yml:662), golangci-lint and govulncheck at pr-run-checks-go.yml:33 and :316. CI maps golangci-lint findings to exit 42 (--issues-exit-code=42) only to tell findings from tool failures, so that flag is left out. CI runs govulncheck with -format=sarif and fails only on reachable vulnerable-symbol results (:376-449); text mode exits 3 on the same results. govulncheck reads vuln.go.dev over the network. CI also runs the same lint and race test on Windows (pr-run-checks-go.yml:174-307); windows_race_test.go is tagged windows and is not compiled on Linux, and on Windows it skips (exit 0) outside GitHub Actions when the binary lacks the race detector (windows_race_test.go:16-20). fix-cmd formats every .go file in the module. Glob gaps: CI's go filter also fires on any .github/** change, fixtures/go/** and **/.golangci.yml (pr-require-checks.yml:161-167)."

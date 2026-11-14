@@ -1,0 +1,25 @@
+# .NET in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# The only .NET is the conforming fixture project; CI builds it and verifies its
+# whitespace and import ordering (.github/workflows/pr-require-checks.yml:321-326,
+# :339-342; the commands are .github/actions/dotnet-build/action.yml:73 and
+# .github/actions/dotnet-format/action.yml:50, :62). No solution and no test
+# project exist. Commands run from the repository root.
+enabled: true
+globs: ["*.cs", "*.csproj", "*.props", "*.targets"]
+project-discovery: []
+build-cmd: "dotnet build fixtures/dotnet/good/good.csproj --configuration Release --nologo -p:RestoreLockedMode=true"
+test-cmd: null
+check-cmd: >-
+  dotnet format whitespace fixtures/dotnet/good/good.csproj --verify-no-changes &&
+  dotnet format style fixtures/dotnet/good/good.csproj --diagnostics IDE0055 --verify-no-changes
+fix-cmd: >-
+  dotnet format whitespace fixtures/dotnet/good/good.csproj &&
+  dotnet format style fixtures/dotnet/good/good.csproj --diagnostics IDE0055
+code-fix-cmd: null
+opt-in: ".editorconfig at the repository root"
+install-hint: "the .NET SDK version global.json names (10.0.400): https://dot.net"
+tool-pin:
+  dotnet-sdk: "10.0.400"
+gates: []
+notes: "Pin: global.json:3, which CI's setup-dotnet reads (dotnet-build/action.yml and dotnet-format/action.yml leave dotnet-version empty). Release and -p:RestoreLockedMode=true are the dotnet-build action's input defaults (dotnet-build/action.yml:15, :37); --nologo is fixed in its run step. The check-cmd stops at the first failing pass; CI runs the whitespace and import-ordering steps in order and stops at the first failure too. Glob gaps: CI's dotnet filter also fires on any .github/** change, fixtures/dotnet/**, packages.lock.json, nuget.config, **/.editorconfig and global.json (pr-require-checks.yml:118-130); these globs select only source and project files."

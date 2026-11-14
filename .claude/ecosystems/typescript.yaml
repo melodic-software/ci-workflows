@@ -1,0 +1,36 @@
+# JavaScript in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint is CI's two Biome steps over their fixed scopes: the TypeScript fixture
+# with its own config, and .github/scripts with the root biome.json
+# (.github/workflows/pr-require-checks.yml:297-308; the command is
+# .github/actions/biome/action.yml:68). The test is the node --test steps
+# of CI's test-contracts job (pr-require-checks.yml:561, :565, :567, :569,
+# :594). No tsconfig exists and CI builds nothing. Commands run from the
+# repository root.
+enabled: true
+globs: ["*.js", "*.cjs", "*.mjs", "*.jsx", "*.ts", "*.tsx"]
+project-discovery: []
+build-cmd: null
+test-cmd: >-
+  node --test .github/scripts/*.test.cjs &&
+  node --test .github/actions/report-lane-outcome/*.test.cjs &&
+  node --test .github/actions/run-claude-cli/*.test.cjs &&
+  node --test .github/actions/check-managed-files/*.test.cjs &&
+  npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund &&
+  node --test .github/actions/check-dependabot-policy/*.test.mjs
+check-cmd: >-
+  biome ci --config-path=fixtures/typescript/good/biome.json --error-on-warnings fixtures/typescript/good &&
+  biome ci --config-path=biome.json --error-on-warnings .github/scripts
+fix-cmd: >-
+  biome format --write --config-path=fixtures/typescript/good/biome.json fixtures/typescript/good &&
+  biome format --write --config-path=biome.json .github/scripts
+code-fix-cmd: >-
+  biome check --write --config-path=fixtures/typescript/good/biome.json fixtures/typescript/good &&
+  biome check --write --config-path=biome.json .github/scripts
+opt-in: "biome.json at the repository root"
+install-hint: "Biome 2.5.11 on PATH (npm i -g @biomejs/biome@2.5.11, the version CI runs); node 24.21.0 (.node-version). The tests need npm ci --ignore-scripts at the root, as CI runs it (pr-require-checks.yml:559); test-cmd runs the subpackage install itself."
+tool-pin:
+  biome: "2.5.11"
+  node: "24.21.0"
+gates: []
+notes: "Pins: Biome is .github/actions/biome/action.yml:28's fallback-version, because package.json pins no @biomejs/biome; node is .node-version:1, as CI's test job reads it (pr-require-checks.yml:556). CI passes --reporter=github; it changes only the output format and is left out. The JavaScript under .github/actions/** (*.cjs, *.mjs) is never linted in CI: biome.json includes only .github/scripts/**, and these commands keep that scope. The check-cmd and test-cmd stop at the first failure, as CI's Biome and test jobs do (no step there sets continue-on-error). The npm ci --prefix .github/actions/check-dependabot-policy line in test-cmd mirrors CI's step at pr-require-checks.yml:593, which installs that subpackage's dependencies (ajv) before its test; the root install (graphql, :559) is left to /toolchain:check's own npm ci --ignore-scripts rule. node --test exits 0 when a test is skipped; read its skipped count. The test job's last step, check-workflow-call-surface.cjs (pr-require-checks.yml:603-611), is a workflow check and runs from yaml.yaml. Glob gaps: CI's typescript filter also fires on any .github/** change, **/biome.json and fixtures/typescript/** (pr-require-checks.yml:108-117), and its test job on .node-version, package.json, package-lock.json and schemas/github/** (:155-160); these globs select only script files."

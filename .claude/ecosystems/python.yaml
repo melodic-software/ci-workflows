@@ -1,0 +1,28 @@
+# Python in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint is CI's Ruff and Pyright lanes, which check only the conforming fixture
+# with its own configs (.github/workflows/pr-require-checks.yml:264-268,
+# :281-284; the commands are .github/actions/ruff/action.yml:69-70 and
+# .github/actions/pyright/action.yml:62). There is no root ruff.toml.
+# The test is the version-bump engine's suite, as CI's test-contracts job runs
+# it (pr-require-checks.yml:590). Commands run from the repository root.
+enabled: true
+globs: ["*.py"]
+project-discovery: []
+build-cmd: null
+test-cmd: "python3 -B -m unittest discover -s .github/actions/bump-versions -p 'test_*.py'"
+check-cmd: >-
+  ruff check fixtures/python/good --config fixtures/python/good/ruff.toml &&
+  ruff format --check fixtures/python/good --config fixtures/python/good/ruff.toml &&
+  pyright --warnings -p fixtures/python/good/pyrightconfig.json
+fix-cmd: "ruff format fixtures/python/good --config fixtures/python/good/ruff.toml"
+code-fix-cmd: "ruff check --fix fixtures/python/good --config fixtures/python/good/ruff.toml"
+opt-in: "fixtures/python/good/ruff.toml present (CI lints only that fixture)"
+install-hint: "uv tool install ruff==0.16.5 and uv tool install pyright==1.1.411 (the versions CI pins); yq 4.53.6 (mikefarah) for the own-policy test, as .github/actions/bump-versions/install-tools.sh installs it"
+tool-pin:
+  ruff: "0.16.5"
+  pyright: "1.1.411"
+  python: "3.14.7"
+  yq: "4.53.6"
+gates: []
+notes: "Pins: .github/actions/ruff/action.yml:23, .github/actions/pyright/action.yml:27, the python both run under (ruff/action.yml:26), yq at .github/actions/bump-versions/install-tools.sh:14. CI's test step runs the runner image's python3, not the pinned 3.14.7. CI lints and type-checks only fixtures/python/good: .github/actions/bump-versions/bump.py and test_bump.py are tested but never linted, and these commands keep that scope. The check-cmd stops at the first failing tool; CI runs ruff check, ruff format --check and pyright all. The suite exits 0 with skips: test_bump.py:518 skips without openssl and test_bump.py:950 skips the own-policy class without yq; read the skipped count. Glob gaps: CI's python filter also fires on any .github/** change and on fixtures/python/** (pr-require-checks.yml:104-107), so a ruff.toml or pyrightconfig.json change selects no Python here."

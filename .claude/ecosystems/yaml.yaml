@@ -1,0 +1,49 @@
+# GitHub Actions workflows, composite actions and Dependabot config in this
+# repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint-only: /toolchain:lint runs it, /toolchain:check does not. Each check is
+# a CI step, run from the repository root; every check runs and any failure
+# fails the command, as CI's run-everything-fail-at-end join does
+# (pr-run-checks.yml:26-28):
+# - actionlint, auto-discovering the workflows and .github/actionlint.yaml
+#   (.github/workflows/pr-require-checks.yml:355-356; actionlint/action.yml:119-136)
+# - the shell and pwsh embedded in composite action.yml run blocks
+#   (pr-require-checks.yml:389-392 and :228-231)
+# - check-jsonschema, one call per schema family (pr-require-checks.yml:199-201
+#   through pr-run-checks.yml:305-315; pr-require-checks.yml:414-423)
+# - zizmor over .github with the regular persona, blocking on any finding
+#   (pr-require-checks.yml:613-630; pr-audit-workflows.yml:222-236, :281-304)
+# - the reusable workflow_call surface check against the merge base
+#   (pr-require-checks.yml:603-611)
+enabled: true
+globs: [".github/**/*.yml", ".github/**/*.yaml"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: |
+  rc=0
+  actionlint || rc=1
+  bash .github/scripts/composite-run-shellcheck.sh || rc=1
+  pwsh -NoProfile -File .github/scripts/Invoke-CompositeRunPssa.ps1 || rc=1
+  check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml || rc=1
+  check-jsonschema --schemafile https://raw.githubusercontent.com/SchemaStore/schemastore/8324c4fe6ccf1698c05d053e8b9d4c4a08c23a1f/src/schemas/json/github-workflow.json .github/workflows/*.yml || rc=1
+  check-jsonschema --builtin-schema vendor.github-actions .github/actions/*/action.yml .github/actions/*/*/action.yml || rc=1
+  zizmor --strict-collection --persona=regular --offline .github || rc=1
+  node .github/scripts/check-workflow-call-surface.cjs origin/main melodic-software/ci-workflows || rc=1
+  exit "$rc"
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "GitHub Actions workflows present"
+install-hint: |
+  actionlint: the kjanat/actionlint fork, v1.17.0 from https://github.com/kjanat/actionlint/releases (rhysd/actionlint rejects this repository's $/ action references); CI pins the linux_amd64 asset to SHA-256 620abd485a12b6ab1125b844a876414e1d5bd2af8a3125b27f82b01d0d9d6e5a (actionlint/action.yml:26-30), the trust anchor because the fork's version numbers overlap upstream's (:18-22)
+  shellcheck 0.11.0, yq (mikefarah), pwsh 7.4 or later with PSScriptAnalyzer 1.25.0 for the composite scans
+  check-jsonschema: uv tool install check-jsonschema==0.38.2
+  zizmor: uv tool install zizmor==1.30.0
+tool-pin:
+  actionlint: "1.17.0"
+  shellcheck: "0.11.0"
+  check-jsonschema: "0.38.2"
+  zizmor: "1.30.0"
+  PSScriptAnalyzer: "1.25.0"
+gates: []
+notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/actionlint/action.yml:25 and :45, .github/actions/check-jsonschema/action.yml:39, .github/workflows/pr-audit-workflows.yml:47, .github/actions/psscriptanalyzer/action.yml:31. The actionlint pin is the kjanat/actionlint fork (actionlint/action.yml:18-22), whose version numbers overlap upstream's; upstream rhysd/actionlint fails on the $/ references in every workflow here. CI runs actionlint with -color and zizmor with --format=github --color=never; those change only the output and are left out. zizmor --offline is narrower than CI, which runs the online audits with a GitHub token: a local run spends no GitHub API calls. The workflow schema is fetched from raw.githubusercontent.com, as in CI. The call-surface check compares the HEAD commit, not the working tree, with its merge base against origin/main, where CI uses the pull request base. Invoke-CompositeRunPssa.ps1 fails, not skips, when PSScriptAnalyzer 1.25.0 is missing. Left out because they need a GitHub token, a clone of another repository or a pull request: the actionlint attestation steps (pr-require-checks.yml:357-367), the inline actionlint-ShellCheck proof (:368-388, which writes to RUNNER_TEMP), check-workflow-naming (:451-476, clones melodic-software/standards), check-managed-files (:495-498) and OSV-Scanner (:632-647). Glob gaps: CI's actionlint, jsonschema, zizmor and workflow-call-surface lanes also fire on any other .github/** change, on fixtures/composite-action/** and on **/action.yml outside .github (pr-require-checks.yml:138-140, :148-154, :172-174)."
