@@ -1,0 +1,25 @@
+# Markdown in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# markdownlint-cli2 with the root config, as CI's markdown composite runs it
+# (.github/workflows/pr-run-checks.yml:242-251, called from
+# .github/workflows/pr-require-checks.yml:179-213; the command is
+# .github/actions/markdownlint/action.yml:57), then the heading-cite resolver
+# over the fixture corpus CI scopes it to (pr-require-checks.yml:246-251).
+# Commands run from the repository root.
+enabled: true
+globs: ["*.md"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: >-
+  markdownlint-cli2 --config .markdownlint-cli2.jsonc <files> &&
+  GLOBS='fixtures/reference-integrity/*.md' bash .github/actions/check-markdown-references/check-heading-cites.sh
+fix-cmd: "markdownlint-cli2 --config .markdownlint-cli2.jsonc --fix <files>"
+code-fix-cmd: null
+opt-in: ".markdownlint-cli2.jsonc at the repository root"
+install-hint: "npm i -g markdownlint-cli2@0.23.3 (the version CI runs) on node 24.21.0"
+tool-pin:
+  markdownlint-cli2: "0.23.3"
+  node: "24.21.0"
+gates: []
+notes: "Pins: .github/actions/markdownlint/action.yml:24 and :27. CI lints every **/*.md; check-cmd lints only the changed files. CI runs markdownlint-cli2 through npx --yes, which downloads it; this record runs it from PATH and installs nothing. The heading-cite check runs here on any markdown change, where CI runs it only on a .github/** or fixtures/reference-integrity/** change (pr-require-checks.yml:101-103); its scope is the same fixed corpus either way. Glob gaps: CI's markdown filter also fires on any .github/** change and on **/.markdownlint* (pr-require-checks.yml:208-211)."

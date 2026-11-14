@@ -1,0 +1,42 @@
+# Repository-wide text checks in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint-only: /toolchain:lint runs it, /toolchain:check does not. Each line is a
+# composite of .github/workflows/pr-run-checks.yml as this repository calls it
+# (.github/workflows/pr-require-checks.yml:179-213), with each composite's
+# default inputs and the two exclusions at pr-require-checks.yml:204-205:
+# typos (pr-run-checks.yml:221-226), gitleaks (:228-233), editorconfig (:235-240),
+# lychee-offline (:295-302), exec-bit (:267-271), machine-specific-paths
+# (:273-279) and comment-hygiene (:287-293); then the ungated action.yaml
+# filename check (pr-require-checks.yml:425-436). Commands run from the
+# repository root.
+enabled: true
+globs: ["**"]
+project-discovery: []
+build-cmd: null
+test-cmd: null
+check-cmd: |
+  typos --config _typos.toml .
+  gitleaks dir . --config .gitleaks.toml --no-banner --redact
+  # editorconfig-checker: binary name varies by install method (ec / editorconfig-checker / ec-windows-amd64)
+  "$EC_BIN" -config .editorconfig-checker.json
+  # lychee-offline: on-disk link and anchor integrity, no network
+  lychee --offline --no-progress --config lychee.toml '**/*.md'
+  bash .github/actions/check-exec-bit/check-exec-bit.sh
+  EXTENSIONS='*.cs *.csproj *.json *.jsonc *.js *.jsx *.md *.props *.ps1 *.psm1 *.py *.sh *.slnx *.targets *.tmpl *.toml *.ts *.tsx *.yaml *.yml' EXCLUDE=':(exclude).github/actions/check-machine-paths/**' bash .github/actions/check-machine-paths/check-machine-specific-paths.sh
+  PATTERNS_FILE=.github/actions/check-comment-markers/comment-hygiene-patterns.sh EXTENSIONS='*.cs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.mts *.cts *.py *.sh *.ps1 *.razor *.cshtml' EXCLUDE=':(exclude).github/actions/check-comment-markers/**' bash .github/actions/check-comment-markers/scan-tree.sh
+  bash .github/actions/check-action-filename/check-action-metadata-filename.sh
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json, lychee.toml)"
+install-hint: |
+  typos: winget install Crate-CI.Typos | brew install typos-cli
+  gitleaks: winget install Gitleaks.Gitleaks | brew install gitleaks
+  editorconfig-checker: winget install EditorConfig-Checker.EditorConfig-Checker | brew install editorconfig-checker
+  lychee: winget install lycheeverse.lychee | brew install lychee
+tool-pin:
+  typos: "1.50.3"
+  gitleaks: "8.30.1"
+  editorconfig-checker: "4.0.2"
+  lychee: "0.24.2"
+gates: []
+notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/typos/action.yml:46, gitleaks/action.yml:52, editorconfig-checker/action.yml:35, lychee-offline/action.yml:22. The EXTENSIONS values are those two actions' input defaults (check-machine-paths/action.yml, check-comment-markers/action.yml), which their scripts do not default themselves. .editorconfig-checker.json is written for editorconfig-checker 4.x. Left out: the eol-renormalize composite (pr-run-checks.yml:281-285, check-line-endings/action.yml), because it runs git add --renormalize and then git reset, which would unstage local work; check-managed-files (pr-require-checks.yml:495-498), which needs a melodic-software/standards checkout and the pull request; OSV-Scanner (pr-require-checks.yml:632-647)."

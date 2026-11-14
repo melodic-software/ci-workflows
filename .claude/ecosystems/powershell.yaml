@@ -1,0 +1,23 @@
+# PowerShell in this repository. Contract and schema:
+# https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
+# Lint is CI's PSScriptAnalyzer lane: the action's own runner with no paths
+# (git-tracked *.ps1 and *.psm1 discovery), the root settings file and the
+# pinned analyzer (.github/workflows/pr-require-checks.yml:226-227; the call is
+# .github/actions/psscriptanalyzer/action.yml:86-96). The test is the composite
+# pwsh regression script that lane runs (pr-require-checks.yml:232-233). The
+# composite-metadata scan at :231 reads action.yml files and runs from
+# yaml.yaml. Commands run from the repository root.
+enabled: true
+globs: ["*.ps1", "*.psm1", "*.psd1"]
+project-discovery: []
+build-cmd: null
+test-cmd: "pwsh -NoProfile -File .github/scripts/Invoke-CompositeRunPssa.test.ps1"
+check-cmd: "pwsh -NoProfile -File .github/actions/psscriptanalyzer/Invoke-Pssa.ps1 -Settings PSScriptAnalyzerSettings.psd1 -AnalyzerVersion 1.25.0"
+fix-cmd: null
+code-fix-cmd: null
+opt-in: "PSScriptAnalyzerSettings.psd1 at the repository root"
+install-hint: "pwsh 7.4 or later; Install-PSResource PSScriptAnalyzer -Version 1.25.0 (the version CI pins); yq (mikefarah) for the composite test"
+tool-pin:
+  PSScriptAnalyzer: "1.25.0"
+gates: []
+notes: "Pin: .github/actions/psscriptanalyzer/action.yml:31. CI runs pwsh -File without -NoProfile on a runner with no profile; -NoProfile keeps a local profile out. The check-cmd analyzes every tracked *.ps1 and *.psm1, not only the changed files, as CI does; *.psd1 files are selected but never analyzed. Invoke-Pssa.ps1 exits 0 with a warning when PSScriptAnalyzer 1.25.0 is not installed (Invoke-Pssa.ps1:95-101): read its output, a skip is not a pass. Glob gaps: CI's powershell filter also fires on any .github/** change and on fixtures/composite-action/** (pr-require-checks.yml:95-100), which the test reads; these globs select only PowerShell files."
