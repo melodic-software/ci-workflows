@@ -1,12 +1,12 @@
 # Shell in this repository. Contract and schema:
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
 # Lint is CI's two shell lanes. shellcheck with the root .shellcheckrc and no
-# severity filter or exclusion (.github/workflows/pr-require-checks.yml:511-512;
-# .github/actions/shellcheck/run.sh:172-176). shfmt -d through the action's own
-# runner over the exact root list CI passes (pr-require-checks.yml:531-536), so
+# severity filter or exclusion (.github/workflows/pr-require-checks.yml;
+# .github/actions/shellcheck/run.sh). shfmt -d through the action's own
+# runner over the exact root list CI passes (pr-require-checks.yml), so
 # its scope does not depend on the change. The test is every shell test CI
-# runs by name: pr-require-checks.yml:513-518, :538, :394, and the test-contracts
-# steps at :563-602. Commands run from the repository root.
+# runs by name in pr-require-checks.yml, its test-contracts steps included.
+# Commands run from the repository root.
 enabled: true
 globs: ["*.sh", "*.bash"]
 project-discovery: []
@@ -40,4 +40,4 @@ tool-pin:
   shellcheck: "0.11.0"
   shfmt: "3.14.1"
 gates: []
-notes: "Pins: .github/actions/shellcheck/action.yml:66, .github/actions/shfmt/action.yml:22. CI lints every tracked *.sh and *.bash; check-cmd lints only the changed ones. The check-cmd stops at the first failing tool; CI runs the two lanes as separate jobs. fix-cmd can reformat changed files outside CI's shfmt root list, which CI never format-checks. Skips that still exit 0: check-workflow-naming/run.test.sh skips its real-analyzer cases without REAL_STANDARDS_ROOT (run.test.sh:104), which CI sets only in its check-workflow-naming job (pr-require-checks.yml:470-476, a clone of melodic-software/standards); gitleaks/scan.test.sh skips its symlink cases on a filesystem without symlinks. Left out because they need a GitHub token: verify-actionlint-attestation.sh and its test (pr-require-checks.yml:357-367). Glob gaps: CI's shell filter also fires on any .github/** change, fixtures/shell/**, **/.editorconfig and .shellcheckrc (pr-require-checks.yml:131-137), and its test-contracts tests on any .github/** change (:155-160); these globs select only *.sh and *.bash."
+notes: "Pins: .github/actions/shellcheck/action.yml, .github/actions/shfmt/action.yml. CI lints every tracked *.sh and *.bash; check-cmd lints only the changed ones. The check-cmd stops at the first failing tool; CI runs the two lanes as separate jobs. fix-cmd can reformat changed files outside CI's shfmt root list, which CI never format-checks. Skips that still exit 0: check-workflow-naming/run.test.sh skips its real-analyzer cases without REAL_STANDARDS_ROOT (run.test.sh), which CI sets only in its check-workflow-naming job (pr-require-checks.yml, a clone of melodic-software/standards); gitleaks/scan.test.sh skips its symlink cases on a filesystem without symlinks. Left out because they need a GitHub token: verify-actionlint-attestation.sh and its test (pr-require-checks.yml). Glob gaps: CI's shell filter also fires on any .github/** change, fixtures/shell/**, **/.editorconfig and .shellcheckrc (pr-require-checks.yml), and its test-contracts tests on any .github/** change; these globs select only *.sh and *.bash."

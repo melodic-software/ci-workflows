@@ -949,7 +949,7 @@ jobs:
             4. Return the structured output:
                - labels: only labels the issue clearly supports, from this set:
             ${allowed.map((l) => `- ${l}`).join("\n")}
-               - comment: a short note to the reporter (under 150 words) saying what you understood,
+               - comment: a short note to the reporter saying what you understood,
                  what is missing if anything, and likely duplicates or merged fixes as #numbers. Promise no fix or
                  timeline, and mention no one.
             ${typeInstruction}
@@ -1008,6 +1008,9 @@ jobs:
           lane: intake
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           api-key: ${{ secrets.CLAUDE_API_KEY }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -1724,7 +1727,7 @@ jobs:
             4. Return the structured output:
                - labels: only labels the issue clearly supports, from this set:
             ${allowed.map((l) => `- ${l}`).join("\n")}
-               - comment: a short note to the reporter (under 150 words) saying what you understood,
+               - comment: a short note to the reporter saying what you understood,
                  what is missing if anything, and likely duplicates or merged fixes as #numbers. Promise no fix or
                  timeline, and mention no one.
             ${typeInstruction}
@@ -1781,6 +1784,9 @@ jobs:
           lane: intake
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           subscription-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -2465,7 +2471,7 @@ jobs:
             4. Return the structured output:
                - labels: only labels the issue clearly supports, from this set:
             ${allowed.map((l) => `- ${l}`).join("\n")}
-               - comment: a short note to the reporter (under 150 words) saying what you understood,
+               - comment: a short note to the reporter saying what you understood,
                  what is missing if anything, and likely duplicates or merged fixes as #numbers. Promise no fix or
                  timeline, and mention no one.
             ${typeInstruction}
@@ -2522,6 +2528,9 @@ jobs:
           lane: intake
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           fallback-token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
