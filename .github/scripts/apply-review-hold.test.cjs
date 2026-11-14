@@ -1476,11 +1476,31 @@ test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
 test("the cost decision carries from the status job under its current or its former name", async () => {
   for (const [label, name, env, hold] of [
     ["a run after the rename", `PR Review / ${STATUS_JOB}`, {}, "false"],
-    ["a run before the rename", `PR Review / ${STATUS_JOB_LEGACY}`, {}, "false"],
-    ["a run before the caller jobs were named", `pr-review / ${STATUS_JOB_LEGACY}`, {}, "false"],
-    ["a run before the rename, legacy name unset", `PR Review / ${STATUS_JOB_LEGACY}`, { STATUS_JOB_LEGACY: "" }, "true"],
+    [
+      "a run before the rename",
+      `PR Review / ${STATUS_JOB_LEGACY}`,
+      {},
+      "false",
+    ],
+    [
+      "a run before the caller jobs were named",
+      `pr-review / ${STATUS_JOB_LEGACY}`,
+      {},
+      "false",
+    ],
+    [
+      "a run before the rename, legacy name unset",
+      `PR Review / ${STATUS_JOB_LEGACY}`,
+      { STATUS_JOB_LEGACY: "" },
+      "true",
+    ],
     ["the CI Status job", "CI Status", {}, "true"],
-    ["a job whose name ends in Status without the separator", "PR Review / Review Status", {}, "true"],
+    [
+      "a job whose name ends in Status without the separator",
+      "PR Review / Review Status",
+      {},
+      "true",
+    ],
   ]) {
     const { core } = await apply(costEnv(["cost"], env), {
       comments: [decision()],
