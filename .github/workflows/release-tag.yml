@@ -40,6 +40,7 @@ concurrency:
 
 jobs:
   tag:
+    name: Tag
     runs-on: ubuntu-24.04
     environment: plugin-release
     permissions:
@@ -119,7 +120,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
 
-      - name: Create tag + GitHub Release
+      - name: Create tag + GitHub release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEXT: ${{ steps.ver.outputs.next }}
