@@ -32,6 +32,7 @@ concurrency:
 
 jobs:
   automerge-dependabot-prs:
+    name: Automerge Dependabot Prs
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     # One listing, then per pull request a commit listing, a check-run read,
