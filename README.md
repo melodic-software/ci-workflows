@@ -266,7 +266,7 @@ consumer to audit it.
   a silently missing status turns every later contract-only run red with no way
   to tell a refused write from a failing lane. **The calling job therefore needs
   `statuses: write`** (plus `pull-requests: write` when it also runs
-  `pr-contract`). The exception is `same-repo` false, a fork pull request: its
+  `check-contract`). The exception is `same-repo` false, a fork pull request: its
   token is read-only on `pull_request` whatever `permissions:` requests, so the
   run reports the lanes verdict, prints a `::notice::`, and records nothing —
   and, because the contract-only predicate is false for every fork event, a fork

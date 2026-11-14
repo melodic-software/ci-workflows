@@ -296,7 +296,7 @@ test("the ci-status contract-only default matches every job gate", () => {
   assert.ok(compared > 0);
 });
 
-test("the ci-status job runs pr-contract before the aggregation", () => {
+test("the ci-status job runs check-contract before the aggregation", () => {
   const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
   assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
   assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);

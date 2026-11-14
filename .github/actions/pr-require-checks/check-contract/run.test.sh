@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Fixture harness for the pr-contract runner: Conventional Commits title, the
+# Fixture harness for the check-contract runner: Conventional Commits title, the
 # do-not-merge label gate, and the issue-linkage rule with its advisory
 # comment/label upsert.
 #
@@ -395,7 +395,7 @@ expect_comment_body() {
   fi
 }
 
-conforming_body=$'No related issue: melodic-software/github-iac#396 tracks the phase\n\n## Summary\n\nAdds the pr-contract composite.\n\n## Fix\n\nPorts three gates into one step.\n\n## Verification\n\nBoth harnesses pass locally.\n\n## Related\n\nRefs: melodic-software/github-iac#378\n'
+conforming_body=$'No related issue: melodic-software/github-iac#396 tracks the phase\n\n## Summary\n\nAdds the check-contract composite.\n\n## Fix\n\nPorts three gates into one step.\n\n## Verification\n\nBoth harnesses pass locally.\n\n## Related\n\nRefs: melodic-software/github-iac#378\n'
 
 set_comments '[]'
 
@@ -405,7 +405,7 @@ set_comments '[]'
 echo 'case: an event with no pull request skips every check'
 set_pull 'feat: something' "$conforming_body" someone ''
 run_case 0 PR_NUMBER=''
-expect_log '::notice::pr-contract: no pull request in this event; nothing to check'
+expect_log '::notice::check-contract: no pull request in this event; nothing to check'
 expect_output 'title=skipped'
 expect_output 'do-not-merge=skipped'
 expect_output 'linkage=skipped'
@@ -417,7 +417,7 @@ queue_ref="refs/heads/gh-readonly-queue/main/pr-${pr_number}-0123456789abcdef012
 
 # Without the merge-group branch an empty pr-number skips, so the label passes.
 echo 'case: a merge group fails when the queued pull request carries do-not-merge'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'do-not-merge'
 run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
 expect_output 'do-not-merge=fail'
 expect_output 'title=pass'
@@ -428,7 +428,7 @@ expect_gh_call "-F number=${pr_number} -i"
 
 # Without the early exit the failing linkage and its writes would run here.
 echo 'case: a merge group with a good title passes, skips linkage, and writes nothing'
-set_pull 'feat: add pr-contract' 'no linkage' someone ''
+set_pull 'feat: add check-contract' 'no linkage' someone ''
 run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
 expect_output 'title=pass'
 expect_output 'do-not-merge=pass'
@@ -512,19 +512,19 @@ run_case 0
 expect_output 'title=pass'
 
 echo 'case: a scope is optional when require-scope is false'
-set_pull 'feat(actions): add pr-contract' "$conforming_body" someone ''
+set_pull 'feat(actions): add check-contract' "$conforming_body" someone ''
 run_case 0
 expect_output 'title=pass'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0
 expect_output 'title=pass'
 
 # Without the require-scope branch the unscoped title passes here too.
 echo 'case: a scope is mandatory when require-scope is true'
-set_pull 'feat(actions): add pr-contract' "$conforming_body" someone ''
+set_pull 'feat(actions): add check-contract' "$conforming_body" someone ''
 run_case 0 REQUIRE_SCOPE=true
 expect_output 'title=pass'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 1 REQUIRE_SCOPE=true
 expect_output 'title=fail'
 expect_log 'a scope is REQUIRED'
@@ -533,20 +533,20 @@ expect_log 'a scope is REQUIRED'
 
 # Without the label check this exits 0.
 echo 'case: the do-not-merge label fails the step'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'do-not-merge'
 run_case 1
 expect_output 'do-not-merge=fail'
-expect_log "::error::pr-contract: this PR carries the 'do-not-merge' label; remove it to merge."
+expect_log "::error::check-contract: this PR carries the 'do-not-merge' label; remove it to merge."
 
 # Without the exact-label match any label would block.
 echo 'case: an unrelated label does not block'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation,do-not-merge-later'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'documentation,do-not-merge-later'
 run_case 0
 expect_output 'do-not-merge=pass'
 
 # Without the configurable label input the custom label is ignored.
 echo 'case: the blocking label name is configurable'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'hold'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'hold'
 run_case 1 DO_NOT_MERGE_LABEL=hold
 expect_output 'do-not-merge=fail'
 
@@ -557,20 +557,20 @@ expect_output 'do-not-merge=fail'
 echo 'case: every closing-keyword form satisfies linkage'
 for keyword in Close Closes Closed Fix Fixes Fixed Resolve Resolves Resolved; do
   body="${keyword} #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
-  set_pull 'feat: add pr-contract' "$body" someone ''
+  set_pull 'feat: add check-contract' "$body" someone ''
   run_case 0
   expect_output 'linkage=pass'
 done
 
 # Without the owner/repo alternative a cross-repository closer fails linkage.
 echo 'case: a cross-repository closing reference satisfies linkage'
-set_pull 'feat: add pr-contract' "Closes melodic-software/github-iac#396"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Closes melodic-software/github-iac#396"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
 # Without the `\b` guard on the keyword, "prefixes #12" would count as a closer.
 echo 'case: a keyword embedded in a longer word does not satisfy linkage'
-set_pull 'feat: add pr-contract' "This prefixes #12 nothing"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "This prefixes #12 nothing"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Missing a native closing keyword'
@@ -580,30 +580,30 @@ expect_log 'Missing a native closing keyword'
 # Without the no-issue marker both phrasings fail linkage.
 echo 'case: both no-issue markers satisfy linkage'
 for marker in 'No linked issue' 'No related issue: nothing to close'; do
-  set_pull 'feat: add pr-contract' "${marker}"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+  set_pull 'feat: add check-contract' "${marker}"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
   run_case 0
   expect_output 'linkage=pass'
 done
 
 # Without the non-closing marker branch a `Refs:` line fails linkage.
 echo 'case: a Refs marker satisfies linkage without counting as a closer'
-set_pull 'feat: add pr-contract' "Refs: #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Refs: #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
-set_pull 'feat: add pr-contract' "Relates to: melodic-software/github-iac#396"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Relates to: melodic-software/github-iac#396"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
 # Without the strict marker shape (colon required, own line) ordinary prose
 # containing "refs" would satisfy a merge gate.
 echo 'case: a Refs marker without a colon does not satisfy linkage'
-set_pull 'feat: add pr-contract' "Refs #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Refs #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Missing a native closing keyword'
 
 echo 'case: a Refs marker with trailing prose does not satisfy linkage'
-set_pull 'feat: add pr-contract' "Refs: #12 and some prose"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Refs: #12 and some prose"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 
@@ -612,27 +612,27 @@ expect_output 'linkage=fail'
 # Without the negation window a disclaimer would pass while GitHub still closes
 # the issue on merge.
 echo 'case: a negated closing reference fails linkage outright'
-set_pull 'feat: add pr-contract' "This does not close #12."$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+set_pull 'feat: add check-contract' "This does not close #12."$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Negated closing reference ("close #12" (trigger "not"))'
 
 # Without the "not only" exemption this affirmative sentence would be rejected.
 echo 'case: a correlative "not only ... but" closer is affirmative'
-set_pull 'feat: add pr-contract' "This not only documents but fixes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "This not only documents but fixes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
 # Without the sentence-break cut an unrelated earlier clause would negate the
 # closer.
 echo 'case: a negation before a sentence break does not reach the keyword'
-set_pull 'feat: add pr-contract' "There is no ambiguity. This closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "There is no ambiguity. This closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
 # Without the contracted-negation branch "doesn't close" would pass.
 echo 'case: a contracted negation is detected'
-set_pull 'feat: add pr-contract' "It doesn't close #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+set_pull 'feat: add check-contract' "It doesn't close #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'trigger "doesn'"'"'t"'
@@ -644,7 +644,7 @@ expect_log 'trigger "doesn'"'"'t"'
 typographic_apostrophe=$'\xe2\x80\x99'
 for locale in C.UTF-8 C; do
   echo "case: a contracted negation with a typographic apostrophe is detected (LC_ALL=${locale})"
-  set_pull 'feat: add pr-contract' "It doesn${typographic_apostrophe}t in any way really close #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+  set_pull 'feat: add check-contract' "It doesn${typographic_apostrophe}t in any way really close #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
   run_case 0 LC_ALL="$locale"
   expect_output 'linkage=fail'
   expect_log 'trigger "doesn'"'"'t"'
@@ -653,13 +653,13 @@ done
 # Without the five-word bound the scan would reach any earlier negation on the
 # line; without the window at all the nearer one would be missed.
 echo 'case: a negation five words before the keyword is detected'
-set_pull 'feat: add pr-contract' "Not one two three four closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
+set_pull 'feat: add check-contract' "Not one two three four closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n\nNo linked issue\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'trigger "Not"'
 
 echo 'case: a negation six words before the keyword is not detected'
-set_pull 'feat: add pr-contract' "Not one two three four five closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "Not one two three four five closes #12"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
@@ -673,7 +673,7 @@ time_repeats() {
   local repeats="$1" body elapsed started
   printf -v body '%*s' "$repeats" ''
   body="${body// /closes #1 }"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
-  set_pull 'feat: add pr-contract' "$body" someone ''
+  set_pull 'feat: add check-contract' "$body" someone ''
   best_time=''
   for _ in 1 2; do
     started="$EPOCHREALTIME"
@@ -708,88 +708,88 @@ tracker_pattern='[a-z][a-z0-9]*-[0-9]+'
 # Without the default grammar a tracker id would satisfy every caller that sets
 # nothing; an explicitly empty input must mean that same default.
 echo 'case: the default pattern rejects a tracker id and keeps the #N message'
-set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes ENG-123${sections}" someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Missing a native closing keyword (Closes/Fixes/Resolves #N).'
 run_case 0 ISSUE_REF_PATTERN=''
 expect_output 'linkage=fail'
-set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN=''
 expect_output 'linkage=pass'
 
 # Without the pattern reaching the closing and Refs regexes these fail.
 echo 'case: a custom pattern accepts its own ids as closers and Refs markers'
-set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes ENG-123${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
-set_pull 'feat: add pr-contract' "Refs: SW2-1${sections}" someone ''
+set_pull 'feat: add check-contract' "Refs: SW2-1${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
 
 # Without replacing the GitHub grammar a custom pattern would only widen it.
 echo 'case: a custom pattern replaces #N and names itself in the message'
-set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
 expect_log 'Missing a recognized closing keyword (Closes/Fixes/Resolves <ref>).'
 expect_log "issue-ref-pattern \`${tracker_pattern}\`"
-set_pull 'feat: add pr-contract' "Refs: #12${sections}" someone ''
+set_pull 'feat: add check-contract' "Refs: #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
 
 # Without a required separator after the keyword, "fixture-1" reads as
 # "fix" + "ture-1" and a custom pattern passes on an ordinary word.
 echo 'case: a custom pattern does not match inside a hyphenated word'
-set_pull 'feat: add pr-contract' "Uses fixture-1 and the resolver-3 module.${sections}" someone ''
+set_pull 'feat: add check-contract' "Uses fixture-1 and the resolver-3 module.${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
-set_pull 'feat: add pr-contract' "Fixes: ENG-7${sections}" someone ''
+set_pull 'feat: add check-contract' "Fixes: ENG-7${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
 
 # Without folding the case classes, `[:upper:]` matches nothing in the
 # lowercased body.
 echo 'case: a POSIX case class in a custom pattern still matches'
-set_pull 'feat: add pr-contract' "Closes ENG-123${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes ENG-123${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
 expect_output 'linkage=pass'
-set_pull 'feat: add pr-contract' "Refs: ENG-123${sections}" someone ''
+set_pull 'feat: add check-contract' "Refs: ENG-123${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN='[[:upper:]]+-[0-9]+'
 expect_output 'linkage=pass'
 
 # Without the trailing-hyphen boundary a longer malformed id passes.
 echo 'case: a custom id followed by more hyphenated text is not a match'
-set_pull 'feat: add pr-contract' "Closes ENG-123-extra${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes ENG-123-extra${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
-set_pull 'feat: add pr-contract' "Closes ENG-123.${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes ENG-123.${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
 # Without the custom-only guard the hyphen rule would change the default: a
 # `#N` closer followed by a hyphen passed before this input and must still.
-set_pull 'feat: add pr-contract' "Closes #12-followup${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes #12-followup${sections}" someone ''
 run_case 0
 expect_output 'linkage=pass'
 
 # Without the default branch of the wording, the default negation message
 # would lose its GitHub reason and its `Refs: #N` advice.
 echo 'case: the default negation message is unchanged'
-set_pull 'feat: add pr-contract' "This does not close #12.${sections}"$'\nNo linked issue\n' someone ''
+set_pull 'feat: add check-contract' "This does not close #12.${sections}"$'\nNo linked issue\n' someone ''
 run_case 0
 expect_log "GitHub's linkage parser ignores the surrounding words"
 expect_log 'use "Refs: #N" (or "Relates to: #N") on its own line instead.'
 
 # Without the negation window on the custom closer this disclaimer passes.
 echo 'case: negation handling applies to a custom pattern'
-set_pull 'feat: add pr-contract' "This does not close ENG-123.${sections}"$'\nNo linked issue\n' someone ''
+set_pull 'feat: add check-contract' "This does not close ENG-123.${sections}"$'\nNo linked issue\n' someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=fail'
 expect_log 'Negated closing reference ("close ENG-123" (trigger "not"))'
 
 # Without the opt-out check being pattern-independent this fails.
 echo 'case: the no-issue opt-out still passes with a custom pattern'
-set_pull 'feat: add pr-contract' "No related issue: tooling only${sections}" someone ''
+set_pull 'feat: add check-contract' "No related issue: tooling only${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="$tracker_pattern"
 expect_output 'linkage=pass'
 
@@ -819,7 +819,7 @@ expect_no_gh_calls_at_all
 # the input would run this system() call.
 echo 'case: a pattern carrying awk code is data, not code'
 injected="$temporary_directory/injected"
-set_pull 'feat: add pr-contract' "Closes #12${sections}" someone ''
+set_pull 'feat: add check-contract' "Closes #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="x\" ~ system(\"touch ${injected}\") ~ \"x"
 if [[ -e "$injected" ]]; then
   echo 'FAIL: the issue-ref-pattern input executed as awk code'
@@ -831,14 +831,14 @@ fi
 # Without HTML-comment masking a PR template's commented-out example satisfies
 # the gate vacuously.
 echo 'case: a closing keyword only inside an HTML comment does not satisfy linkage'
-set_pull 'feat: add pr-contract' "<!-- Closes #12 -->"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' "<!-- Closes #12 -->"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Missing a native closing keyword'
 
 # Without fenced-code masking an example in a code block satisfies the gate.
 echo 'case: a closing keyword only inside a fenced code block does not satisfy linkage'
-set_pull 'feat: add pr-contract' '```'$'\nCloses #12\n''```'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' '```'$'\nCloses #12\n''```'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 
@@ -846,7 +846,7 @@ expect_output 'linkage=fail'
 # the gate.
 echo 'case: a closing keyword only inside an inline code span does not satisfy linkage'
 # shellcheck disable=SC2016 # the backticks are the Markdown code span under test.
-set_pull 'feat: add pr-contract' 'Write `Closes #12` in the body.'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' 'Write `Closes #12` in the body.'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 
@@ -862,7 +862,7 @@ for section in Summary Fix Verification Related; do
     fi
     body+=$'\n## '"$present"$'\n\ncontent\n'
   done
-  set_pull 'feat: add pr-contract' "$body" someone ''
+  set_pull 'feat: add check-contract' "$body" someone ''
   run_case 0
   expect_output 'linkage=fail'
   expect_log "Missing a \"## ${section}\" section."
@@ -870,7 +870,7 @@ done
 
 # Without the non-empty check a heading with no content passes.
 echo 'case: an empty contract section is reported as empty, not missing'
-set_pull 'feat: add pr-contract' 'Closes #12'$'\n\n## Summary\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' 'Closes #12'$'\n\n## Summary\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'The "## Summary" section is empty.'
@@ -878,7 +878,7 @@ expect_log 'The "## Summary" section is empty.'
 # Without the same-or-higher-level end rule a nested subsection would close the
 # section early and Summary would read as empty.
 echo 'case: a nested subsection counts as its parent section content'
-set_pull 'feat: add pr-contract' 'Closes #12'$'\n\n## Summary\n\n### Detail\n\nnested content\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
+set_pull 'feat: add check-contract' 'Closes #12'$'\n\n## Summary\n\n### Detail\n\nnested content\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=pass'
 
@@ -908,19 +908,19 @@ expect_output 'linkage=exempt'
 # Without the create branch no comment is posted on the first failing run.
 echo 'case: an advisory failure creates the marker comment and adds the label'
 set_comments '[]'
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
 expect_output 'linkage=fail'
 expect_gh_call "POST repos/${repository}/issues/${pr_number}/comments"
-expect_comment_body "POST_${comments_key}" '<!-- pr-contract:linkage -->'
+expect_comment_body "POST_${comments_key}" '<!-- check-contract:linkage -->'
 expect_comment_body "POST_${comments_key}" 'Missing a "## Summary" section.'
 expect_gh_call "POST repos/${repository}/issues/${pr_number}/labels"
-expect_log '::warning::pr-contract: Missing a native closing keyword'
+expect_log '::warning::check-contract: Missing a native closing keyword'
 
 # Without the marker lookup a second run posts a second comment.
 echo 'case: a second advisory failure edits the existing marker comment'
-set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale text')]"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_comments "[$(bot_comment 1001 '<!-- check-contract:linkage -->\nstale text')]"
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
 expect_no_gh_call "POST repos/${repository}/issues/${pr_number}/comments"
@@ -929,17 +929,17 @@ expect_no_gh_call "POST repos/${repository}/issues/${pr_number}/comments"
 echo 'case: a 403 on the comment write leaves the exit code unchanged'
 set_comments '[]'
 printf '%s\n' 'gh: Forbidden (HTTP 403)' >"$fixtures/POST_${comments_key}.err"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
-expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
+expect_log '::notice::check-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
 rm -f -- "$fixtures/POST_${comments_key}.err"
 
 # Without the best-effort wrapper a refused label write fails the step.
 echo 'case: a 403 on the label write leaves the exit code unchanged'
 printf '%s\n' 'gh: Forbidden (HTTP 403)' >"$fixtures/POST_${labels_key}.err"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
-expect_log '::notice::pr-contract: adding the linkage label was refused (HTTP 403); continuing without it'
+expect_log '::notice::check-contract: adding the linkage label was refused (HTTP 403); continuing without it'
 rm -f -- "$fixtures/POST_${labels_key}.err"
 
 # expect_sends <key> <n>
@@ -959,7 +959,7 @@ expect_sends() {
 # Without the resend a single 5xx on the one read every verdict needs fails
 # the required check.
 echo 'case: a pull-request read that fails with a 5xx is sent again'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 printf '1\n' >"$fixtures/${pull_key}.fail-times"
 run_case 0
 expect_output 'linkage=pass'
@@ -970,33 +970,33 @@ rm -f -- "$fixtures/${pull_key}.fail-times"
 # Without the attempt cap a read that keeps failing is sent until the job
 # times out.
 echo 'case: a pull-request read is sent at most three times'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 printf '99\n' >"$fixtures/${pull_key}.fail-times"
 run_case 1
 expect_sends "$pull_key" 3
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 500)"
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 500)"
 rm -f -- "$fixtures/${pull_key}.fail-times"
 
 # Without the resend rule a comment POST that errored after GitHub created the
 # comment would be sent again and post it twice.
 echo 'case: a comment create that fails with a 5xx is sent once'
 set_comments '[]'
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 printf '1\n' >"$fixtures/POST_${comments_key}.fail-times"
 run_case 0
 expect_sends "POST_${comments_key}" 1
-expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
+expect_log '::notice::check-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
 rm -f -- "$fixtures/POST_${comments_key}.fail-times"
 
 # Without sending the advisory calls once, their resends could push the step
 # past a short ci-status job's timeout.
 echo 'case: an advisory comment edit that fails with a 5xx is sent once'
-set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale text')]"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_comments "[$(bot_comment 1001 '<!-- check-contract:linkage -->\nstale text')]"
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 printf '1\n' >"$fixtures/PATCH_repos_melodic-software_ci-workflows_issues_comments_1001.fail-times"
 run_case 0
 expect_sends PATCH_repos_melodic-software_ci-workflows_issues_comments_1001 1
-expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
+expect_log '::notice::check-contract: upserting the linkage comment was refused (HTTP 500); continuing without it'
 rm -f -- "$fixtures/PATCH_repos_melodic-software_ci-workflows_issues_comments_1001.fail-times"
 
 # Without the mutation test every GraphQL POST is resent, and a mutation that
@@ -1026,8 +1026,8 @@ done
 
 # Without the pass branch the label stays on a body that now conforms.
 echo 'case: a linkage pass removes the label and rewrites the marker comment'
-set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale failure text')]"
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-issue-linkage'
+set_comments "[$(bot_comment 1001 '<!-- check-contract:linkage -->\nstale failure text')]"
+set_pull 'feat: add check-contract' "$conforming_body" someone 'needs-issue-linkage'
 run_case 0
 expect_output 'linkage=pass'
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
@@ -1036,17 +1036,17 @@ expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issu
 
 # Without the label-presence guard a DELETE fires on every passing run.
 echo 'case: a linkage pass with no label present issues no label delete'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0
 expect_no_gh_call 'DELETE'
 
 # Without the enforce branch a linkage failure exits 0 here too.
 echo 'case: linkage-mode enforce fails the step on a linkage failure'
 set_comments '[]'
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 1 LINKAGE_MODE=enforce
 expect_output 'linkage=fail'
-expect_log '::error::pr-contract: Missing a native closing keyword'
+expect_log '::error::check-contract: Missing a native closing keyword'
 
 # Without computing every check before exiting, a title failure would leave the
 # linkage output unset for the caller.
@@ -1063,7 +1063,7 @@ echo 'case: an unreadable pull request fails loudly'
 mv -- "$fixtures/${pull_key}.json" "$fixtures/${pull_key}.json.bak"
 printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${pull_key}.err"
 run_case 1
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 404)"
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 404)"
 rm -f -- "$fixtures/${pull_key}.err"
 mv -- "$fixtures/${pull_key}.json.bak" "$fixtures/${pull_key}.json"
 
@@ -1073,7 +1073,7 @@ primary_limit_message='gh: API rate limit exceeded for installation ID 1 (HTTP 4
 
 # Without the wait the first limited read fails a good pull request red.
 echo 'case: a rate-limited pull request read reports its headers, waits until the reset, and retries once'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 20\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 0
@@ -1092,7 +1092,7 @@ printf '%s\n' "$primary_limit_message" >"$fixtures/${pull_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 900\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 1 RATE_LIMIT_WAIT_SECONDS=60
 expect_log 'needs a 900s wait, more than the 60s left of rate-limit-wait-seconds (60); not waiting. The limit resets at 900 (1970-01-01T00:15:00Z).'
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
 if [[ -s "$sleep_log" ]]; then
   echo "FAIL: expected no sleep, got: $(cat "$sleep_log")"
   failures=$((failures + 1))
@@ -1101,19 +1101,19 @@ rm -f -- "$fixtures/${pull_key}.1.err" "$fixtures/${pull_key}.1.headers"
 
 # Without the permission branch a refused write would be reported as a limit.
 echo 'case: a permission 403 on an advisory write names no rate limit and keeps the exit code'
-set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+set_pull 'feat: add check-contract' 'no linkage here' someone ''
 printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/POST_${labels_key}.1.err"
 printf 'HTTP/2.0 403 Forbidden\r\nX-Accepted-Github-Permissions: issues=write; pull_requests=write\r\n' >"$fixtures/POST_${labels_key}.1.headers"
 run_case 0
 expect_log 'returned HTTP 403 (permission): Resource not accessible by integration; x-ratelimit-remaining=absent x-ratelimit-reset=absent retry-after=absent x-accepted-github-permissions=issues=write; pull_requests=write'
-expect_log '::notice::pr-contract: adding the linkage label was refused (HTTP 403); continuing without it'
+expect_log '::notice::check-contract: adding the linkage label was refused (HTTP 403); continuing without it'
 rm -f -- "$fixtures/POST_${labels_key}.1.err" "$fixtures/POST_${labels_key}.1.headers"
 
 # Without reading the marker comment outside a command substitution, the wait
 # warning is captured as a comment id, and the conforming path posts a comment
 # it should only ever edit.
 echo 'case: a rate-limited marker comment read on a conforming pull request posts nothing'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 set_comments '[]'
 comments_beyond_one_page
 printf '%s\n' "$primary_limit_message" >"$fixtures/GET_${comments_key}.1.err"
@@ -1131,12 +1131,12 @@ rm -f -- "$fixtures/GET_${comments_key}.1.err"
 # Without the wait counted in the parent shell, the comment read's wait is
 # forgotten and the comment write waits a second time, past the step's cap.
 echo 'case: the marker comment read and write share one rate-limit-wait-seconds budget'
-set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+set_pull 'feat: add check-contract' 'no linkage here' someone ''
 printf '%s\n' "$primary_limit_message" >"$fixtures/GET_${comments_key}.1.err"
 printf '%s\n' "$primary_limit_message" >"$fixtures/POST_${comments_key}.1.err"
 run_case 0
 expect_log 'needs a 60s wait, more than the 0s left of rate-limit-wait-seconds (60); not waiting.'
-expect_log '::notice::pr-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
+expect_log '::notice::check-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
 if [[ "$(cat "$sleep_log")" != 60 ]]; then
   echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
   failures=$((failures + 1))
@@ -1151,7 +1151,7 @@ set_comments '[]'
 # pull request fails red on its first throttled read.
 echo 'case: a GraphQL RATE_LIMITED error on HTTP 200 is reported as a rate limit, waited out, and retried'
 set_comments '[]'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 printf '{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 1."}]}' >"$fixtures/${pull_key}.1.json"
 printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 20\r\nX-Ratelimit-Resource: graphql\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 0
@@ -1169,23 +1169,23 @@ fi
 echo 'case: a GraphQL RATE_LIMITED error beyond the cap fails closed as a rate limit'
 printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 900\r\n' >"$fixtures/${pull_key}.1.headers"
 run_case 1
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 200): rate limited past rate-limit-wait-seconds"
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 200): rate limited past rate-limit-wait-seconds"
 rm -f -- "$fixtures/${pull_key}".1.*
 
 # Without the completeness check a label past the one page the read holds is
 # never seen, and a pull request carrying do-not-merge there passes.
 echo 'case: a GraphQL label page that does not hold every label fails closed'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 jq '.data.repository.pullRequest.labels.totalCount = 101' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
 mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
 run_case 1
-expect_log "::error::pr-contract: pull request ${repository}#${pr_number} read over GraphQL lacks its title, body or complete label list; failing closed"
+expect_log "::error::check-contract: pull request ${repository}#${pr_number} read over GraphQL lacks its title, body or complete label list; failing closed"
 expect_no_output 'do-not-merge=pass'
 
 # Without the field checks a read whose labels carry no nodes reads as no
 # labels at all, and the do-not-merge gate passes on nothing.
 echo 'case: a GraphQL read missing its label nodes fails closed'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'do-not-merge'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'do-not-merge'
 jq 'del(.data.repository.pullRequest.labels.nodes)' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
 mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
 run_case 1
@@ -1204,17 +1204,17 @@ expect_no_log 'does not follow Conventional Commits'
 # beside a FORBIDDEN error would be read as the pull request and pass.
 echo 'case: a GraphQL FORBIDDEN error beside a complete pull request fails closed'
 set_comments '[]'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 jq '.errors = [{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]' "$fixtures/${pull_key}.json" >"$fixtures/${pull_key}.json.tmp"
 mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
 printf 'HTTP/2.0 200 OK\r\n' >"$fixtures/${pull_key}.headers"
 : >"$fixtures/${pull_key}.exit0"
 run_case 1
 expect_log 'POST graphql returned HTTP 200 with GraphQL error FORBIDDEN (permission)'
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP 200)"
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 200)"
 expect_no_output 'title=pass'
 rm -f -- "$fixtures/${pull_key}.headers" "$fixtures/${pull_key}.exit0"
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 
 # Without the numeric check a malformed status line would put its text in
 # every message that names the HTTP status.
@@ -1223,10 +1223,10 @@ jq '.errors = [{"type":"INTERNAL","message":"Something went wrong."}]' "$fixture
 mv -- "$fixtures/${pull_key}.json.tmp" "$fixtures/${pull_key}.json"
 printf 'HTTP/2.0 2OO-bogus\r\n' >"$fixtures/${pull_key}.headers"
 run_case 1
-expect_log "::error::pr-contract: could not read pull request ${repository}#${pr_number} (HTTP unknown): Something went wrong."
+expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP unknown): Something went wrong."
 expect_no_log '2OO-bogus'
 rm -f -- "$fixtures/${pull_key}.headers"
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 
 # Without the `[bot]` suffix a Bot author's GraphQL login never equals the
 # REST login an exempt-authors entry names.
@@ -1239,8 +1239,8 @@ expect_output 'linkage=exempt'
 # the pull request and its comments: 3 for the passing one (the comments
 # twice) and 2 for the failing one at 8b41a59 (origin/main).
 echo 'case: a conforming pull request makes no REST read'
-set_comments "[$(bot_comment 1001 '<!-- pr-contract:linkage -->\nstale failure text')]"
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_comments "[$(bot_comment 1001 '<!-- check-contract:linkage -->\nstale failure text')]"
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
 if [[ "$(grep -c -- '-X GET ' "$gh_log" || true)" -ne 0 || "$(grep -c -- '-X POST graphql ' "$gh_log" || true)" -ne 1 ]]; then
@@ -1250,7 +1250,7 @@ if [[ "$(grep -c -- '-X GET ' "$gh_log" || true)" -ne 0 || "$(grep -c -- '-X POS
 fi
 
 echo 'case: a failing pull request reads its marker comment from the GraphQL read'
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
 expect_no_gh_call '-X GET '
@@ -1261,8 +1261,8 @@ set_comments '[]'
 # Without the `.user.type == "Bot"` filter the gate edits a stranger's planted
 # comment instead of posting its own, and its guidance is never shown.
 echo 'case: a planted marker comment from a user account does not capture the upsert'
-set_comments "[$(user_comment 900 '<!-- pr-contract:linkage -->\nplanted by a stranger')]"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_comments "[$(user_comment 900 '<!-- check-contract:linkage -->\nplanted by a stranger')]"
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "POST repos/${repository}/issues/${pr_number}/comments"
 expect_no_gh_call 'PATCH repos/'
@@ -1270,8 +1270,8 @@ expect_no_gh_call 'PATCH repos/'
 # Without newest-first selection an older bot comment would be edited and the
 # newest one left carrying stale text.
 echo 'case: the newest bot marker comment is the one edited'
-set_comments "[$(bot_comment 900 '<!-- pr-contract:linkage -->\nold'),$(user_comment 950 '<!-- pr-contract:linkage -->\nplanted'),$(bot_comment 1200 '<!-- pr-contract:linkage -->\nnewer')]"
-set_pull 'feat: add pr-contract' 'nothing here' someone ''
+set_comments "[$(bot_comment 900 '<!-- check-contract:linkage -->\nold'),$(user_comment 950 '<!-- check-contract:linkage -->\nplanted'),$(bot_comment 1200 '<!-- check-contract:linkage -->\nnewer')]"
+set_pull 'feat: add check-contract' 'nothing here' someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1200"
 
@@ -1280,7 +1280,7 @@ expect_gh_call "PATCH repos/${repository}/issues/comments/1200"
 echo 'case: the newest bot marker comment is selected across pages'
 comments_beyond_one_page
 rm -f -- "$fixtures/GET_${comments_key}.json"
-printf '[[%s],[%s]]' "$(bot_comment 900 '<!-- pr-contract:linkage -->\nold')" "$(bot_comment 1200 '<!-- pr-contract:linkage -->\nnewer')" \
+printf '[[%s],[%s]]' "$(bot_comment 900 '<!-- check-contract:linkage -->\nold')" "$(bot_comment 1200 '<!-- check-contract:linkage -->\nnewer')" \
   >"$fixtures/GET_${comments_key}.pages.json"
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1200 "
@@ -1307,12 +1307,12 @@ expect_log '%0A::set-output'
 
 echo 'case: a malformed repository is rejected before any API call'
 run_case 1 REPOSITORY='melodic-software/ci-workflows/../other'
-expect_log '::error::pr-contract: repository must be OWNER/REPO'
+expect_log '::error::check-contract: repository must be OWNER/REPO'
 expect_no_gh_calls_at_all
 
 echo 'case: a non-numeric pr-number is rejected before any API call'
 run_case 1 PR_NUMBER='7/../8'
-expect_log '::error::pr-contract: pr-number must be a positive integer'
+expect_log '::error::check-contract: pr-number must be a positive integer'
 expect_no_gh_calls_at_all
 
 # --- labels are not validated ----------------------------------------------
@@ -1324,13 +1324,13 @@ expect_no_gh_calls_at_all
 # Without dropping the label validation this run is rejected outright.
 echo 'case: a blocking label containing spaces is accepted and matched exactly'
 set_comments '[]'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'do not merge'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'do not merge'
 run_case 1 'DO_NOT_MERGE_LABEL=do not merge'
 expect_output 'do-not-merge=fail'
-expect_log "::error::pr-contract: this PR carries the 'do not merge' label; remove it to merge."
+expect_log "::error::check-contract: this PR carries the 'do not merge' label; remove it to merge."
 
 echo 'case: a similar label containing spaces does not block'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'do not merge yet'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'do not merge yet'
 run_case 0 'DO_NOT_MERGE_LABEL=do not merge'
 expect_output 'do-not-merge=pass'
 
@@ -1338,7 +1338,7 @@ expect_output 'do-not-merge=pass'
 # the DELETE path mis-encoded and the label was never removed.
 echo 'case: a non-ASCII linkage label is percent-encoded as UTF-8 in the DELETE path'
 set_comments '[]'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-issue-linkage-é'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'needs-issue-linkage-é'
 run_case 0 'LINKAGE_LABEL=needs-issue-linkage-é'
 expect_output 'linkage=pass'
 expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issue-linkage-%C3%A9"
@@ -1349,32 +1349,32 @@ expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issu
 # requests at merge.
 echo 'case: the hold label is not checked unless enforce-hold-label is on'
 set_comments '[]'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-human'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'needs-human'
 run_case 0
 expect_output 'hold=skipped'
 expect_no_log 'hold label'
 
 # Without the hold check the label is read and ignored.
 echo 'case: enforce-hold-label fails a pull request that carries needs-human'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation,needs-human'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'documentation,needs-human'
 run_case 1 ENFORCE_HOLD_LABEL=true
 expect_output 'hold=fail'
 expect_output 'do-not-merge=pass'
-expect_log "::error::pr-contract: this PR carries the 'needs-human' hold label; a person removes it to release the hold."
+expect_log "::error::check-contract: this PR carries the 'needs-human' hold label; a person removes it to release the hold."
 
 # Without the exact-line match a label that only starts with the hold label holds.
 echo 'case: enforce-hold-label passes a pull request without the hold label'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation,needs-human-review'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'documentation,needs-human-review'
 run_case 0 ENFORCE_HOLD_LABEL=true
 expect_output 'hold=pass'
 expect_no_log 'hold label'
 
 # Without the hold-label input the label stays needs-human whatever the caller sets.
 echo 'case: hold-label names the label that holds'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'needs-human'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'needs-human'
 run_case 0 ENFORCE_HOLD_LABEL=true 'HOLD_LABEL=owner hold'
 expect_output 'hold=pass'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'owner hold'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'owner hold'
 run_case 1 ENFORCE_HOLD_LABEL=true 'HOLD_LABEL=owner hold'
 expect_output 'hold=fail'
 expect_log "carries the 'owner hold' hold label"
@@ -1382,17 +1382,17 @@ expect_log "carries the 'owner hold' hold label"
 # Without the validation a typo such as `True` would leave the hold off.
 echo 'case: an enforce-hold-label other than true or false fails before any read'
 run_case 1 ENFORCE_HOLD_LABEL=True
-expect_log "::error::pr-contract: enforce-hold-label must be 'true' or 'false', got: True"
+expect_log "::error::check-contract: enforce-hold-label must be 'true' or 'false', got: True"
 expect_no_gh_calls_at_all
 
 # Without the named error an unreadable label reads as a plain read failure,
 # and the red says neither that the hold is why nor that a re-run clears it.
 echo 'case: a label read that fails after its resends fails the hold by name'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 printf '99\n' >"$fixtures/${pull_key}.fail-times"
 run_case 1 ENFORCE_HOLD_LABEL=true
 expect_output 'hold=fail'
-expect_log "::error::pr-contract: hold-label-unreadable: cannot tell whether pull request ${repository}#${pr_number} carries the 'needs-human' hold label, so this run fails; re-run this job once GitHub answers."
+expect_log "::error::check-contract: hold-label-unreadable: cannot tell whether pull request ${repository}#${pr_number} carries the 'needs-human' hold label, so this run fails; re-run this job once GitHub answers."
 if [[ "$(cat "$calls/${pull_key}.count")" != 3 ]]; then
   echo "FAIL: expected the label read to be sent 3 times, got $(cat "$calls/${pull_key}.count")"
   failures=$((failures + 1))
@@ -1405,7 +1405,7 @@ printf '0\n' >"$fixtures/${pull_key}.fail-times"
 
 # Without the incomplete-page check a label past the first 100 is never seen.
 echo 'case: an incomplete label page fails the hold by name'
-set_pull 'feat: add pr-contract' "$conforming_body" someone 'documentation'
+set_pull 'feat: add check-contract' "$conforming_body" someone 'documentation'
 truncate_read '.data.repository.pullRequest.labels.totalCount'
 run_case 1 ENFORCE_HOLD_LABEL=true
 expect_output 'hold=fail'
@@ -1416,7 +1416,7 @@ hold_queue_ref="refs/heads/gh-readonly-queue/main/pr-${pr_number}-0123456789abcd
 # Without the off switch reaching the query, every merge group would pay for
 # the queue read.
 echo 'case: a merge group with the hold off reads no merge queue'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 set_queue "1:5:needs-human" "2:${pr_number}:"
 run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref"
 expect_output 'hold=skipped'
@@ -1428,7 +1428,7 @@ echo 'case: a merge group fails when a pull request ahead in it carries the hold
 set_queue "1:4:" "2:5:needs-human" "3:${pr_number}:" "4:9:needs-human"
 run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
 expect_output 'hold=fail'
-expect_log "::error::pr-contract: queued pull request #5 carries the 'needs-human' hold label and is in this merge group; a person removes it to release the hold."
+expect_log "::error::check-contract: queued pull request #5 carries the 'needs-human' hold label and is in this merge group; a person removes it to release the hold."
 expect_no_log 'queued pull request #4 carries'
 expect_no_log 'queued pull request #9 carries'
 expect_log "queued pull request #${pr_number} fails the contract"
@@ -1442,7 +1442,7 @@ echo 'case: a merge group passes when only a pull request behind it carries the 
 set_queue "1:4:" "2:${pr_number}:documentation" "3:9:needs-human"
 run_case 0 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
 expect_output 'hold=pass'
-expect_log "pr-contract: no pull request in this merge group carries the 'needs-human' hold label."
+expect_log "check-contract: no pull request in this merge group carries the 'needs-human' hold label."
 
 # Without the queued pull request in its own group walk a hold added after
 # enqueue would land.
@@ -1469,7 +1469,7 @@ for queue_shape in absent-entry null-queue short-labels short-entries; do
   esac
   run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$hold_queue_ref" ENFORCE_HOLD_LABEL=true
   expect_output 'hold=fail'
-  expect_log "::error::pr-contract: hold-label-unreadable: cannot tell whether the merge queue of 'main' (pull request #${pr_number} absent from it, or its entries or their labels incomplete) carries the 'needs-human' hold label"
+  expect_log "::error::check-contract: hold-label-unreadable: cannot tell whether the merge queue of 'main' (pull request #${pr_number} absent from it, or its entries or their labels incomplete) carries the 'needs-human' hold label"
 done
 
 # Without taking the branch from the head ref a queue on a branch with a slash
@@ -1520,7 +1520,7 @@ summary_file="$temporary_directory/step-summary"
 
 # Without the count in gh_api this reports zero requests.
 echo 'case: a passing run reports its one GraphQL read as the api-calls notice and summary line'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 : >"$summary_file"
 run_case 0 GITHUB_STEP_SUMMARY="$summary_file"
 expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=1'
@@ -1544,7 +1544,7 @@ rm -f -- "$fixtures/${pull_key}.fail-times"
 
 # Without the 304 branch a not-modified answer counts as a charged request.
 echo 'case: a 304 answer counts as not-modified, not as a request'
-set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+set_pull 'feat: add check-contract' 'no linkage here' someone ''
 printf 'HTTP/2.0 304 Not Modified\r\n' >"$fixtures/POST_${labels_key}.headers"
 run_case 0
 expect_gh_call "-X POST repos/${repository}/issues/${pr_number}/labels"
@@ -1553,7 +1553,7 @@ rm -f -- "$fixtures/POST_${labels_key}.headers"
 
 # Without the per-page count a three-page listing counts as one request.
 echo 'case: a paginated listing counts one request per page'
-set_pull 'feat: add pr-contract' 'no linkage here' someone ''
+set_pull 'feat: add check-contract' 'no linkage here' someone ''
 set_comments '[]'
 comments_beyond_one_page
 printf '[[%s],[%s],[%s]]' "$(user_comment 1 a)" "$(user_comment 2 b)" "$(user_comment 3 c)" >"$fixtures/GET_${comments_key}.pages.json"
@@ -1565,7 +1565,7 @@ set_comments '[]'
 
 # Without the guarded summary write an unwritable summary fails the step.
 echo 'case: an unwritable step summary changes neither the exit status nor the notice'
-set_pull 'feat: add pr-contract' "$conforming_body" someone ''
+set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0 GITHUB_STEP_SUMMARY="$temporary_directory"
 expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=1'
 expect_no_log 'Is a directory'
@@ -1574,4 +1574,4 @@ if [[ "$failures" -gt 0 ]]; then
   echo "$failures test(s) failed."
   exit 1
 fi
-echo 'All pr-contract tests passed.'
+echo 'All check-contract tests passed.'
