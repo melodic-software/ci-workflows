@@ -745,7 +745,7 @@ jobs:
     timeout-minutes: 12
     permissions:
       contents: read
-      # pr-contract upserts the linkage comment and label; ci-status records
+      # check-contract upserts the linkage comment and label; ci-status records
       # the `ci-lanes` status the next contract-only run reads back.
       pull-requests: write
       statuses: write
@@ -765,7 +765,7 @@ jobs:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
       - name: Aggregate lane results
-        # `!cancelled()` so a failing pr-contract step does not skip the
+        # `!cancelled()` so a failing check-contract step does not skip the
         # `ci-lanes` status write the next contract-only run needs.
         if: ${{ !cancelled() }}
         uses: $/.github/actions/pr-require-checks/aggregate-results

@@ -1,4 +1,4 @@
-# pr-contract
+# check-contract
 
 One composite step carrying the whole pull-request contract, so a consumer needs
 one required status check (`CI Status`) instead of four.
@@ -108,7 +108,7 @@ own comment and would post a new one on every failing run.
   queue must use `grouping_strategy: ALLGREEN`. Under `HEADGREEN` a pull request
   that failed its own group, a `do-not-merge` one included, can still merge
   inside a later group whose last entry passes.
-- The advisory comment carries the HTML marker `<!-- pr-contract:linkage -->`.
+- The advisory comment carries the HTML marker `<!-- check-contract:linkage -->`.
   The step edits that comment rather than posting a second one, and on a linkage
   pass it rewrites the comment to say the body conforms rather than deleting it.
   Only a **bot-authored** comment carrying the marker is a candidate, and the
@@ -160,7 +160,7 @@ Both steps go in the `ci-status` job, in this order:
     steps:
       - uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/check-contract@<sha>
       - name: Aggregate lane results
-        # `!cancelled()` so a failing pr-contract step does not skip the
+        # `!cancelled()` so a failing check-contract step does not skip the
         # aggregation: the job still fails on the contract step's exit code, and
         # the ci-lanes status lands on the SHA for the next contract-only run.
         if: ${{ !cancelled() }}
