@@ -18,7 +18,7 @@ fix-cmd: >-
   dotnet format style fixtures/dotnet/good/good.csproj --diagnostics IDE0055
 code-fix-cmd: null
 opt-in: ".editorconfig at the repository root"
-install-hint: "the .NET SDK global.json names (10.0.400, latest patch roll-forward): https://dot.net"
+install-hint: "the .NET SDK version global.json names (10.0.400): https://dot.net"
 tool-pin:
   dotnet-sdk: "10.0.400"
 gates: []

@@ -1,7 +1,7 @@
 # Markdown in this repository. Contract and schema:
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
 # markdownlint-cli2 with the root config, as CI's markdown composite runs it
-# (.github/workflows/pr-run-checks.yml:242-251, called from
+# (.github/workflows/pr-run-checks.yml:243-252, called from
 # .github/workflows/pr-require-checks.yml:179-213; the command is
 # .github/actions/markdownlint/action.yml:57), then the heading-cite resolver
 # over the fixture corpus CI scopes it to (pr-require-checks.yml:246-251).

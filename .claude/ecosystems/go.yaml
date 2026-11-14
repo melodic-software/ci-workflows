@@ -4,7 +4,7 @@
 # the reusable Go workflow with config .golangci.yml in that directory
 # (.github/workflows/pr-require-checks.yml:649-662). Each command is a step of
 # .github/workflows/pr-run-checks-go.yml's Linux job: golangci-lint config verify
-# and run (:111-115), gofmt over the tracked .go files (:129-133), the race test
+# and run (:111-115), gofmt over the tracked .go files, failing on a gofmt error (:128-133), the race test
 # (:170); the gates are go mod tidy -diff (:151), go mod verify (:165) and
 # govulncheck (:369-370). Commands run from each go.mod directory.
 enabled: true
@@ -15,7 +15,10 @@ test-cmd: "go test -race -count=1 -timeout=10m ./..."
 check-cmd: >-
   golangci-lint config verify --config .golangci.yml &&
   golangci-lint run --config .golangci.yml --timeout=10m --max-issues-per-linter=0 --max-same-issues=0 ./... &&
-  test -z "$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)"
+  set -o pipefail &&
+  test -n "$(git ls-files -- '*.go')" &&
+  unformatted="$(git ls-files -z -- '*.go' | xargs -0 gofmt -l)" &&
+  test -z "$unformatted"
 fix-cmd: "gofmt -w ."
 code-fix-cmd: null
 opt-in: ".golangci.yml in the module directory"

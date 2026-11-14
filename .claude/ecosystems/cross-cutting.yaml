@@ -1,30 +1,33 @@
 # Repository-wide text checks in this repository. Contract and schema:
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
-# Lint-only: /toolchain:lint runs it, /toolchain:check does not. Each line is a
+# Lint-only: /toolchain:lint runs it, /toolchain:check does not. Each check is a
 # composite of .github/workflows/pr-run-checks.yml as this repository calls it
 # (.github/workflows/pr-require-checks.yml:179-213), with each composite's
 # default inputs and the two exclusions at pr-require-checks.yml:204-205:
-# typos (pr-run-checks.yml:221-226), gitleaks (:228-233), editorconfig (:235-240),
-# lychee-offline (:295-302), exec-bit (:267-271), machine-specific-paths
-# (:273-279) and comment-hygiene (:287-293); then the ungated action.yaml
-# filename check (pr-require-checks.yml:425-436). Commands run from the
-# repository root.
+# typos (pr-run-checks.yml:222-227), gitleaks (:229-234), editorconfig (:236-241),
+# lychee-offline (:296-303), exec-bit (:268-272), machine-specific-paths
+# (:274-280) and comment-hygiene (:288-294); then the ungated action.yaml
+# filename check (pr-require-checks.yml:425-436). Every check runs and any
+# failure fails the command, as CI's run-everything-fail-at-end join does
+# (pr-run-checks.yml:26-28). Commands run from the repository root.
 enabled: true
 globs: ["**"]
 project-discovery: []
 build-cmd: null
 test-cmd: null
 check-cmd: |
-  typos --config _typos.toml .
-  gitleaks dir . --config .gitleaks.toml --no-banner --redact
+  rc=0
+  typos --config _typos.toml . || rc=1
+  gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1
   # editorconfig-checker: binary name varies by install method (ec / editorconfig-checker / ec-windows-amd64)
-  "$EC_BIN" -config .editorconfig-checker.json
+  if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo 'editorconfig-checker: no binary resolved (EC_BIN is empty)' >&2; rc=1; fi
   # lychee-offline: on-disk link and anchor integrity, no network
-  lychee --offline --no-progress --config lychee.toml '**/*.md'
-  bash .github/actions/check-exec-bit/check-exec-bit.sh
-  EXTENSIONS='*.cs *.csproj *.json *.jsonc *.js *.jsx *.md *.props *.ps1 *.psm1 *.py *.sh *.slnx *.targets *.tmpl *.toml *.ts *.tsx *.yaml *.yml' EXCLUDE=':(exclude).github/actions/check-machine-paths/**' bash .github/actions/check-machine-paths/check-machine-specific-paths.sh
-  PATTERNS_FILE=.github/actions/check-comment-markers/comment-hygiene-patterns.sh EXTENSIONS='*.cs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.mts *.cts *.py *.sh *.ps1 *.razor *.cshtml' EXCLUDE=':(exclude).github/actions/check-comment-markers/**' bash .github/actions/check-comment-markers/scan-tree.sh
-  bash .github/actions/check-action-filename/check-action-metadata-filename.sh
+  lychee --offline --no-progress --config lychee.toml '**/*.md' || rc=1
+  bash .github/actions/check-exec-bit/check-exec-bit.sh || rc=1
+  EXTENSIONS='*.cs *.csproj *.json *.jsonc *.js *.jsx *.md *.props *.ps1 *.psm1 *.py *.sh *.slnx *.targets *.tmpl *.toml *.ts *.tsx *.yaml *.yml' EXCLUDE=':(exclude).github/actions/check-machine-paths/**' bash .github/actions/check-machine-paths/check-machine-specific-paths.sh || rc=1
+  PATTERNS_FILE=.github/actions/check-comment-markers/comment-hygiene-patterns.sh EXTENSIONS='*.cs *.ts *.tsx *.js *.jsx *.mjs *.cjs *.mts *.cts *.py *.sh *.ps1 *.razor *.cshtml' EXCLUDE=':(exclude).github/actions/check-comment-markers/**' bash .github/actions/check-comment-markers/scan-tree.sh || rc=1
+  bash .github/actions/check-action-filename/check-action-metadata-filename.sh || rc=1
+  exit "$rc"
 fix-cmd: null
 code-fix-cmd: null
 opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json, lychee.toml)"
@@ -39,4 +42,4 @@ tool-pin:
   editorconfig-checker: "4.0.2"
   lychee: "0.24.2"
 gates: []
-notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/typos/action.yml:46, gitleaks/action.yml:52, editorconfig-checker/action.yml:35, lychee-offline/action.yml:22. The EXTENSIONS values are those two actions' input defaults (check-machine-paths/action.yml:12-14, check-comment-markers/action.yml:16-18), which their scripts do not default themselves. .editorconfig-checker.json is written for editorconfig-checker 4.x. Left out: the eol-renormalize composite (pr-run-checks.yml:281-285, check-line-endings/action.yml), because it runs git add --renormalize and then git reset, which would unstage local work; check-managed-files (pr-require-checks.yml:495-498), which needs a melodic-software/standards checkout and the pull request; OSV-Scanner (pr-require-checks.yml:632-647)."
+notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/typos/action.yml:46, gitleaks/action.yml:52, editorconfig-checker/action.yml:35, lychee-offline/action.yml:22. The EXTENSIONS values are those two actions' input defaults (check-machine-paths/action.yml:12-14, check-comment-markers/action.yml:16-18), which their scripts do not default themselves. .editorconfig-checker.json is written for editorconfig-checker 4.x. Left out: the eol-renormalize composite (pr-run-checks.yml:282-286, check-line-endings/action.yml), because it runs git add --renormalize and then git reset, which would unstage local work; check-managed-files (pr-require-checks.yml:495-498), which needs a melodic-software/standards checkout and the pull request; OSV-Scanner (pr-require-checks.yml:632-647), whose scan runs inline in .github/workflows/pr-scan-dependencies.yml:139 behind a SLSA-verified scanner install and queries the osv.dev service, with no repository script a local command could call."
