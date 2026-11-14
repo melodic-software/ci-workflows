@@ -113,7 +113,7 @@ jq -e '
     .rules.ref_type == "branch" and
     .rules.environment == ($repository_parts[1] + "-production") and
     .rules.event_name == "workflow_dispatch" and
-    (.rules.workflow | test("^[a-z0-9-]+$")) and
+    (.rules.workflow | test("\\A[A-Za-z0-9]+([ -][A-Za-z0-9]+)*\\z")) and
     .rules.runner_environment == "self-hosted" and
     .rules.repository_visibility == "private" and
     .rules.run_attempt == "1"

@@ -88,6 +88,32 @@ test("org-wide contract holds the unchanged github-iac policy and the azure-iac 
   }
 });
 
+test("pulumi-oidc-policies contract differs from the org-wide contract only in the deploy workflow names", () => {
+  const releaseDeployContract = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        root,
+        ".github",
+        "actions",
+        "verify-pulumi-deploy-policy",
+        "contracts",
+        "pulumi-oidc-policies.json",
+      ),
+      "utf8",
+    ),
+  );
+  const expected = structuredClone(orgContract);
+  for (const policy of expected.personalAllowPolicies) {
+    policy.rules.workflow = "Release Deploy";
+    policy.rules.sub = policy.rules.sub.replace(
+      "/.github/workflows/azure-iac-production-deploy.yml@",
+      "/.github/workflows/release-deploy.yml@",
+    );
+  }
+  assert.deepEqual(releaseDeployContract, expected);
+  assert.notDeepEqual(releaseDeployContract, orgContract);
+});
+
 test("deployment guard exposes only reviewed state-adoption outputs", () => {
   for (const input of [
     "policy-contract",

@@ -275,7 +275,41 @@ expect_invalid_org_contract 'a job_workflow_ref at another ref fails' \
   ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/dev\""
 expect_invalid_org_contract 'an environment other than <repository>-production fails' \
   '.rules.environment = "azure-iac-staging" | .rules.sub |= sub(":environment:azure-iac-production"; ":environment:azure-iac-staging")'
-expect_invalid_org_contract 'a workflow name outside [a-z0-9-] fails' '.rules.workflow = "Azure-Deploy"'
+for bad_workflow in 'Release_Deploy' 'Release  Deploy' ' Release Deploy' 'Release Deploy ' 'Release-' 'Release Deploy*'; do
+  expect_invalid_org_contract "workflow name '$bad_workflow' fails" \
+    ".rules.workflow = \"$bad_workflow\""
+done
+expect_invalid_org_contract 'a workflow name ending in a newline fails' '.rules.workflow = "Release Deploy\n"'
+
+# Renamed deploy workflows: both policies carry the workflow name Release Deploy.
+release_deploy_contract="$action_path/contracts/pulumi-oidc-policies.json"
+
+reset_valid_fixtures
+jq -c '{version: 4, policies: .personalAllowPolicies}' "$release_deploy_contract" >"$policy"
+TEST_POLICY_CONTRACT='pulumi-oidc-policies' run_guard
+grep -Fx 'existing-count=1' "$output" >/dev/null
+printf 'PASS: pulumi-oidc-policies contract matches its exact allow set\n'
+
+reset_org_fixtures
+TEST_POLICY_CONTRACT='pulumi-oidc-policies' \
+  expect_failure 'policies under the old workflow names do not match the pulumi-oidc-policies contract'
+grep -F 'do not exactly match' "$stderr" >/dev/null
+
+reset_valid_fixtures
+jq -c '{version: 4, policies: .personalAllowPolicies}' "$release_deploy_contract" >"$policy"
+TEST_POLICY_CONTRACT='kyle-sexton' \
+  expect_failure 'policies under the new workflow names do not match the org contract'
+grep -F 'do not exactly match' "$stderr" >/dev/null
+
+reset_org_fixtures
+jq --slurpfile renamed "$release_deploy_contract" \
+  '.policies += $renamed[0].personalAllowPolicies' "$policy" >"$policy.tmp"
+mv -- "$policy.tmp" "$policy"
+for both_contract in kyle-sexton pulumi-oidc-policies; do
+  TEST_POLICY_CONTRACT="$both_contract" \
+    expect_failure "old and new policies held together do not match $both_contract"
+  grep -F 'do not exactly match' "$stderr" >/dev/null
+done
 
 # Never-deployed stack: the shape `pulumi stack export` (v3.263.0) printed for a
 # freshly initialized stack, resources key omitted.
