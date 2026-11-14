@@ -118,7 +118,7 @@ test("every model job tells its launcher whether the fallback token is set, neve
 });
 
 test("the fallback job runs on a fixed GitHub-hosted label only after the subscription job hands off or finds its token empty with the fallback token set", () => {
-  assert.equal(fallback.name, "claude-intake-triage-fallback");
+  assert.equal(fallback.name, "Fallback");
   assert.equal(fallback["runs-on"], "ubuntu-24.04");
   assert.deepEqual(fallback.needs, ["claude", "subscription"]);
   // The subscription job's outputs, as its last step leaves them.
@@ -291,7 +291,7 @@ test("every model job's leg uploads its sealed transcript under a job id unique 
 test("the subscription job runs on a fixed GitHub-hosted label, after the claude job", () => {
   assert.equal(subscription["runs-on"], "ubuntu-24.04");
   assert.deepEqual(subscription.needs, ["check-key-credit", "claude"]);
-  assert.equal(subscription.name, "claude-intake-triage-subscription");
+  assert.equal(subscription.name, "Subscription");
 });
 
 test("the subscription job starts only on an exact handoff or an empty key", () => {
@@ -567,7 +567,7 @@ function report(env) {
 }
 
 test("the status job reads the subscription job when it ran, else the claude job", () => {
-  assert.equal(status.name, "claude-intake-triage-status");
+  assert.equal(status.name, "Status");
   assert.deepEqual(status.needs, [
     "claude",
     "subscription",
@@ -866,7 +866,7 @@ test("the model jobs are read-only, cache-less, and give the model no GitHub tok
 });
 
 test("exactly one job, with no model, writes the triage", () => {
-  assert.equal(apply.name, "claude-intake-triage-apply");
+  assert.equal(apply.name, "Apply");
   assert.deepEqual(apply.needs, ["claude", "subscription", "fallback"]);
   assert.deepEqual(apply.permissions, { issues: "write" });
   assert.equal(apply["runs-on"], "ubuntu-24.04");

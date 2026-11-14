@@ -58,7 +58,7 @@ name: Intake Triage
 #     are set by run-claude-cli after it restores the step files, so the
 #     model cannot set them; a forged handoff would cost only subscription
 #     usage. Either secret may be empty, not both.
-#   - The fallback token runs only in the claude-intake-triage-fallback job,
+#   - The fallback token runs only in the Fallback job,
 #     the same way after the subscription job's handoff (a limit stop, a
 #     credit stop, or a 401 or 402), which it sets only when that secret is
 #     set. The other model jobs read only whether it is set. It may be
@@ -98,7 +98,7 @@ name: Intake Triage
 #     run to the job outputs: the result subtype, the error flag and the
 #     denial count, and the structured fields (labels, type, comment,
 #     needs_human) checked against the job's allowlist and enums.
-#   - Only the claude-intake-triage-apply job writes, and it runs no model.
+#   - Only the Apply job writes, and it runs no model.
 #     It takes the fallback job's outputs when that job ran, else the
 #     subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
 #     the event or the issue-number input, never from a job output, and
@@ -144,7 +144,7 @@ name: Intake Triage
 #     number and node id from the API, never from other dispatch text, and
 #     refuses a pull request or a malformed number.
 #   - An opened issue or a dispatch the gate turns away is not a silent green run: the
-#     claude-intake-triage-skipped job names the reason in the run summary
+#     Skipped job names the reason in the run summary
 #     and a notice, and applies skipped-label when the caller sets one.
 #
 # CLI VERSION: run-claude-cli installs the Claude Code CLI at run time.
@@ -160,16 +160,16 @@ name: Intake Triage
 # legs' outputs in that run hold, so a rerun of it alone reapplies the same
 # triage, editing the lane's earlier comment.
 #
-# `claude-intake-triage` triages on the API key; after it hands off (a credit
-# stop, or the key refused with API status 401 or 402) or with no
-# key, or in its place when `claude-intake-triage-key-credit` finds the key's
-# last credit stop inside the window, `claude-intake-triage-subscription`
-# triages on the subscription token instead; after that job hands off, `claude-intake-triage-fallback` triages
-# on the fallback token. `claude-intake-triage-apply` applies the triage of
-# the job that triaged, and `claude-intake-triage-status` reads them all and goes red
-# when the triage or its write failed. Never make that check required.
-# `claude-intake-triage-skipped` runs only when the author gate skipped the
-# key-credit job, and with it every leg.
+# `Claude` triages on the API key; after it hands off (a credit stop, or the
+# key refused with API status 401 or 402) or with no key, or in its place
+# when `Check Key Credit` finds the key's last credit stop inside the window,
+# `Subscription` triages on the subscription token instead; after that job
+# hands off, `Fallback` triages on the fallback token. `Apply` applies the
+# triage of the job that triaged, and `Status` reads them all and goes red
+# when the triage or its write failed; its check is
+# `<caller job name> / Status`. Never make that check required. `Skipped`
+# runs only when the author gate skipped the key-credit job, and with it
+# every leg.
 
 on:
   workflow_call:
@@ -340,7 +340,7 @@ on:
       FALLBACK_CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           The central fallback subscription's OAuth token, the org secret of
-          that name, used only by the claude-intake-triage-fallback job after
+          that name, used only by the Fallback job after
           the subscription job hands off (a limit stop, a credit stop, or a
           401 or 402). Empty, the lane runs as with two legs.
         required: false
@@ -363,7 +363,7 @@ jobs:
   # actor's id is listed the same way. Any other event passes so the leg
   # job's first step can reject it loudly.
   check-key-credit:
-    name: claude-intake-triage-key-credit
+    name: Check Key Credit
     if: >-
       ${{ (github.event_name != 'issues' && github.event_name != 'workflow_dispatch')
           || (github.event_name == 'workflow_dispatch'
@@ -434,7 +434,7 @@ jobs:
           tokens: github-token
 
   claude:
-    name: claude-intake-triage
+    name: Claude
     needs: check-key-credit
     runs-on: ${{ inputs.runner }}
     # The triage step (12 minutes, CLI install included) and runner isolation
@@ -1217,7 +1217,7 @@ jobs:
   # or cancelled claude job never starts it. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
   subscription:
-    name: claude-intake-triage-subscription
+    name: Subscription
     needs: [check-key-credit, claude]
     if: >-
       ${{ !cancelled()
@@ -1959,7 +1959,7 @@ jobs:
   # left to success(): a claude job the key-credit gate skipped would skip
   # this one too.
   fallback:
-    name: claude-intake-triage-fallback
+    name: Fallback
     needs: [claude, subscription]
     if: >-
       ${{ !cancelled() && needs.subscription.result == 'success'
@@ -2701,7 +2701,7 @@ jobs:
   # It runs once a leg ran: the claude job, or the subscription job when the
   # key-credit gate skipped the claude job.
   apply:
-    name: claude-intake-triage-apply
+    name: Apply
     needs: [claude, subscription, fallback]
     if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
     runs-on: ubuntu-24.04
@@ -3178,7 +3178,7 @@ jobs:
   # through env and is checked against a closed set before it is printed or
   # written.
   status:
-    name: claude-intake-triage-status
+    name: Status
     needs: [claude, subscription, fallback, apply]
     if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
     runs-on: ${{ inputs.runner }}
@@ -3266,7 +3266,7 @@ jobs:
   # The check-key-credit job's if is the author gate, so on an opened issue
   # or a dispatch it is skipped exactly when the gate turned the run away.
   skipped:
-    name: claude-intake-triage-skipped
+    name: Skipped
     needs: check-key-credit
     if: >-
       ${{ always() && needs.check-key-credit.result == 'skipped'

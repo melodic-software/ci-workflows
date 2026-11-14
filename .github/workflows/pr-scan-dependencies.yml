@@ -36,6 +36,7 @@ permissions:
 
 jobs:
   scan:
+    name: Scan
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     env:

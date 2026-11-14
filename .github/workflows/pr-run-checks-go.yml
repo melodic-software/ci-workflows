@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   check-linux:
-    name: Go quality (Linux)
+    name: Check Linux
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -172,7 +172,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
 
   check-windows:
-    name: Go quality (Windows)
+    name: Check Windows
     runs-on: windows-2025
     timeout-minutes: 30
     permissions:
@@ -307,7 +307,7 @@ jobs:
           CGO_ENABLED: '1'
 
   govulncheck:
-    name: Go vulnerability analysis
+    name: Govulncheck
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

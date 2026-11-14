@@ -75,8 +75,8 @@ name: PR Review Security
 # change as reviewed is not reviewed again. When every file in scope matches `docs-only-paths` (by default top-level
 # `docs/` markdown, READMEs and changelogs), no security review runs.
 #
-# One job reviews and reports. It is named `security-review`, so with the
-# canonical caller its check is `security-review / security-review`. It goes
+# One job reviews and reports. It is named `Claude`, so with the canonical
+# caller its check is `PR Review Security / Claude`. It goes
 # red, naming the cause, when no review happened; a review that is not needed
 # stays green. Completion and its `claude-lane-review-complete` notice work as
 # in pr-review.yml (see its header), with lane id `claude-security-review`;
@@ -235,7 +235,7 @@ permissions:
 
 jobs:
   claude:
-    name: security-review
+    name: Claude
     runs-on: ${{ inputs.runner }}
     # Capped at the 16-minute ceiling set for every CI job (960 s). Outside the
     # review step, 1,366 successful jobs on claude-code-plugins (2026-09-29 to

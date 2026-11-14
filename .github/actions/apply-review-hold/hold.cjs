@@ -1,6 +1,7 @@
 // pr-review-cli's hold step. No model runs here. It reads, from env:
 // HOLD_LABEL, LANE_ID, STATUS_JOB (the name of the status job this step runs
-// in, whose earlier runs' notices give a cost decision's decided head),
+// in, whose earlier runs' notices give a cost decision's decided head) and
+// STATUS_JOB_LEGACY (optional, a former name of that job, read the same way),
 // PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
 // counts), and the legs' KEY_* and SUB_* outputs that publish-review's judge
 // reads. It only adds: the label and one marker comment. Every write goes
@@ -307,8 +308,9 @@ function unranHead(activity, ran, decided, cutoff) {
 // head branch of this repository started before the decision; vets each
 // run's head (compare base...head lists under 300 files and does not change
 // this workflow's file, which a pull_request run takes from the head and so
-// could write the notice); takes, from each run's STATUS_JOB done before the
-// decision, the `claude-lane-hold lane=<LANE_ID>` cost notices naming that
+// could write the notice); takes, from each run's STATUS_JOB (or
+// STATUS_JOB_LEGACY) done before the decision, the
+// `claude-lane-hold lane=<LANE_ID>` cost notices naming that
 // run's own head; and keeps the newest (decidedHead) while the branch's push
 // history shows no run missing since it (unranHead). The decision carries
 // when the head is that sha, or when the pull request's net diff against its
@@ -324,8 +326,10 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
   if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
   const base = String(env.BASE_REF ?? "");
   if (!BRANCH.test(base)) return { carry: false, why: "the base branch name is not usable" };
-  const statusJob = String(env.STATUS_JOB ?? "");
-  if (!/^[A-Za-z0-9._ -]{1,100}$/u.test(statusJob))
+  const statusJobs = [String(env.STATUS_JOB ?? "")];
+  const legacy = String(env.STATUS_JOB_LEGACY ?? "");
+  if (legacy !== "") statusJobs.push(legacy);
+  if (!statusJobs.every((n) => /^[A-Za-z0-9._ -]{1,100}$/u.test(n)))
     return { carry: false, why: "the status job name is not usable" };
   const self = `${owner}/${repo}`.toLowerCase();
   const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
@@ -392,7 +396,7 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     });
     for (const job of jobs) {
       const name = String(job?.name ?? "");
-      if (name !== statusJob && !name.endsWith(` / ${statusJob}`)) continue;
+      if (!statusJobs.some((s) => name === s || name.endsWith(` / ${s}`))) continue;
       if (!(Date.parse(job.completed_at) < cutoff)) continue;
       const annotations = await github.paginate(github.rest.checks.listAnnotations, {
         owner,

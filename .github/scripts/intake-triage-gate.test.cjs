@@ -261,7 +261,7 @@ test("the issue comes from the API by a validated number", () => {
 
 test("a gated-out opened issue runs the skipped job, which may apply a label", () => {
   const skipped = workflow.jobs.skipped;
-  assert.equal(skipped.name, "claude-intake-triage-skipped");
+  assert.equal(skipped.name, "Skipped");
   assert.equal(skipped.needs, "check-key-credit");
   assert.equal(gateJob.needs, undefined);
   // Only the gate job's own if can skip it, so skipped means gated out.
