@@ -83,8 +83,8 @@ name: PR Review
 # second line records the base branch and merge base). A skip is taken only
 # while the pull request's live head is still this run's head.
 #
-# One job reviews and reports. It is named `claude-review-status`, so its check
-# is `<caller job> / claude-review-status`, and it goes red, naming the cause,
+# One job reviews and reports. It is named `Claude`, so its check is
+# `<caller job name> / Claude`, and it goes red, naming the cause,
 # when no review happened. A review happened only when the model returned its
 # findings count and a summary as structured output, and the count is not
 # below the inline comments it posted; anything less is class `incomplete`.
@@ -257,7 +257,7 @@ permissions:
 
 jobs:
   claude:
-    name: claude-review-status
+    name: Claude
     runs-on: ${{ inputs.runner }}
     # The review step stops at 11 minutes (660 s); incremental scoping, not a
     # longer step, shortens the reviews that reached it. Outside that step,

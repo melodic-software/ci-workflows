@@ -225,8 +225,8 @@ name: PR Review CLI
 # counts the moved CRITICAL findings too. A comment whose path, line or side
 # is malformed goes to the summary the same way, and the other comments still
 # post inline; one with no body is dropped with a warning. Its status job is
-# named `review-status` in both lanes (the caller job tells them apart, as in
-# `pr-review / review-status`) and goes red, naming the class, when no
+# named `Status` in both lanes (the caller job tells them apart, as in
+# `PR Review / Status`) and goes red, naming the class, when no
 # review happened. Any other value is summary mode: no comment, no review,
 # no marker and no notice; the status job writes a job summary and uploads
 # a credential-scanned JSON artifact (the findings and comments, turns, the
@@ -569,7 +569,7 @@ jobs:
   # event as before; each of their gates opens with a status function, so
   # this skip does not skip them.
   resolve-pull-request:
-    name: resolve-pull-request
+    name: Resolve Pull Request
     if: inputs.pr-number && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 8
@@ -621,7 +621,7 @@ jobs:
   # so gates that read after it lands skip. Every failure runs the key
   # job: its `if` starts with !cancelled().
   check-key-credit:
-    name: key-credit
+    name: Check Key Credit
     needs: resolve-pull-request
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -726,7 +726,7 @@ jobs:
           tokens: github-token
 
   review-key:
-    name: key
+    name: Review Key
     needs: [resolve-pull-request, check-key-credit]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
@@ -3407,7 +3407,7 @@ jobs:
   # them equal). It reads only compared outputs of the key job and never
   # writes them into a script.
   review-subscription:
-    name: subscription
+    name: Review Subscription
     needs: [resolve-pull-request, check-key-credit, review-key]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
@@ -6061,7 +6061,7 @@ jobs:
   # subscription job and never writes them into a script. It is the last
   # leg and never hands off.
   review-fallback:
-    name: fallback
+    name: Review Fallback
     needs: [resolve-pull-request, check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
@@ -8711,7 +8711,7 @@ jobs:
   # continue-on-error: once the composite has run, the runner evaluates that
   # with the action's inputs, not the workflow's.
   status:
-    name: review-status
+    name: Status
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
@@ -8955,7 +8955,10 @@ jobs:
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
-          STATUS_JOB: review-status
+          STATUS_JOB: Status
+          # This job's name before it was `Status`. Remove once no open pull
+          # request holds a cost decision made before the rename.
+          STATUS_JOB_LEGACY: review-status
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}

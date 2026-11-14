@@ -60,6 +60,7 @@ concurrency:
 
 jobs:
   plan:
+    name: Plan
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
@@ -147,6 +148,7 @@ jobs:
             --targets "$TARGETS"
 
   attest:
+    name: Attest
     needs: plan
     if: ${{ !inputs.dry-run }}
     environment:
@@ -389,6 +391,7 @@ jobs:
             core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${excess.length} over-granted).`);
 
   sync:
+    name: Sync (${{ matrix.repo }})
     needs: [plan, attest]
     if: ${{ !inputs.dry-run }}
     environment:

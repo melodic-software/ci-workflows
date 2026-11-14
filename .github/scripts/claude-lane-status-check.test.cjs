@@ -1,8 +1,8 @@
 "use strict";
 
 // Each Claude lane is one job that reviews and reports. The job carries the
-// check name consumers read (`<caller job> / claude-review-status`, and
-// `security-review / security-review`), and its last step goes red whenever
+// check name consumers read (`<caller job name> / Claude` in both lanes), and
+// its last step goes red whenever
 // no review happened and names the cause, so a green check always means a
 // review ran or was not needed. These tests pin the wiring (values reach the
 // script through env) and run the step's own script for every cause.
@@ -19,12 +19,8 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 const workflowsRoot = path.join(__dirname, "..", "workflows");
 
 const lanes = [
-  { file: "pr-review.yml", job: "claude", name: "claude-review-status" },
-  {
-    file: "pr-review-security.yml",
-    job: "claude",
-    name: "security-review",
-  },
+  { file: "pr-review.yml", job: "claude", name: "Claude" },
+  { file: "pr-review-security.yml", job: "claude", name: "Claude" },
 ];
 
 function load(file) {
