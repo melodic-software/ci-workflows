@@ -95,6 +95,7 @@ permissions:
 
 jobs:
   zizmor:
+    name: Zizmor
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:

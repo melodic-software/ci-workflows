@@ -111,7 +111,7 @@ permissions: {}
 
 jobs:
   enable-auto-merge:
-    name: Arm auto-merge for safe Dependabot bumps
+    name: Enable Auto Merge
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.id == 49699333 }}
     runs-on: ${{ inputs.runner }}
     # One metadata fetch, one commit listing and one GraphQL mutation. Ten

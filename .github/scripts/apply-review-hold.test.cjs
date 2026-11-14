@@ -47,7 +47,8 @@ const TRUST_PATHS = [
 // pushed at 10:45.
 const RUN_ID = 99;
 const RUN_PATH = ".github/workflows/pr-review-hosted.yml";
-const STATUS_JOB = "review-status";
+const STATUS_JOB = "Status";
+const STATUS_JOB_LEGACY = "review-status";
 const laneRun = ({
   id = 11,
   sha = "a".repeat(40),
@@ -61,7 +62,7 @@ const laneRun = ({
 });
 const statusJob = ({
   id = 111,
-  name = `pr-review / ${STATUS_JOB}`,
+  name = `PR Review / ${STATUS_JOB}`,
   completedAt = "2026-10-23T11:00:00Z",
 } = {}) => ({ id, name, completed_at: completedAt });
 const notice = ({
@@ -322,6 +323,7 @@ const baseEnv = (extra = {}) => ({
   HOLD_PATHS: TRUST_PATHS,
   LANE_ID: "claude-review",
   STATUS_JOB,
+  STATUS_JOB_LEGACY,
   PR_NUMBER: "7",
   HEAD_SHA: HEAD,
   BASE_REF: "main",
@@ -1131,7 +1133,7 @@ test("the notice fixture carries, and each one-field change to it keeps the cost
     ],
     [
       "a job of another name",
-      laneOf({ jobs: { 11: [statusJob({ name: "pr-review / review-key" })] } }),
+      laneOf({ jobs: { 11: [statusJob({ name: "PR Review / Review Key" })] } }),
       none,
     ],
     [
@@ -1463,6 +1465,56 @@ test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
   const { core, github } = await apply(costEnv(["cost"], { STATUS_JOB: "" }), {
     comments: [decision()],
   });
+  assert.equal(core.outputs.hold, "true");
+  assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
+});
+
+// A decision made against a run whose status job carries the former name
+// carries through STATUS_JOB_LEGACY, one against a run under the current
+// name through STATUS_JOB, and a job that only shares a word with either is
+// never read.
+test("the cost decision carries from the status job under its current or its former name", async () => {
+  for (const [label, name, env, hold] of [
+    ["a run after the rename", `PR Review / ${STATUS_JOB}`, {}, "false"],
+    [
+      "a run before the rename",
+      `PR Review / ${STATUS_JOB_LEGACY}`,
+      {},
+      "false",
+    ],
+    [
+      "a run before the caller jobs were named",
+      `pr-review / ${STATUS_JOB_LEGACY}`,
+      {},
+      "false",
+    ],
+    [
+      "a run before the rename, legacy name unset",
+      `PR Review / ${STATUS_JOB_LEGACY}`,
+      { STATUS_JOB_LEGACY: "" },
+      "true",
+    ],
+    ["the CI Status job", "CI Status", {}, "true"],
+    [
+      "a job whose name ends in Status without the separator",
+      "PR Review / Review Status",
+      {},
+      "true",
+    ],
+  ]) {
+    const { core } = await apply(costEnv(["cost"], env), {
+      comments: [decision()],
+      lane: laneOf({ jobs: { 11: [statusJob({ name })] } }),
+    });
+    assert.equal(core.outputs.hold, hold, label);
+  }
+});
+
+test("an unusable STATUS_JOB_LEGACY reads no run and keeps the cost hold", async () => {
+  const { core, github } = await apply(
+    costEnv(["cost"], { STATUS_JOB_LEGACY: "review-status\n" }),
+    { comments: [decision()] },
+  );
   assert.equal(core.outputs.hold, "true");
   assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
 });

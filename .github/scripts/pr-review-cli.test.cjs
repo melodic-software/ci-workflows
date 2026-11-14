@@ -139,27 +139,28 @@ test("every model job tells its launcher whether the fallback token is set, neve
 
 // A skipped job shows its `name:` unevaluated, so an expression there would
 // show as the check name (ci-workflows#866). The caller job tells the lanes
-// apart: `pr-review / review-status`, `pr-review-security / review-status`.
+// apart: `PR Review / Status`, `PR Review Security / Status`.
 test("every job carries a literal name, the same in both lanes", () => {
   const names = Object.fromEntries(
     Object.entries(workflow.jobs).map(([id, job]) => [id, job.name]),
   );
   assert.deepEqual(names, {
     ...names,
-    "resolve-pull-request": "resolve-pull-request",
-    "check-key-credit": "key-credit",
-    "review-key": "key",
-    "review-subscription": "subscription",
-    "review-fallback": "fallback",
-    status: "review-status",
+    "resolve-pull-request": "Resolve Pull Request",
+    "check-key-credit": "Check Key Credit",
+    "review-key": "Review Key",
+    "review-subscription": "Review Subscription",
+    "review-fallback": "Review Fallback",
+    status: "Status",
   });
   for (const [id, name] of Object.entries(names)) {
     assert.doesNotMatch(String(name ?? id), /\$\{\{/u, id);
   }
-  assert.equal(
-    status.steps.find((s) => s.env?.STATUS_JOB)?.env.STATUS_JOB,
-    "review-status",
-  );
+  // The hold step reads its own job's earlier runs by name: the current name,
+  // and the name runs finished before the rename carry.
+  const hold = status.steps.find((s) => s.env?.STATUS_JOB);
+  assert.equal(hold?.env.STATUS_JOB, "Status");
+  assert.equal(hold?.env.STATUS_JOB_LEGACY, "review-status");
 });
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {

@@ -92,7 +92,7 @@ permissions: {}
 
 jobs:
   apply-label:
-    name: Apply floor label when no priority tier is present
+    name: Apply Label
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:

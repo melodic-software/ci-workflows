@@ -1424,8 +1424,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   default-branch tip, and the diff and pull request context as files whose
   `FULL DIFF:`, `REVIEW SCOPE: incremental` and `PR CONTEXT:` prompt lines
   name them. It returns its findings, summary and inline comments as
-  structured output. The status job (`review-status` in both lanes, so its
-  check is `<caller job> / review-status`), with no model, posts them through
+  structured output. The status job (`Status` in both lanes, so its
+  check is `<caller job name> / Status`), with no model, posts them through
   `.github/actions/publish-review`. `publish: comments` posts one COMMENT
   review as `github-actions[bot]`, the lane's marker comment and the
   `claude-lane-review-complete` notice, and goes red when no review
@@ -1476,7 +1476,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   newest 200 open issues into the checkout; a read-only Claude run
   (`--permission-mode dontAsk`, Read, Grep and Glob only, no GitHub token,
   `contents: read` and `issues: read`, `cache-mode: none`, JSON output)
-  proposes labels and a comment; the `claude-intake-triage-apply` job, with
+  proposes labels and a comment; the `Apply` job, with
   no model and the triage's only `issues: write` grant, re-validates it and
   applies only labels in the caller's `allowed-labels` that exist in the
   repository. On a permission denial, a max-turns stop,
@@ -1507,17 +1507,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller grants `contents: read` and `issues: write` and passes the role's
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one), and
   optionally the org secret `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`, which the
-  `claude-intake-triage-fallback` job runs after the subscription job hands
+  `Fallback` job runs after the subscription job hands
   off (the third job of the pattern above). The key
-  runs in the `claude-intake-triage` job; after it hands off (a credit stop
-  or a rejected key), or with no key, the token runs in the `claude-intake-triage-subscription` job on
+  runs in the `Claude` job; after it hands off (a credit stop
+  or a rejected key), or with no key, the token runs in the `Subscription` job on
   `ubuntu-24.04` (the two-job pattern above);
-  `claude-intake-triage-apply` writes whichever job triaged, and
-  `claude-intake-triage-status` reports the one outcome. The workflow
+  `Apply` writes whichever job triaged, and
+  `Status` reports the one outcome. The workflow
   header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
   person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
-  person, and the `claude-intake-triage-skipped` job names the reason and
+  person, and the `Skipped` job names the reason and
   applies `skipped-label` when set. A caller can also run it on
   `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
   created (those start no `issues` run); the dispatching actor's id must be
@@ -1635,10 +1635,9 @@ tracking comment and gives the model no comment tool but the inline one. The
 job's own check shows a review in progress and done.
 
 **Status check, red means no review.** Each lane is one job. The code-review
-job is named `claude-review-status`, so its check is
-`<caller job> / claude-review-status`. The security-review job is named
-`security-review`, so with the canonical caller its check is
-`security-review / security-review`. The job's last step goes red, naming
+job and the security-review job are each named `Claude`, so with the
+canonical callers their checks are `PR Review / Claude` and
+`PR Review Security / Claude`. The job's last step goes red, naming
 the cause, whenever no review happened: a failed attempt (`auth`,
 `rate-limit`, `overloaded`, `max-turns`, `timeout`, `install-failed`,
 `no-execution`, `other`), the action

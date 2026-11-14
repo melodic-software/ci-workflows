@@ -184,6 +184,7 @@ permissions:
 
 jobs:
   check:
+    name: Check
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
@@ -301,7 +302,7 @@ jobs:
         with:
           exclude: ${{ inputs.lychee-offline-exclude }}
 
-      - name: Validate against JSON Schema
+      - name: Validate against JSON schema
         id: check_jsonschema
         # The empty-files skip is never silent: the `configuration` step fails
         # the run for it.

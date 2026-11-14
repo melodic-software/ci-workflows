@@ -85,7 +85,7 @@ permissions: {}
 
 jobs:
   check-links:
-    name: check-links
+    name: Check Links
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
