@@ -2597,6 +2597,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           api-key: ${{ secrets.CLAUDE_API_KEY }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -2654,6 +2657,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-dir: ${{ steps.compose.outputs.prompt-dir }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
           api-key: ${{ secrets.CLAUDE_API_KEY }}
@@ -5279,6 +5285,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           subscription-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -5336,6 +5345,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-dir: ${{ steps.compose.outputs.prompt-dir }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
           subscription-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -7931,6 +7943,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           fallback-token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -7988,6 +8003,9 @@ jobs:
           lane: ${{ inputs.lane == 'security' && 'pr-review-security' || 'pr-review' }}
           role: ${{ inputs.role }}
           prompt-dir: ${{ steps.compose.outputs.prompt-dir }}
+          preamble: >-
+            You are running unattended in GitHub Actions: no person can answer
+            a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
           fallback-token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
