@@ -2,8 +2,8 @@
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
 # Lint is CI's Ruff and Pyright lanes, which check only the conforming fixture
 # with its own configs (.github/workflows/pr-require-checks.yml:264-268,
-# :281-284; the commands are .github/actions/ruff/action.yml and
-# .github/actions/pyright/action.yml run steps). There is no root ruff.toml.
+# :281-284; the commands are .github/actions/ruff/action.yml:69-70 and
+# .github/actions/pyright/action.yml:62). There is no root ruff.toml.
 # The test is the version-bump engine's suite, as CI's test-contracts job runs
 # it (pr-require-checks.yml:590). Commands run from the repository root.
 enabled: true

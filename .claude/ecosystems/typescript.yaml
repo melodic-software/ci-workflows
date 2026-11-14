@@ -2,8 +2,8 @@
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
 # Lint is CI's two Biome steps over their fixed scopes: the TypeScript fixture
 # with its own config, and .github/scripts with the root biome.json
-# (.github/workflows/pr-require-checks.yml:297-308; the command is the
-# .github/actions/biome/action.yml run step). The test is the node --test steps
+# (.github/workflows/pr-require-checks.yml:297-308; the command is
+# .github/actions/biome/action.yml:68). The test is the node --test steps
 # of CI's test-contracts job (pr-require-checks.yml:561, :565, :567, :569,
 # :594). No tsconfig exists and CI builds nothing. Commands run from the
 # repository root.
@@ -32,4 +32,4 @@ tool-pin:
   biome: "2.5.11"
   node: "24.21.0"
 gates: []
-notes: "Pins: Biome is .github/actions/biome/action.yml:28's fallback-version, because package.json pins no @biomejs/biome; node is .node-version:1, as CI's test job reads it (pr-require-checks.yml:556). CI passes --reporter=github; it changes only the output format and is left out. The JavaScript under .github/actions/** (*.cjs, *.mjs) is never linted in CI: biome.json includes only .github/scripts/**, and these commands keep that scope. The check-cmd and test-cmd stop at the first failure; CI runs both Biome steps and stops its test job at the first failing step. node --test exits 0 when a test is skipped; read its skipped count. The test job's last step, check-workflow-call-surface.cjs (pr-require-checks.yml:603-611), is a workflow check and runs from yaml.yaml. Glob gaps: CI's typescript filter also fires on any .github/** change, **/biome.json and fixtures/typescript/** (pr-require-checks.yml:108-117), and its test job on .node-version, package.json, package-lock.json and schemas/github/** (:155-160); these globs select only script files."
+notes: "Pins: Biome is .github/actions/biome/action.yml:28's fallback-version, because package.json pins no @biomejs/biome; node is .node-version:1, as CI's test job reads it (pr-require-checks.yml:556). CI passes --reporter=github; it changes only the output format and is left out. The JavaScript under .github/actions/** (*.cjs, *.mjs) is never linted in CI: biome.json includes only .github/scripts/**, and these commands keep that scope. The check-cmd and test-cmd stop at the first failure, as CI's Biome and test jobs do (no step there sets continue-on-error). node --test exits 0 when a test is skipped; read its skipped count. The test job's last step, check-workflow-call-surface.cjs (pr-require-checks.yml:603-611), is a workflow check and runs from yaml.yaml. Glob gaps: CI's typescript filter also fires on any .github/** change, **/biome.json and fixtures/typescript/** (pr-require-checks.yml:108-117), and its test job on .node-version, package.json, package-lock.json and schemas/github/** (:155-160); these globs select only script files."
