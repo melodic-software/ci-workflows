@@ -20,12 +20,19 @@ contract. `contracts/kyle-sexton.json` is the org-wide contract and holds the
 `github-iac` and `azure-iac` policies. `contracts/kyle-sexton-github-iac.json`
 remains for callers pinned to an earlier release; it holds only the
 `github-iac` policy, so it stops matching once Pulumi holds both.
+`contracts/pulumi-oidc-policies.json` holds the same two policies under
+the workflow name `Release Deploy`, with the `azure-iac` workflow file
+`release-deploy.yml`. A deploy workflow selects it in the change that renames
+the workflow, and Pulumi's policies change in the same sitting: while Pulumi
+holds policies under both the old and the new names, neither contract matches
+and applies stop.
 
 Contract v2 uses GitHub's immutable owner/repository-ID subject plus exact
 claims for: private repo, owner ID, actor ID, main ref, manual event, first run
 attempt, self-hosted runner, workflow name. Each policy's environment must be
-`<repository-name>-production`, and its workflow name must match
-`^[a-z0-9-]+$`. The `sub` claim takes one of two forms:
+`<repository-name>-production`, and its workflow name must be words of
+letters and digits joined by single spaces or hyphens
+(`\A[A-Za-z0-9]+([ -][A-Za-z0-9]+)*\z`). The `sub` claim takes one of two forms:
 
 - `repo:<owner>@<owner-id>/<name>@<repository-id>:environment:<environment>`
 - that form followed by
