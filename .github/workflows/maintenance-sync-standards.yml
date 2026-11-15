@@ -59,8 +59,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Plan
+  build-sync-matrix:
+    name: Build Sync Matrix
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
@@ -149,7 +149,7 @@ jobs:
 
   attest:
     name: Attest
-    needs: plan
+    needs: build-sync-matrix
     if: ${{ !inputs.dry-run }}
     environment:
       name: ${{ inputs.environment }}
@@ -190,7 +190,7 @@ jobs:
           EXPECTED_APP_SLUG: melodic-standards-sync
           EXPECTED_INSTALLATION_ID: '144867070'
           EXPECTED_OWNER: melodic-software
-          EXPECTED_REPOSITORIES: ${{ needs.plan.outputs.expected-repositories }}
+          EXPECTED_REPOSITORIES: ${{ needs.build-sync-matrix.outputs.expected-repositories }}
           TRUST_ROOT_REPOSITORIES: melodic-software/azure-iac
           GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
@@ -392,7 +392,7 @@ jobs:
 
   sync:
     name: Sync (${{ matrix.repo }})
-    needs: [plan, attest]
+    needs: [build-sync-matrix, attest]
     if: ${{ !inputs.dry-run }}
     environment:
       name: ${{ inputs.environment }}
@@ -404,7 +404,7 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.build-sync-matrix.outputs.matrix) }}
     steps:
       - name: Require App access to this target
         env:
@@ -449,7 +449,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: melodic-software/standards
-          ref: ${{ needs.plan.outputs.sha }}
+          ref: ${{ needs.build-sync-matrix.outputs.sha }}
           path: .standards-src
           persist-credentials: false
 
@@ -581,7 +581,7 @@ jobs:
           MANIFEST: ${{ inputs.manifest }}
           PR_BODY: ${{ github.workspace }}/.standards-sync-pr-body.md
           STANDARDS_REF: ${{ inputs.standards-ref }}
-          STANDARDS_SHA: ${{ needs.plan.outputs.sha }}
+          STANDARDS_SHA: ${{ needs.build-sync-matrix.outputs.sha }}
           TARGET: ${{ matrix.repo }}
         run: |
           set -euo pipefail
@@ -616,7 +616,7 @@ jobs:
           # satisfying target signature rules without direct default-branch pushes.
           sign-commits: true
           branch: chore/standards-sync
-          commit-message: "chore: sync standards components (${{ needs.plan.outputs.sha }})"
+          commit-message: "chore: sync standards components (${{ needs.build-sync-matrix.outputs.sha }})"
           title: "chore: sync standards components"
           body-path: ${{ github.workspace }}/.standards-sync-pr-body.md
           labels: standards-sync

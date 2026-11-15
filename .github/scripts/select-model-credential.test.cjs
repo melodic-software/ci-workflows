@@ -754,7 +754,11 @@ const INTAKE_OLD = {
 
 test("intake-triage picks the same legs, credentials and reasons as its old copies, in every state", () => {
   const workflow = load("intake-triage.yml");
-  const { claude, subscription: sub, fallback: fb } = workflow.jobs;
+  const {
+    claude,
+    "triage-subscription": sub,
+    "triage-fallback": fb,
+  } = workflow.jobs;
   const credential = (job) => job.steps.find((s) => s.id === "credential").with;
   let states = 0;
   for (const gate of ["skip", "ok", "failed"]) {
@@ -770,7 +774,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
         outputs: start,
       };
       // The old claude job ran in every state; the new one is skipped when
-      // the gate holds the key off, and the subscription job reads the gate.
+      // the gate holds the key off, and the triage-subscription job reads the gate.
       const keyRuns = Boolean(
         evaluate(claude.if, { needs: { "check-key-credit": gateJob } }),
       );
@@ -882,7 +886,10 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
           const newFb = Boolean(
             evaluate(fb.if, {
               needs: {
-                subscription: { result: "success", outputs: newSubOut },
+                "triage-subscription": {
+                  result: "success",
+                  outputs: newSubOut,
+                },
               },
             }),
           );
@@ -897,7 +904,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
               role: "automations",
               credentialSet: String(fbSet),
               reason: evaluate(credential(fb).reason, {
-                needs: { subscription: { outputs: newSubOut } },
+                needs: { "triage-subscription": { outputs: newSubOut } },
               }),
             }).outputs;
             assert.equal(

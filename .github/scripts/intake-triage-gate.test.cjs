@@ -3,7 +3,7 @@
 // The intake lane's author gate: a run starts only for an issue its sender
 // opened and wrote, when that sender's id is in allowed-author-ids (a person)
 // or allowed-bot-sender-ids (a bot). Everyone else's issue waits for a
-// person, so a stranger opening an issue spends nothing, and the skipped job
+// person, so a stranger opening an issue spends nothing, and the report-skip job
 // reports why.
 
 const assert = require("node:assert/strict");
@@ -259,9 +259,9 @@ test("the issue comes from the API by a validated number", () => {
   );
 });
 
-test("a gated-out opened issue runs the skipped job, which may apply a label", () => {
-  const skipped = workflow.jobs.skipped;
-  assert.equal(skipped.name, "Skipped");
+test("a gated-out opened issue runs the report-skip job, which may apply a label", () => {
+  const skipped = workflow.jobs["report-skip"];
+  assert.equal(skipped.name, "Report Skip");
   assert.equal(skipped.needs, "check-key-credit");
   assert.equal(gateJob.needs, undefined);
   // Only the gate job's own if can skip it, so skipped means gated out.
@@ -278,7 +278,7 @@ test("a gated-out opened issue runs the skipped job, which may apply a label", (
     assert.equal(runs(result, opened), false, result);
   }
   // A key the key-credit gate held off is no gated-out issue: the gate job
-  // ran, so the skipped job does not.
+  // ran, so the report-skip job does not.
   assert.equal(
     Boolean(
       evaluate(skipped.if, {

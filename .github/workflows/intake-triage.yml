@@ -46,7 +46,7 @@ name: Intake Triage
 #     without all three. It turns on the CLI's subprocess credential scrub
 #     and puts exactly one Claude credential in the CLI environment.
 #   - The API key runs in the claude job. The subscription token runs only in
-#     the claude-subscription job, and only when the claude job's handoff
+#     the triage-subscription job, and only when the claude job's handoff
 #     output is exactly `true` (the key's credits are used up, lane-class
 #     `credit-stop`, or the API refused the key with status 401 or 402,
 #     lane-class `auth`; a 403 stops the run) or its key was empty. That
@@ -58,8 +58,8 @@ name: Intake Triage
 #     are set by run-claude-cli after it restores the step files, so the
 #     model cannot set them; a forged handoff would cost only subscription
 #     usage. Either secret may be empty, not both.
-#   - The fallback token runs only in the Fallback job,
-#     the same way after the subscription job's handoff (a limit stop, a
+#   - The fallback token runs only in the triage-fallback job,
+#     the same way after the triage-subscription job's handoff (a limit stop, a
 #     credit stop, or a 401 or 402), which it sets only when that secret is
 #     set. The other model jobs read only whether it is set. It may be
 #     empty; then the lane runs as with two legs.
@@ -99,8 +99,8 @@ name: Intake Triage
 #     denial count, and the structured fields (labels, type, comment,
 #     needs_human) checked against the job's allowlist and enums.
 #   - Only the Apply job writes, and it runs no model.
-#     It takes the fallback job's outputs when that job ran, else the
-#     subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
+#     It takes the triage-fallback job's outputs when that job ran, else the
+#     triage-subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
 #     the event or the issue-number input, never from a job output, and
 #     rebuilds the allowlist and Issue Types itself. It keeps
 #     labels that are in the caller's allowlist AND exist in the repository
@@ -144,7 +144,7 @@ name: Intake Triage
 #     number and node id from the API, never from other dispatch text, and
 #     refuses a pull request or a malformed number.
 #   - An opened issue or a dispatch the gate turns away is not a silent green run: the
-#     Skipped job names the reason in the run summary
+#     report-skip job names the reason in the run summary
 #     and a notice, and applies skipped-label when the caller sets one.
 #
 # CLI VERSION: run-claude-cli installs the Claude Code CLI at run time.
@@ -153,7 +153,7 @@ name: Intake Triage
 # `bundled`, which the claude-code-action lane took, run `latest` with a
 # warning.
 #
-# RERUNS: rerunning only the claude-subscription job runs the triage on the
+# RERUNS: rerunning only the triage-subscription job runs the triage on the
 # subscription again without the check-key-credit job's author gate running again. It
 # reuses that run's gate result and outputs, and a rerun needs write access
 # to the repository, so this is accepted. The apply job writes only what the
@@ -163,11 +163,11 @@ name: Intake Triage
 # `Claude` triages on the API key; after it hands off (a credit stop, or the
 # key refused with API status 401 or 402) or with no key, or in its place
 # when `Check Key Credit` finds the key's last credit stop inside the window,
-# `Subscription` triages on the subscription token instead; after that job
-# hands off, `Fallback` triages on the fallback token. `Apply` applies the
-# triage of the job that triaged, and `Status` reads them all and goes red
+# `Triage Subscription` triages on the subscription token instead; after that job
+# hands off, `Triage Fallback` triages on the fallback token. `Apply` applies the
+# triage of the job that triaged, and `Report Triage Status` reads them all and goes red
 # when the triage or its write failed; its check is
-# `<caller job name> / Status`. Never make that check required. `Skipped`
+# `<caller job name> / Report Triage Status`. Never make that check required. `Report Skip`
 # runs only when the author gate skipped the key-credit job, and with it
 # every leg.
 
@@ -281,7 +281,7 @@ on:
       key-credit-window-hours:
         description: >-
           Hours a key's credit stop in this workflow keeps later runs off the
-          key: the claude job skips its key leg and the subscription job
+          key: the claude job skips its key leg and the triage-subscription job
           triages. The first run after the window tries the key again. 0
           always tries the key. It is the backoff's base step: each
           consecutive credit stop doubles it, capped at 24 hours. The marker
@@ -313,12 +313,12 @@ on:
         description: >-
           'true' on an infrastructure failure, else 'false'. Empty when the
           lane did not run.
-        value: ${{ jobs.status.outputs.triage-failed }}
+        value: ${{ jobs.report-triage-status.outputs.triage-failed }}
       failure-class:
         description: >-
           auth | rate-limit | overloaded | max-turns | timeout | other on a failure;
           skipped-validation when the action skipped itself; empty otherwise.
-        value: ${{ jobs.status.outputs.failure-class }}
+        value: ${{ jobs.report-triage-status.outputs.failure-class }}
       triage-deferred:
         description: >-
           'true' when a permission denial on an otherwise clean triage left
@@ -334,14 +334,14 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           The role's subscription OAuth token (from `claude setup-token`),
-          used only by the claude-subscription job, which runs only when the
+          used only by the triage-subscription job, which runs only when the
           key ends in a credit stop or is empty.
         required: false
       FALLBACK_CLAUDE_CODE_OAUTH_TOKEN:
         description: >-
           The central fallback subscription's OAuth token, the org secret of
-          that name, used only by the Fallback job after
-          the subscription job hands off (a limit stop, a credit stop, or a
+          that name, used only by the triage-fallback job after
+          the triage-subscription job hands off (a limit stop, a credit stop, or a
           401 or 402). Empty, the lane runs as with two legs.
         required: false
 
@@ -354,7 +354,7 @@ jobs:
   # gate.cjs). No secret, no model, no checkout; every failure runs the key.
   # Probing is off. Its if is the author gate, the lane's only one: every
   # later job needs this one, so a skip here is the gate turning the run
-  # away, and the skipped job below says so. A run spends the subscription,
+  # away, and the report-skip job below says so. A run spends the subscription,
   # so it starts only when the sender opened the issue and is its author: a
   # person whose user id is in allowed-author-ids, or a bot whose sender id
   # is in allowed-bot-sender-ids (the review lanes' rule). Any other action
@@ -990,11 +990,11 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. A handoff (key
+      # and extract steps run; the report-triage-status job carries the red. A handoff (key
       # only: a credit stop, or class auth with API status 401 or 402) skips
-      # the extract step: the subscription job triages instead. The outcome
+      # the extract step: the triage-subscription job triages instead. The outcome
       # step still writes the leg's record, with handoff true, so the key's
-      # stop is recorded even when the subscription job triages or has no
+      # stop is recorded even when the triage-subscription job triages or has no
       # token. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
@@ -1219,8 +1219,8 @@ jobs:
   # checks against a closed list; neither reaches a run: script. A failed
   # or cancelled claude job never starts it. It does not use
   # inputs.runner: a caller's runner could keep state between jobs.
-  subscription:
-    name: Subscription
+  triage-subscription:
+    name: Triage Subscription
     needs: [check-key-credit, claude]
     if: >-
       ${{ !cancelled()
@@ -1768,9 +1768,9 @@ jobs:
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. With the
+      # and extract steps run; the report-triage-status job carries the red. With the
       # fallback token set, a limit stop, a credit stop or a 401 or 402 hands
-      # off to the fallback job and skips the extract step; the fallback leg
+      # off to the triage-fallback job and skips the extract step; the fallback leg
       # never hands off. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
@@ -1956,20 +1956,20 @@ jobs:
           tokens: github-token
 
   # The fallback leg, the central fallback subscription, as its own job on
-  # a fresh VM, only after the subscription job handed off (a limit stop, a
+  # a fresh VM, only after the triage-subscription job handed off (a limit stop, a
   # credit stop, or a 401 or 402, with the fallback token set). Its steps
-  # repeat the subscription job's but for the credential and the fallback
-  # reason (a test holds them equal). It reads the subscription job's
+  # repeat the triage-subscription job's but for the credential and the fallback
+  # reason (a test holds them equal). It reads the triage-subscription job's
   # next-leg and next-reason the same way. It is the last leg and never
-  # hands off. The subscription job's result is checked here rather than
+  # hands off. The triage-subscription job's result is checked here rather than
   # left to success(): a claude job the key-credit gate skipped would skip
   # this one too.
-  fallback:
-    name: Fallback
-    needs: [claude, subscription]
+  triage-fallback:
+    name: Triage Fallback
+    needs: [claude, triage-subscription]
     if: >-
-      ${{ !cancelled() && needs.subscription.result == 'success'
-          && needs.subscription.outputs.next-leg == 'fallback' }}
+      ${{ !cancelled() && needs.triage-subscription.result == 'success'
+          && needs.triage-subscription.outputs.next-leg == 'fallback' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 29
     # The model's job reads and never writes: the token can read the issue
@@ -2508,13 +2508,13 @@ jobs:
           role: ${{ inputs.role }}
           credential-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
           fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          reason: ${{ needs.subscription.outputs.next-reason }}
+          reason: ${{ needs.triage-subscription.outputs.next-reason }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
-      # and extract steps run; the status job carries the red. With the
+      # and extract steps run; the report-triage-status job carries the red. With the
       # fallback token set, a limit stop, a credit stop or a 401 or 402 hands
-      # off to the fallback job and skips the extract step; the fallback leg
+      # off to the triage-fallback job and skips the extract step; the fallback leg
       # never hands off. The outcome step's step-timeout-minutes repeats
       # timeout-minutes. The step's env holds no GitHub token, and the tools
       # are Read, Grep and Glob only: no Bash, so no gh and no commands.
@@ -2700,19 +2700,19 @@ jobs:
           tokens: github-token
 
   # The one job that writes to the issue. No model runs here and nothing is
-  # checked out. It reads the fallback job's outputs when that job ran, else
-  # the subscription job's, else the claude job's, so a credit stop applies exactly once, and takes
+  # checked out. It reads the triage-fallback job's outputs when that job ran, else
+  # the triage-subscription job's, else the claude job's, so a credit stop applies exactly once, and takes
   # every value through env. It trusts none of them: it resolves the issue
   # from the event or the issue-number input, and rebuilds the label
   # allowlist and Issue Types from the repository itself. Like
-  # the subscription job it runs on a fixed GitHub-hosted label, a fresh VM,
+  # the triage-subscription job it runs on a fixed GitHub-hosted label, a fresh VM,
   # rather than the caller's runner, which could keep state between jobs.
-  # It runs once a leg ran: the claude job, or the subscription job when the
+  # It runs once a leg ran: the claude job, or the triage-subscription job when the
   # key-credit gate skipped the claude job.
   apply:
     name: Apply
-    needs: [claude, subscription, fallback]
-    if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
+    needs: [claude, triage-subscription, triage-fallback]
+    if: always() && (needs.claude.result != 'skipped' || needs.triage-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -2730,20 +2730,20 @@ jobs:
           FLOOR_LABEL: ${{ inputs.floor-label }}
           PRIORITY_FIELD_ID: ${{ inputs.priority-field-id }}
           AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
-          SUB_RESULT: ${{ needs.subscription.result }}
+          SUB_RESULT: ${{ needs.triage-subscription.result }}
           KEY_SUBTYPE: ${{ needs.claude.outputs.result-subtype }}
           KEY_ERROR: ${{ needs.claude.outputs.result-error }}
           KEY_DENIALS: ${{ needs.claude.outputs.denials }}
           KEY_TRIAGE: ${{ needs.claude.outputs.triage }}
-          SUB_SUBTYPE: ${{ needs.subscription.outputs.result-subtype }}
-          SUB_ERROR: ${{ needs.subscription.outputs.result-error }}
-          SUB_DENIALS: ${{ needs.subscription.outputs.denials }}
-          SUB_TRIAGE: ${{ needs.subscription.outputs.triage }}
-          FB_RESULT: ${{ needs.fallback.result }}
-          FB_SUBTYPE: ${{ needs.fallback.outputs.result-subtype }}
-          FB_ERROR: ${{ needs.fallback.outputs.result-error }}
-          FB_DENIALS: ${{ needs.fallback.outputs.denials }}
-          FB_TRIAGE: ${{ needs.fallback.outputs.triage }}
+          SUB_SUBTYPE: ${{ needs.triage-subscription.outputs.result-subtype }}
+          SUB_ERROR: ${{ needs.triage-subscription.outputs.result-error }}
+          SUB_DENIALS: ${{ needs.triage-subscription.outputs.denials }}
+          SUB_TRIAGE: ${{ needs.triage-subscription.outputs.triage }}
+          FB_RESULT: ${{ needs.triage-fallback.result }}
+          FB_SUBTYPE: ${{ needs.triage-fallback.outputs.result-subtype }}
+          FB_ERROR: ${{ needs.triage-fallback.outputs.result-error }}
+          FB_DENIALS: ${{ needs.triage-fallback.outputs.denials }}
+          FB_TRIAGE: ${{ needs.triage-fallback.outputs.triage }}
         with:
           script: |
             // Each response's rate-limit reading and route, the line
@@ -3181,15 +3181,15 @@ jobs:
           tokens: github-token
 
   # One status for the run, and no lane record (each leg writes its own): the
-  # fallback job's outcome when it ran, else the subscription job's, else
+  # triage-fallback job's outcome when it ran, else the triage-subscription job's, else
   # the claude job's, and red
   # when the apply job failed. Every value arrives
   # through env and is checked against a closed set before it is printed or
   # written.
-  status:
-    name: Status
-    needs: [claude, subscription, fallback, apply]
-    if: always() && (needs.claude.result != 'skipped' || needs.subscription.result != 'skipped')
+  report-triage-status:
+    name: Report Triage Status
+    needs: [claude, triage-subscription, triage-fallback, apply]
+    if: always() && (needs.claude.result != 'skipped' || needs.triage-subscription.result != 'skipped')
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions: {}
@@ -3204,20 +3204,20 @@ jobs:
           KEY_PRESENT: ${{ needs.claude.outputs.credential-present }}
           KEY_FAILED: ${{ needs.claude.outputs.triage-failed }}
           KEY_CLASS: ${{ needs.claude.outputs.failure-class }}
-          SUB_RESULT: ${{ needs.subscription.result }}
-          SUB_PRESENT: ${{ needs.subscription.outputs.credential-present }}
-          SUB_FAILED: ${{ needs.subscription.outputs.triage-failed }}
-          SUB_CLASS: ${{ needs.subscription.outputs.failure-class }}
-          FB_RESULT: ${{ needs.fallback.result }}
-          FB_PRESENT: ${{ needs.fallback.outputs.credential-present }}
-          FB_FAILED: ${{ needs.fallback.outputs.triage-failed }}
-          FB_CLASS: ${{ needs.fallback.outputs.failure-class }}
+          SUB_RESULT: ${{ needs.triage-subscription.result }}
+          SUB_PRESENT: ${{ needs.triage-subscription.outputs.credential-present }}
+          SUB_FAILED: ${{ needs.triage-subscription.outputs.triage-failed }}
+          SUB_CLASS: ${{ needs.triage-subscription.outputs.failure-class }}
+          FB_RESULT: ${{ needs.triage-fallback.result }}
+          FB_PRESENT: ${{ needs.triage-fallback.outputs.credential-present }}
+          FB_FAILED: ${{ needs.triage-fallback.outputs.triage-failed }}
+          FB_CLASS: ${{ needs.triage-fallback.outputs.failure-class }}
           KEY_CREDENTIAL: ${{ needs.claude.outputs.credential }}
-          SUB_CREDENTIAL: ${{ needs.subscription.outputs.credential }}
-          FB_CREDENTIAL: ${{ needs.fallback.outputs.credential }}
+          SUB_CREDENTIAL: ${{ needs.triage-subscription.outputs.credential }}
+          FB_CREDENTIAL: ${{ needs.triage-fallback.outputs.credential }}
           APPLY_RESULT: ${{ needs.apply.result }}
         run: |
-          # The last leg that ran. A fallback job with no token did not
+          # The last leg that ran. A triage-fallback job with no token did not
           # triage: the subscription leg's stop stands.
           if [ -n "$FB_RESULT" ] && [ "$FB_RESULT" != skipped ] && [ "$FB_PRESENT" != false ]; then
             job=$FB_RESULT present=$FB_PRESENT failed=$FB_FAILED class=$FB_CLASS credential=$FB_CREDENTIAL
@@ -3228,7 +3228,7 @@ jobs:
           else
             job=$KEY_RESULT present=$KEY_PRESENT failed=$KEY_FAILED class=$KEY_CLASS credential=$KEY_CREDENTIAL
           fi
-          # An unusable key stays visible even when the subscription job then
+          # An unusable key stays visible even when the triage-subscription job then
           # triaged and the run is green.
           if [ "$KEY_CLASS" = auth ]; then
             echo "::warning title=claude-intake-triage key::class=auth: the API refused the key; the owner must replace the secret."
@@ -3274,8 +3274,8 @@ jobs:
 
   # The check-key-credit job's if is the author gate, so on an opened issue
   # or a dispatch it is skipped exactly when the gate turned the run away.
-  skipped:
-    name: Skipped
+  report-skip:
+    name: Report Skip
     needs: check-key-credit
     if: >-
       ${{ always() && needs.check-key-credit.result == 'skipped'

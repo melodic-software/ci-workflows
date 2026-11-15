@@ -488,19 +488,19 @@ test("every pr-review-cli job ends by logging the job token's budget", () => {
 });
 
 // The intake jobs that call the API with the job token end with the notice.
-// The status job holds no permission and makes no request, so it has none.
+// The report-triage-status job holds no permission and makes no request, so it has none.
 test("every intake-triage job that calls the API ends by logging the job token's budget", () => {
   const callers = [
     "check-key-credit",
     "claude",
-    "subscription",
-    "fallback",
+    "triage-subscription",
+    "triage-fallback",
     "apply",
-    "skipped",
+    "report-skip",
   ];
   assert.deepEqual(
     Object.keys(INTAKE.jobs).sort(),
-    [...callers, "status"].sort(),
+    [...callers, "report-triage-status"].sort(),
   );
   for (const name of callers) {
     const last = INTAKE.jobs[name].steps.at(-1);
@@ -511,12 +511,12 @@ test("every intake-triage job that calls the API ends by logging the job token's
     assert.equal(last.with.tokens, "github-token", name);
     assert.equal(last.with.responses, undefined, name);
   }
-  const { status } = INTAKE.jobs;
+  const status = INTAKE.jobs["report-triage-status"];
   assert.deepEqual(status.permissions, {});
   assert.equal(
     status.steps.some((s) => s.uses || s.with),
     false,
-    "the status job runs only a shell step",
+    "the report-triage-status job runs only a shell step",
   );
 });
 

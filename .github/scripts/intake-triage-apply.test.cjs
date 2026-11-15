@@ -3,7 +3,7 @@
 // The intake lane's compose and extract steps and its apply job decide what
 // reaches the issue. These tests run their own scripts against a mock GitHub
 // client, the extract step's outputs feeding the apply job as the job outputs
-// would: an API error is an infrastructure failure the status job reports,
+// would: an API error is an infrastructure failure the report-triage-status job reports,
 // so nothing is applied, while any other error subtype escalates to a
 // person. A run that was not escalated sets the Issue Type and, with exactly
 // one priority label, removes the triage floor label (ci-workflows#662). The
@@ -1053,7 +1053,7 @@ const MALLORY = { login: "mallory", type: "User", id: 666 };
 const HELPER_BOT = { login: "helper[bot]", type: "Bot", id: 201 };
 const ACTIONS_BOT = { login: "github-actions[bot]", type: "Bot", id: 41898282 };
 
-for (const job of ["claude", "subscription"]) {
+for (const job of ["claude", "triage-subscription"]) {
   test(`${job}: only listed users' and bots' comments reach the model`, async () => {
     const { authors, text } = await fetchComments(
       job,
@@ -1155,7 +1155,7 @@ for (const job of ["claude", "subscription"]) {
 }
 
 test("the fetch step filters on every run, from the trust inputs", () => {
-  for (const job of ["claude", "subscription"]) {
+  for (const job of ["claude", "triage-subscription"]) {
     const fetch = workflow.jobs[job].steps.find(
       (s) => s.name === "Fetch the issue for the model",
     );
@@ -1306,7 +1306,7 @@ test("a credit stop applies the triage once, from the subscription leg", async (
       evaluate(apply.if, {
         needs: {
           claude: { result: claude },
-          subscription: { result: subscription },
+          "triage-subscription": { result: subscription },
         },
       }),
     );

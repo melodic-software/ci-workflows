@@ -2,13 +2,13 @@
 
 // The intake lane runs the API key and the subscription token in separate
 // jobs (ci-workflows#799). The claude job holds only the key; the
-// claude-subscription job holds only the token, runs on a fixed GitHub-hosted
+// triage-subscription job holds only the token, runs on a fixed GitHub-hosted
 // runner only after the key job hands off (a credit stop or a rejected key)
 // or with no key, repeats the claude job's hardening, and takes nothing from
 // it but compared outputs. Both
 // model jobs are read-only (ci-workflows#804): one apply job with no model
-// writes the triage of whichever leg triaged. The status job reports one
-// outcome: the subscription job's when it ran, red when the apply job failed.
+// writes the triage of whichever leg triaged. The report-triage-status job reports one
+// outcome: the triage-subscription job's when it ran, red when the apply job failed.
 
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
@@ -29,7 +29,13 @@ const workflow = parseWorkflow(
     "utf8",
   ),
 );
-const { claude, subscription, fallback, status, apply } = workflow.jobs;
+const {
+  claude,
+  "triage-subscription": subscription,
+  "triage-fallback": fallback,
+  "report-triage-status": status,
+  apply,
+} = workflow.jobs;
 const launcher = (job) => job.steps.find((step) => step.id === "claude");
 
 // The shared credential step (select-model-credential), called as the leg
@@ -48,19 +54,19 @@ const handedOn = (leg, flags = {}, launched = {}) =>
 // previous leg's next-reason against report-lane-outcome's closed list.
 const LEG_REASON = `\${{ steps.credential.outputs.fallback-reason }}`;
 
-test("only the subscription job references the OAuth token, and only the claude job the key", () => {
+test("only the triage-subscription job references the OAuth token, and only the claude job the key", () => {
   for (const [name, job] of Object.entries(workflow.jobs)) {
     const text = JSON.stringify(job);
     assert.equal(
       text.includes("secrets.CLAUDE_CODE_OAUTH_TOKEN"),
-      name === "subscription",
+      name === "triage-subscription",
       name,
     );
-    // The fallback token's value reaches only the fallback job's launcher;
+    // The fallback token's value reaches only the triage-fallback job's launcher;
     // the other model jobs read only whether it is set.
     assert.equal(
       text.includes("secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}"),
-      name === "fallback",
+      name === "triage-fallback",
       name,
     );
     assert.equal(
@@ -117,14 +123,16 @@ test("every model job tells its launcher whether the fallback token is set, neve
   }
 });
 
-test("the fallback job runs on a fixed GitHub-hosted label only after the subscription job hands off or finds its token empty with the fallback token set", () => {
-  assert.equal(fallback.name, "Fallback");
+test("the triage-fallback job runs on a fixed GitHub-hosted label only after the triage-subscription job hands off or finds its token empty with the fallback token set", () => {
+  assert.equal(fallback.name, "Triage Fallback");
   assert.equal(fallback["runs-on"], "ubuntu-24.04");
-  assert.deepEqual(fallback.needs, ["claude", "subscription"]);
-  // The subscription job's outputs, as its last step leaves them.
+  assert.deepEqual(fallback.needs, ["claude", "triage-subscription"]);
+  // The triage-subscription job's outputs, as its last step leaves them.
   const starts = (outputs, result = "success") =>
     Boolean(
-      evaluate(fallback.if, { needs: { subscription: { result, outputs } } }),
+      evaluate(fallback.if, {
+        needs: { "triage-subscription": { result, outputs } },
+      }),
     );
   const ready = { fallbackSet: "true" };
   const limit = { handoff: "true", "handoff-reason": "limit-stop" };
@@ -167,7 +175,7 @@ test("the fallback job runs on a fixed GitHub-hosted label only after the subscr
   }
 });
 
-test("the fallback job repeats the subscription job's steps but for the credential and the fallback reason", () => {
+test("the triage-fallback job repeats the triage-subscription job's steps but for the credential and the fallback reason", () => {
   const strip = (steps, leg, secret, input, previous) =>
     steps.map((step) => {
       const copy = structuredClone(step);
@@ -194,7 +202,7 @@ test("the fallback job repeats the subscription job's steps but for the credenti
       "fallback",
       "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
       "fallback-token",
-      `\${{ needs.subscription.outputs.next-reason }}`,
+      `\${{ needs.triage-subscription.outputs.next-reason }}`,
     ),
     strip(
       subscription.steps,
@@ -252,8 +260,8 @@ test("every model job's leg uploads its sealed transcript under a job id unique 
   const seen = new Set();
   for (const [name, job] of Object.entries({
     claude,
-    subscription,
-    fallback,
+    "triage-subscription": subscription,
+    "triage-fallback": fallback,
   })) {
     const uploads = job.steps.filter(
       (step) => step.uses === "$/.github/actions/upload-lane-transcript",
@@ -288,13 +296,13 @@ test("every model job's leg uploads its sealed transcript under a job id unique 
   );
 });
 
-test("the subscription job runs on a fixed GitHub-hosted label, after the claude job", () => {
+test("the triage-subscription job runs on a fixed GitHub-hosted label, after the claude job", () => {
   assert.equal(subscription["runs-on"], "ubuntu-24.04");
   assert.deepEqual(subscription.needs, ["check-key-credit", "claude"]);
-  assert.equal(subscription.name, "Subscription");
+  assert.equal(subscription.name, "Triage Subscription");
 });
 
-test("the subscription job starts only on an exact handoff or an empty key", () => {
+test("the triage-subscription job starts only on an exact handoff or an empty key", () => {
   // The claude job's outputs, as its last step leaves them, after a gate
   // job that ran the key.
   const gateRan = {
@@ -345,7 +353,7 @@ test("the subscription job starts only on an exact handoff or an empty key", () 
   }
 });
 
-test("the subscription job downloads nothing from the claude job and never writes its outputs into a script", () => {
+test("the triage-subscription job downloads nothing from the claude job and never writes its outputs into a script", () => {
   for (const step of subscription.steps) {
     assert.doesNotMatch(
       step.uses ?? "",
@@ -357,7 +365,7 @@ test("the subscription job downloads nothing from the claude job and never write
   }
 });
 
-test("the subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
+test("the triage-subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
   // The key leg alone reads the key-credit gate and writes its marker.
   const KEY_ONLY = new Set([
     "credit-marker",
@@ -441,7 +449,7 @@ test("the subscription job repeats the claude job's steps but for the credential
   );
 });
 
-test("the subscription job's lane record names the credit stop, the rejected key or the empty key it ran for", () => {
+test("the triage-subscription job's lane record names the credit stop, the rejected key or the empty key it ran for", () => {
   assert.equal(
     subscription.steps.find((step) => step.id === "review-outcome").with[
       "fallback-reason"
@@ -566,17 +574,17 @@ function report(env) {
   return { code: result.status, outputs, stdout: result.stdout };
 }
 
-test("the status job reads the subscription job when it ran, else the claude job", () => {
-  assert.equal(status.name, "Status");
+test("the report-triage-status job reads the triage-subscription job when it ran, else the claude job", () => {
+  assert.equal(status.name, "Report Triage Status");
   assert.deepEqual(status.needs, [
     "claude",
-    "subscription",
-    "fallback",
+    "triage-subscription",
+    "triage-fallback",
     "apply",
   ]);
   assert.equal(
     workflow.on.workflow_call.outputs["failure-class"].value,
-    `\${{ jobs.status.outputs.failure-class }}`,
+    `\${{ jobs.report-triage-status.outputs.failure-class }}`,
   );
   const keyOnly = report({ KEY_FAILED: "false" });
   assert.equal(keyOnly.code, 0);
@@ -610,7 +618,7 @@ test("the status job reads the subscription job when it ran, else the claude job
   assert.match(limited.stdout, /failure-class=rate-limit job=success/u);
 });
 
-test("the status job reads the fallback job, the last leg, when it ran", () => {
+test("the report-triage-status job reads the triage-fallback job, the last leg, when it ran", () => {
   const sub = {
     KEY_CLASS: "credit-stop",
     SUB_RESULT: "success",
@@ -644,7 +652,7 @@ test("the status job reads the fallback job, the last leg, when it ran", () => {
     limited.stdout,
     /failure-class=rate-limit job=success credential=FALLBACK_CLAUDE_CODE_OAUTH_TOKEN; read the job log\./u,
   );
-  // A fallback job with no token reports the subscription leg's stop.
+  // A triage-fallback job with no token reports the subscription leg's stop.
   const noToken = report({ ...sub, FB_RESULT: "success", FB_PRESENT: "false" });
   assert.equal(noToken.code, 1);
   assert.deepEqual(noToken.outputs, {
@@ -655,7 +663,7 @@ test("the status job reads the fallback job, the last leg, when it ran", () => {
     noToken.stdout,
     /credential=AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN; read/u,
   );
-  // Skipped, the subscription job is read as before.
+  // Skipped, the triage-subscription job is read as before.
   const before = report({ ...sub, FB_RESULT: "skipped" });
   assert.equal(before.code, 1);
   assert.match(
@@ -700,7 +708,7 @@ test("an empty secret in the job that should triage fails with a fixed class", (
   });
 });
 
-test("an unusable key warns the owner to replace the secret, even when the subscription job triaged", () => {
+test("an unusable key warns the owner to replace the secret, even when the triage-subscription job triaged", () => {
   const warning = /^::warning[^:]*::class=auth: .*replace the secret/mu;
   const fellBack = report({
     KEY_CLASS: "auth",
@@ -725,7 +733,7 @@ test("an unusable key warns the owner to replace the secret, even when the subsc
   }
 });
 
-test("the status job prints and writes only closed values", () => {
+test("the report-triage-status job prints and writes only closed values", () => {
   const forged = report({
     KEY_RESULT: "failure",
     KEY_FAILED: "true\n::error::planted",
@@ -867,7 +875,11 @@ test("the model jobs are read-only, cache-less, and give the model no GitHub tok
 
 test("exactly one job, with no model, writes the triage", () => {
   assert.equal(apply.name, "Apply");
-  assert.deepEqual(apply.needs, ["claude", "subscription", "fallback"]);
+  assert.deepEqual(apply.needs, [
+    "claude",
+    "triage-subscription",
+    "triage-fallback",
+  ]);
   assert.deepEqual(apply.permissions, { issues: "write" });
   assert.equal(apply["runs-on"], "ubuntu-24.04");
   for (const step of apply.steps) {
@@ -882,8 +894,8 @@ test("exactly one job, with no model, writes the triage", () => {
   const writers = Object.entries(workflow.jobs)
     .filter(([, job]) => job.permissions?.issues === "write")
     .map(([name]) => name);
-  // The skipped job writes only skipped-label on an issue no model read.
-  assert.deepEqual(writers, ["apply", "skipped"]);
+  // The report-skip job writes only skipped-label on an issue no model read.
+  assert.deepEqual(writers, ["apply", "report-skip"]);
   for (const job of [claude, subscription, fallback]) {
     assert.equal(
       job.steps.some((step) => step.name === "Apply the triage"),
@@ -895,9 +907,9 @@ test("exactly one job, with no model, writes the triage", () => {
 
 // The key-credit gate (claude-code-plugins#13586): a job with no secret reads
 // the key's credit history; a credit-stopped key skips the claude job, so
-// the subscription job triages with reason credit-stop, and the key leg
+// the triage-subscription job triages with reason credit-stop, and the key leg
 // uploads the marker after its own credit stop.
-test("a credit-stopped key hands the triage to the subscription job before any key call", () => {
+test("a credit-stopped key hands the triage to the triage-subscription job before any key call", () => {
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
   const read = gate.steps.find((step) => step.id === "gate");
@@ -948,15 +960,15 @@ test("a credit-stopped key hands the triage to the subscription job before any k
     }).outputs["fallback-reason"],
     "credit-stop",
   );
-  // Apply and status run once either leg ran, so a held key still applies
-  // and reports the subscription job's triage.
-  for (const name of ["apply", "status"]) {
+  // Apply and report-triage-status run once either leg ran, so a held key still applies
+  // and reports the triage-subscription job's triage.
+  for (const name of ["apply", "report-triage-status"]) {
     const runs = (claudeResult, subscriptionResult) =>
       Boolean(
         evaluate(workflow.jobs[name].if, {
           needs: {
             claude: { result: claudeResult },
-            subscription: { result: subscriptionResult },
+            "triage-subscription": { result: subscriptionResult },
           },
         }),
       );
