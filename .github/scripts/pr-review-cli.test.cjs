@@ -1792,6 +1792,78 @@ test("the prompt carries the FULL DIFF, REVIEW SCOPE and PR CONTEXT lines the re
   }
 });
 
+test("the PR context drops AI attribution lines from the description, filtered before the cap, in every leg", () => {
+  const ATTRIBUTION =
+    "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+  const long = "a".repeat(19990);
+  const cases = [
+    ["default line", `Summary line\n\n${ATTRIBUTION}`, "Summary line\n"],
+    [
+      "custom link target",
+      "Fix it\n  Generated with [Claude Code](https://example.test/x)\nTail",
+      "Fix it\nTail",
+    ],
+    [
+      "Claude co-author trailer, human one kept",
+      "Body\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-Authored-By: Kyle <claude@example.test>",
+      "Body\nCo-Authored-By: Kyle <claude@example.test>",
+    ],
+    ["CRLF line ends", `A\r\n${ATTRIBUTION}\r\nB`, "A\r\nB"],
+    [
+      "neither",
+      "Plain body\nmentions Claude Code in prose",
+      "Plain body\nmentions Claude Code in prose",
+    ],
+    ["filter before cap", `${long}\n${ATTRIBUTION}\ntail`, `${long}\ntail`],
+  ];
+  const { spawnSync } = require("node:child_process");
+  for (const job of [key, subscription, fallback]) {
+    for (const [name, body, expected] of cases) {
+      const dir = makeTemporaryDirectory("pr-review-cli-pr-context-");
+      fs.writeFileSync(
+        path.join(dir, "pr-context.json"),
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                number: 5,
+                title: "T",
+                body,
+                closingIssuesReferences: { nodes: [] },
+              },
+            },
+          },
+        }),
+      );
+      const result = spawnSync(
+        "bash",
+        ["-e", "-c", step(job, "pr-context").run],
+        {
+          cwd: dir,
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            RUNNER_TEMP: dir,
+            GITHUB_OUTPUT: path.join(dir, "output"),
+            REPOSITORY: "o/r",
+            TRUSTED: "[]",
+            CONTEXT_FILE: ".claude-lane/pr-context.md",
+          },
+        },
+      );
+      assert.equal(result.status, 0, `${job.name} ${name}: ${result.stderr}`);
+      const file = fs.readFileSync(
+        path.join(dir, ".claude-lane", "pr-context.md"),
+        "utf8",
+      );
+      assert.ok(
+        file.endsWith(`## Pull request #5: T\n\n${expected}\n`),
+        `${job.name} ${name}: the description reads as expected`,
+      );
+    }
+  }
+});
+
 async function extract(files, env = {}, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-extract-");
   const paths = {};

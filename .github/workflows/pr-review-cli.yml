@@ -123,7 +123,9 @@ name: PR Review CLI
 #     rule allows, reads outside the checkout included. A step checks the
 #     leg's init message reports that mode. Script steps with no model write
 #     what it reads into the checkout: the whole diff from the merge base,
-#     the incremental diff, the pull request's description and closing
+#     the incremental diff, the pull request's description (less any line
+#     naming an AI tool as its author: `Generated with [Claude Code]`, or a
+#     Co-Authored-By trailer whose name holds Claude) and closing
 #     issues (closing-issue text only from authors check-author-trust
 #     trusts), and its settled review threads (text only from comments
 #     claude-code-plugins' select-trusted-text keeps under the base commit's
@@ -1854,6 +1856,11 @@ jobs:
           # shellcheck disable=SC2016 # $pr, $trusted and $repository are jq variables.
           jq -r --argjson trusted "$TRUSTED" --arg repository "$REPOSITORY" '
             def cap($n): (. // "") | .[0:$n];
+            # A model told the work is its own judges it more leniently.
+            def drop_attribution: (. // "") | split("\n")
+              | map(select((contains("Generated with [Claude Code]")
+                  or test("^\\s*co-authored-by:\\s*[^<]*claude"; "i")) | not))
+              | join("\n");
             def trusted: .author as $a | $a != null and ($trusted | index(["\($a.__typename):\($a.databaseId)"])) != null;
             .data.repository.pullRequest as $pr
             | if $pr == null then error("no pull request") else [
@@ -1861,7 +1868,7 @@ jobs:
                 "",
                 "## Pull request #\($pr.number): \($pr.title | cap(300))",
                 "",
-                ($pr.body | cap(20000)),
+                ($pr.body | drop_attribution | cap(20000)),
                 ($pr.closingIssuesReferences.nodes // [] | map(select(. != null))[]
                   | if (.repository.nameWithOwner | ascii_downcase) != ($repository | ascii_downcase) then
                       "", "## Closing issue \(.repository.nameWithOwner)#\(.number)"
@@ -4541,6 +4548,11 @@ jobs:
           # shellcheck disable=SC2016 # $pr, $trusted and $repository are jq variables.
           jq -r --argjson trusted "$TRUSTED" --arg repository "$REPOSITORY" '
             def cap($n): (. // "") | .[0:$n];
+            # A model told the work is its own judges it more leniently.
+            def drop_attribution: (. // "") | split("\n")
+              | map(select((contains("Generated with [Claude Code]")
+                  or test("^\\s*co-authored-by:\\s*[^<]*claude"; "i")) | not))
+              | join("\n");
             def trusted: .author as $a | $a != null and ($trusted | index(["\($a.__typename):\($a.databaseId)"])) != null;
             .data.repository.pullRequest as $pr
             | if $pr == null then error("no pull request") else [
@@ -4548,7 +4560,7 @@ jobs:
                 "",
                 "## Pull request #\($pr.number): \($pr.title | cap(300))",
                 "",
-                ($pr.body | cap(20000)),
+                ($pr.body | drop_attribution | cap(20000)),
                 ($pr.closingIssuesReferences.nodes // [] | map(select(. != null))[]
                   | if (.repository.nameWithOwner | ascii_downcase) != ($repository | ascii_downcase) then
                       "", "## Closing issue \(.repository.nameWithOwner)#\(.number)"
@@ -7201,6 +7213,11 @@ jobs:
           # shellcheck disable=SC2016 # $pr, $trusted and $repository are jq variables.
           jq -r --argjson trusted "$TRUSTED" --arg repository "$REPOSITORY" '
             def cap($n): (. // "") | .[0:$n];
+            # A model told the work is its own judges it more leniently.
+            def drop_attribution: (. // "") | split("\n")
+              | map(select((contains("Generated with [Claude Code]")
+                  or test("^\\s*co-authored-by:\\s*[^<]*claude"; "i")) | not))
+              | join("\n");
             def trusted: .author as $a | $a != null and ($trusted | index(["\($a.__typename):\($a.databaseId)"])) != null;
             .data.repository.pullRequest as $pr
             | if $pr == null then error("no pull request") else [
@@ -7208,7 +7225,7 @@ jobs:
                 "",
                 "## Pull request #\($pr.number): \($pr.title | cap(300))",
                 "",
-                ($pr.body | cap(20000)),
+                ($pr.body | drop_attribution | cap(20000)),
                 ($pr.closingIssuesReferences.nodes // [] | map(select(. != null))[]
                   | if (.repository.nameWithOwner | ascii_downcase) != ($repository | ascii_downcase) then
                       "", "## Closing issue \(.repository.nameWithOwner)#\(.number)"
