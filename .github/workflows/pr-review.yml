@@ -56,6 +56,10 @@ name: PR Review
 #     person whose numeric user id is in allowed-author-ids, or a bot whose
 #     id is in allowed-bot-sender-ids. Anyone can open an issue and get it
 #     linked, so any other closing issue is written as its number alone.
+#   - The code review reads the pull request's description, untrusted data,
+#     less any line a fixed pattern matches as naming an AI tool as its
+#     author: `Generated with [Claude Code]`, or a Co-Authored-By trailer
+#     whose name holds Claude.
 #   - The checkout persists no credential. The job's own git calls pass the
 #     job token per command, never in .git/config, and the action's agent
 #     mode sets up its own git auth. Fork pull requests never run this job.
@@ -712,6 +716,11 @@ jobs:
           # shellcheck disable=SC2016 # $pr, $trusted and $repository are jq variables.
           jq -r --argjson trusted "$TRUSTED" --arg repository "$REPOSITORY" '
             def cap($n): (. // "") | .[0:$n];
+            # A model told the work is its own judges it more leniently.
+            def drop_attribution: (. // "") | split("\n")
+              | map(select((contains("Generated with [Claude Code]")
+                  or test("^\\s*co-authored-by:\\s*[^<]*claude"; "i")) | not))
+              | join("\n");
             def trusted: .author as $a | $a != null and ($trusted | index(["\($a.__typename):\($a.databaseId)"])) != null;
             .data.repository.pullRequest as $pr
             | if $pr == null then error("no pull request") else [
@@ -719,7 +728,7 @@ jobs:
                 "",
                 "## Pull request #\($pr.number): \($pr.title | cap(300))",
                 "",
-                ($pr.body | cap(20000)),
+                ($pr.body | drop_attribution | cap(20000)),
                 ($pr.closingIssuesReferences.nodes // [] | map(select(. != null))[]
                   | if (.repository.nameWithOwner | ascii_downcase) != ($repository | ascii_downcase) then
                       "", "## Closing issue \(.repository.nameWithOwner)#\(.number)"
