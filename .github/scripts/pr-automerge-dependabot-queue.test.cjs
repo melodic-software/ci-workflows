@@ -390,7 +390,7 @@ test("a single update whose title names its versions is queued", async () => {
   assert.equal(counts.queued, 1);
 });
 
-// The shape of melodic-software/provisioning#1031: an own action below 1.0
+// An own action below 1.0
 // whose every release is a minor bump.
 const PSSA = "melodic-software/ci-workflows/.github/actions/psscriptanalyzer";
 const OWN_MESSAGE = `build: bump ${PSSA} from 0.39.8 to 0.74.0

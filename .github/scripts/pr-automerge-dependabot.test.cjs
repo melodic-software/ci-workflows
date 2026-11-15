@@ -322,8 +322,7 @@ test("with the synced policy, a fast-tracked major still goes to a person", asyn
   );
 });
 
-// An own action below 1.0 whose every release is a minor bump, as on
-// melodic-software/provisioning#1031.
+// An own action below 1.0 whose every release is a minor bump.
 const PSSA = "melodic-software/ci-workflows/.github/actions/psscriptanalyzer";
 const ownMinor = (versions = {}) =>
   update(PSSA, "version-update:semver-minor", "github_actions", {
