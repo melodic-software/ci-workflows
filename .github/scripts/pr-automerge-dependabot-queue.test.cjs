@@ -390,6 +390,66 @@ test("a single update whose title names its versions is queued", async () => {
   assert.equal(counts.queued, 1);
 });
 
+// An own action below 1.0
+// whose every release is a minor bump.
+const PSSA = "melodic-software/ci-workflows/.github/actions/psscriptanalyzer";
+const OWN_MESSAGE = `build: bump ${PSSA} from 0.39.8 to 0.74.0
+
+Bumps [${PSSA}](https://github.com/melodic-software/ci-workflows) from 0.39.8 to 0.74.0.
+
+---
+updated-dependencies:
+- dependency-name: ${PSSA}
+  dependency-version: 0.74.0
+  dependency-type: direct:production
+  update-type: version-update:semver-minor
+...
+
+Signed-off-by: dependabot[bot] <support@github.com>`;
+const ownPull = dependabotPull(10, {
+  title: `build: bump ${PSSA} from 0.39.8 to 0.74.0`,
+  body: "",
+  head: {
+    sha: HEAD,
+    ref: "dependabot/github_actions/melodic-software/ci-workflows/dot-github/actions/psscriptanalyzer-0.74.0",
+  },
+});
+const ownPolicy = (fastTrack) =>
+  JSON.stringify({
+    fastTrack,
+    autoMerge: {
+      publishers: { "actions/*": { tier: "auto" } },
+      ecosystems: ["github-actions"],
+      reviewOnly: [],
+    },
+  });
+
+test("an own action's minor below 1.0 is queued when the synced policy lists it in fastTrack.own", async () => {
+  const { counts, notices } = await runWithFakes({
+    pulls: [ownPull],
+    commits: { 10: [dependabotCommit(OWN_MESSAGE)] },
+    policy: ownPolicy({ own: ["melodic-software/*"] }),
+  });
+  assert.deepEqual(
+    notices.filter((notice) => /left alone/u.test(notice)),
+    [],
+  );
+  assert.equal(counts.queued, 1);
+});
+
+test("an own action allowlisted only as a fast-tracked GitHub Action stays below 1.0's minor rule", async () => {
+  const { counts, notices } = await runWithFakes({
+    pulls: [ownPull],
+    commits: { 10: [dependabotCommit(OWN_MESSAGE)] },
+    policy: ownPolicy({ "github-actions": ["melodic-software/*"] }),
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.match(
+    notices[0],
+    /psscriptanalyzer changes its minor version below 1\.0/u,
+  );
+});
+
 test("only pull requests authored by Dependabot's account id are considered", async () => {
   const { reads, appCalls } = await runWithFakes({
     pulls: [

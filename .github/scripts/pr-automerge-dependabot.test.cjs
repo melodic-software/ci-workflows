@@ -6,9 +6,12 @@ const path = require("node:path");
 const test = require("node:test");
 
 const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
-const { DEFAULT_PUBLISHER_ALLOWLIST, runEvent } = require(
-  path.join(actionDir, "gate.cjs"),
-);
+const {
+  DEFAULT_PUBLISHER_ALLOWLIST,
+  gateFailure,
+  resolvePolicyInputs,
+  runEvent,
+} = require(path.join(actionDir, "gate.cjs"));
 const workflowPath = path.join(
   __dirname,
   "..",
@@ -316,6 +319,131 @@ test("with the synced policy, a fast-tracked major still goes to a person", asyn
       basePolicy: syncedPolicy(),
     }),
     /melodic-software\/ci-workflows is not a patch or minor update/u,
+  );
+});
+
+// An own action below 1.0 whose every release is a minor bump.
+const PSSA = "melodic-software/ci-workflows/.github/actions/psscriptanalyzer";
+const ownMinor = (versions = {}) =>
+  update(PSSA, "version-update:semver-minor", "github_actions", {
+    prevVersion: "0.39.8",
+    newVersion: "0.74.0",
+    ...versions,
+  });
+const OWN_ALLOWLIST =
+  '["actions/*","github/*","anthropics/*","melodic-software/*"]';
+const belowOne = (name) =>
+  new RegExp(
+    `${name.replaceAll("/", "\\/").replaceAll(".", "\\.")} changes its minor version below 1\\.0`,
+    "u",
+  );
+
+test("with the synced policy, an own action's minor below 1.0 arms", async () => {
+  const { armCalls, notices } = await runGate({
+    updates: [ownMinor()],
+    basePolicy: syncedPolicy(),
+  });
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("with no synced policy, an allowlisted own action's minor below 1.0 is skipped", async () => {
+  assertSkipped(
+    await runGate({ updates: [ownMinor()], publisherAllowlist: OWN_ALLOWLIST }),
+    belowOne(PSSA),
+  );
+});
+
+test("a synced policy without fastTrack.own exempts no allowlisted name below 1.0", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [ownMinor()],
+      publisherAllowlist: OWN_ALLOWLIST,
+      basePolicy: syncedPolicy({
+        fastTrack: { "github-actions": ["anthropics/*"] },
+      }),
+    }),
+    belowOne(PSSA),
+  );
+});
+
+test("with the synced policy, a vendor action's minor below 1.0 is still skipped", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        update("actions/checkout", "version-update:semver-minor", undefined, {
+          prevVersion: "0.3.0",
+          newVersion: "0.4.0",
+        }),
+      ],
+      basePolicy: syncedPolicy(),
+    }),
+    belowOne("actions/checkout"),
+  );
+});
+
+test("with the synced policy, an own action's move to 1.0 still goes to a person", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        ownMinor({
+          updateType: "version-update:semver-major",
+          prevVersion: "0.74.0",
+          newVersion: "1.0.0",
+        }),
+      ],
+      basePolicy: syncedPolicy(),
+    }),
+    /psscriptanalyzer is not a patch or minor update/u,
+  );
+  assertSkipped(
+    await runGate({
+      updates: [ownMinor({ prevVersion: "0.74.0", newVersion: "1.0.0" })],
+      basePolicy: syncedPolicy(),
+    }),
+    belowOne(PSSA),
+  );
+});
+
+test("a group with an own and a vendor minor below 1.0 is skipped for the vendor's", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [
+        ownMinor(),
+        update("actions/checkout", "version-update:semver-minor", undefined, {
+          prevVersion: "0.3.0",
+          newVersion: "0.4.0",
+        }),
+      ],
+      basePolicy: syncedPolicy(),
+    }),
+    belowOne("actions/checkout"),
+  );
+});
+
+test("own globs come only from the synced policy, never the caller's inputs", async () => {
+  const caller = {
+    publisherAllowlist: OWN_ALLOWLIST,
+    packageAutoMerge: "true",
+    reviewOnly: "[]",
+    ownGlobs: ["melodic-software/*"],
+  };
+  const repository = "melodic-software/medley";
+  const unsynced = resolvePolicyInputs(caller, undefined, repository).inputs;
+  assert.deepEqual(unsynced.ownGlobs, []);
+  assert.deepEqual(
+    resolvePolicyInputs(caller, syncedPolicy({ fastTrack: {} }), repository)
+      .inputs.ownGlobs,
+    [],
+  );
+  assert.match(
+    await gateFailure({
+      pr: { user: { id: DEPENDABOT_ID } },
+      updates: [ownMinor()],
+      listCommits: () => assert.fail("the gate refuses before reading commits"),
+      inputs: unsynced,
+    }),
+    belowOne(PSSA),
   );
 });
 

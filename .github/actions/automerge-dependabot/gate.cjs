@@ -30,11 +30,13 @@ const globToRegExp = (glob) =>
 
 const majorMinor = (version) =>
   /^v?(\d+)\.(\d+)/u.exec(String(version ?? ""));
-function breaksBelowOne(update) {
+// Below 1.0 a minor change breaks, except for the organization's own
+// releases (`own`), which may change their minor component there.
+function breaksBelowOne(update, own) {
   const previous = majorMinor(update?.prevVersion);
   if (previous?.[1] !== "0") return false;
   const next = majorMinor(update?.newVersion);
-  return next === null || next[1] !== "0" || next[2] !== previous[2];
+  return next === null || next[1] !== "0" || (!own && next[2] !== previous[2]);
 }
 
 // The metadata comes from the commit message, the title and body from the
@@ -107,10 +109,12 @@ const METADATA_ECOSYSTEM = {
 // ecosystems armed; both only narrow. When the caller leaves the
 // publisher-allowlist at its default, the list becomes the policy's
 // `tier: auto` publishers plus its GitHub Actions and own fast track, whose
-// patch and minor bumps arm like any other allowlisted publisher's.
+// patch and minor bumps arm like any other allowlisted publisher's. ownGlobs
+// is the policy's fastTrack.own, exempt from the below-1.0 minor rule; it
+// comes only from the policy, so any caller value is replaced.
 // Returns { inputs } or { failure }.
 function resolvePolicyInputs(inputs, policyText, repository) {
-  if (policyText === undefined) return { inputs };
+  if (policyText === undefined) return { inputs: { ...inputs, ownGlobs: [] } };
   const policy = parseJson(policyText);
   const autoMerge = policy?.autoMerge;
   const publishers = autoMerge?.publishers;
@@ -138,6 +142,7 @@ function resolvePolicyInputs(inputs, policyText, repository) {
   const resolved = {
     ...inputs,
     ecosystems: ecosystems.map((name) => METADATA_ECOSYSTEM[name] ?? name),
+    ownGlobs: tracks[1],
   };
   const callerReviewOnly = parseJson(inputs.reviewOnly);
   if (Array.isArray(callerReviewOnly)) {
@@ -167,7 +172,8 @@ function resolvePolicyInputs(inputs, policyText, repository) {
 // REST commit list, read only once every cheaper gate holds. `inputs` holds
 // the caller's raw strings: publisherAllowlist and reviewOnly (JSON arrays)
 // and packageAutoMerge ("true" or anything else), plus, from a synced policy,
-// ecosystems: the fetch-metadata ecosystem ids that may arm at all.
+// ecosystems: the fetch-metadata ecosystem ids that may arm at all, and
+// ownGlobs: the names exempt from the below-1.0 minor rule.
 async function gateFailure({ pr, updates, listCommits, inputs }) {
   if (pr?.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
   if (!Array.isArray(updates) || updates.length === 0)
@@ -187,6 +193,7 @@ async function gateFailure({ pr, updates, listCommits, inputs }) {
     return "the publisher-allowlist input is not a JSON array of non-empty globs";
   }
   const allowlist = publishers.map(globToRegExp);
+  const own = (inputs.ownGlobs ?? []).map(globToRegExp);
   const packageAutoMerge = inputs.packageAutoMerge === "true";
   for (const update of updates) {
     const name = String(update?.dependencyName ?? "");
@@ -204,7 +211,7 @@ async function gateFailure({ pr, updates, listCommits, inputs }) {
     }
     if (!UPDATE_TYPES.has(update?.updateType))
       return `${name} is not a patch or minor update`;
-    if (breaksBelowOne(update))
+    if (breaksBelowOne(update, own.some((pattern) => pattern.test(name))))
       return `${name} changes its minor version below 1.0`;
   }
   const mismatch = metadataMismatch(pr, updates);
