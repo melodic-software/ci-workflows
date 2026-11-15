@@ -257,6 +257,72 @@ test("the pull request's own title and body are written unchanged", () => {
   assert.ok(file.includes("PR-BODY line one\nline two"));
 });
 
+test("the PR context drops AI attribution lines from the description, filtered before the cap", () => {
+  const ATTRIBUTION =
+    "🤖 Generated with [Claude Code](https://claude.com/claude-code)";
+  const long = "a".repeat(19990);
+  const cases = [
+    ["default line", `Summary line\n\n${ATTRIBUTION}`, "Summary line\n"],
+    [
+      "custom link target",
+      "Fix it\n  Generated with [Claude Code](https://example.test/x)\nTail",
+      "Fix it\nTail",
+    ],
+    [
+      "Claude co-author trailer, human one kept",
+      "Body\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\nCo-Authored-By: Kyle <claude@example.test>",
+      "Body\nCo-Authored-By: Kyle <claude@example.test>",
+    ],
+    ["CRLF line ends", `A\r\n${ATTRIBUTION}\r\nB`, "A\r\nB"],
+    [
+      "neither",
+      "Plain body\nmentions Claude Code in prose",
+      "Plain body\nmentions Claude Code in prose",
+    ],
+    ["filter before cap", `${long}\n${ATTRIBUTION}\ntail`, `${long}\ntail`],
+  ];
+  for (const [name, body, expected] of cases) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pr-context-"));
+    try {
+      fs.writeFileSync(
+        path.join(directory, "pr-context.json"),
+        JSON.stringify({
+          data: {
+            repository: {
+              pullRequest: {
+                number: 5,
+                title: "T",
+                body,
+                closingIssuesReferences: { nodes: [] },
+              },
+            },
+          },
+        }),
+      );
+      const { result } = run(
+        step("pr-context").run,
+        {
+          REPOSITORY: "o/r",
+          TRUSTED: "[]",
+          CONTEXT_FILE: ".claude-lane/pr-context.md",
+        },
+        directory,
+      );
+      assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+      const file = fs.readFileSync(
+        path.join(directory, ".claude-lane", "pr-context.md"),
+        "utf8",
+      );
+      assert.ok(
+        file.endsWith(`## Pull request #5: T\n\n${expected}\n`),
+        `${name}: the description reads as expected`,
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("the existing comment filter still applies to a same-repository issue", () => {
   const comments = [
     {
