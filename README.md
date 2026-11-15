@@ -1232,7 +1232,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its
-  minor component; the metadata names exactly the updates and versions the
+  minor component unless its name matches the synced copy's `fastTrack` `own`
+  globs (the organization's own releases); the metadata names exactly the updates and versions the
   title or the body's `Updates` lines name; and every commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. The gate lives in the

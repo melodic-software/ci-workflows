@@ -52,8 +52,10 @@ name: PR Automerge Dependabot
 #   - no package dependency name is in the caller's `review-only-dependencies`
 #     (its entries in that policy's `autoMerge.reviewOnly`);
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
-#     its minor component (the policy's non-major rule); a grouped PR with one
-#     major bump, or an update type Dependabot could not compute, is skipped;
+#     its minor component (the policy's non-major rule) unless its name
+#     matches the synced copy's `fastTrack` `own` globs, the organization's
+#     own releases; a grouped PR with one major bump, or an update type
+#     Dependabot could not compute, is skipped;
 #   - the updates in the metadata are exactly those the title or the body's
 #     `Updates` lines name, each with the same from and to version
 #     (standards dependabot-policy README, auto tier);
