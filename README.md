@@ -1508,17 +1508,17 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller grants `contents: read` and `issues: write` and passes the role's
   `CLAUDE_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (at least one), and
   optionally the org secret `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`, which the
-  `Fallback` job runs after the subscription job hands
+  `Triage Fallback` job runs after the `Triage Subscription` job hands
   off (the third job of the pattern above). The key
   runs in the `Claude` job; after it hands off (a credit stop
-  or a rejected key), or with no key, the token runs in the `Subscription` job on
+  or a rejected key), or with no key, the token runs in the `Triage Subscription` job on
   `ubuntu-24.04` (the two-job pattern above);
   `Apply` writes whichever job triaged, and
-  `Status` reports the one outcome. The workflow
+  `Report Triage Status` reports the one outcome. The workflow
   header carries the canonical caller and the security model. Runs only for issues opened by
   their author when that author's user id is in `allowed-author-ids` (a
   person) or `allowed-bot-sender-ids` (a bot); other issues wait for a
-  person, and the `Skipped` job names the reason and
+  person, and the `Report Skip` job names the reason and
   applies `skipped-label` when set. A caller can also run it on
   `workflow_dispatch` with `issue-number`, for issues a `GITHUB_TOKEN`
   created (those start no `issues` run); the dispatching actor's id must be

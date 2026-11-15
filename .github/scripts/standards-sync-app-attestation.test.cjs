@@ -657,7 +657,7 @@ test("workflow gates every target mutation behind full-manifest attestation", ()
     workflow.match(/full_matrix="\$\(([\s\S]*?)\n\s*\)"/u)?.[1] ?? "",
     /--targets/u,
   );
-  assert.match(attest, /needs: plan/u);
+  assert.match(attest, /needs: build-sync-matrix/u);
   assert.match(attest, /if: \$\{\{ !inputs\.dry-run \}\}/u);
   assert.match(attest, /owner: melodic-software/u);
   assert.match(attest, /permission-metadata: read/u);
@@ -677,7 +677,7 @@ test("workflow gates every target mutation behind full-manifest attestation", ()
     beforeSync,
     /Check out target|(?:path|working-directory): \.target|cd \.target|sync-manifest\.sh apply|create-pull-request|permission-contents: write/u,
   );
-  assert.match(sync, /needs: \[plan, attest\]/u);
+  assert.match(sync, /needs: \[build-sync-matrix, attest\]/u);
   assert.match(sync, /repositories: \$\{\{ matrix\.repo_name \}\}/u);
   assert.match(sync, /permission-contents: write/u);
   assert.match(sync, /name: Check out target/u);
