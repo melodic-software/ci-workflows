@@ -243,7 +243,7 @@ for (const leg of LEGS) {
 }
 
 // The status job, from the legs' `held` outputs.
-const status = workflow.jobs.status;
+const status = workflow.jobs["publish-review"];
 const statusStep = (name) => status.steps.find((s) => s.name === name);
 const legsHeld = (held) => ({
   "review-key": { outputs: { held: held.key ?? "" } },

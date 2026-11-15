@@ -31,7 +31,7 @@ const workflow = parseWorkflow(
     "utf8",
   ),
 );
-const { "review-key": key, status } = workflow.jobs;
+const { "review-key": key, "publish-review": status } = workflow.jobs;
 const publishReview = require(
   path.join(ROOT, ".github", "actions", "publish-review", "publish.cjs"),
 );
@@ -383,7 +383,7 @@ async function spend({
   }
 
   // The status job: the gate, publish, then the hold.
-  github.job = "status";
+  github.job = "publish-review";
   const gateStep = stepId(status, "gate");
   const gateOutputs = {};
   api.newClient();
@@ -603,7 +603,7 @@ test("each job logs one reading per request it made and its api-budget line, add
     );
     for (const [job, budget, first, last] of [
       ["review-key", keyBudget, 1, keyRequests],
-      ["status", statusBudget, keyRequests + 1, total],
+      ["publish-review", statusBudget, keyRequests + 1, total],
     ]) {
       // The fake's responses carry no URL, so every route is other.
       assert.deepEqual(

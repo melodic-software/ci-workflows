@@ -225,10 +225,11 @@ name: PR Review CLI
 # counts the moved CRITICAL findings too. A comment whose path, line or side
 # is malformed goes to the summary the same way, and the other comments still
 # post inline; one with no body is dropped with a warning. Its status job is
-# named `Status` in both lanes (the caller job tells them apart, as in
-# `PR Review / Status`) and goes red, naming the class, when no
-# review happened. Any other value is summary mode: no comment, no review,
-# no marker and no notice; the status job writes a job summary and uploads
+# named `Publish Review` in both lanes (the caller job tells them apart, as in
+# `PR Review / Publish Review`; earlier runs show `Status`) and goes red,
+# naming the class, when no review happened. Any other value is summary
+# mode: no comment, no review, no marker and no notice; the status job
+# writes a job summary and uploads
 # a credential-scanned JSON artifact (the findings and comments, turns, the
 # CLI's total_cost_usd, models, leg and wall time), and every job ends green
 # whatever fails: every step continues on error, every job's limit exceeds
@@ -432,10 +433,10 @@ on:
     outputs:
       hold:
         description: "`true` when this run held the pull request, else `false`."
-        value: ${{ jobs.status.outputs.hold }}
+        value: ${{ jobs.publish-review.outputs.hold }}
       hold-criteria:
         description: The hold's criteria, comma-separated (cost, critical-security), or empty.
-        value: ${{ jobs.status.outputs.hold-criteria }}
+        value: ${{ jobs.publish-review.outputs.hold-criteria }}
     secrets:
       CLAUDE_API_KEY:
         description: The role's Console API key. Tried first, in the review-key job; empty skips it.
@@ -8728,8 +8729,8 @@ jobs:
   # through env. A `uses: $/...` step reads publish from its own env in
   # continue-on-error: once the composite has run, the runner evaluates that
   # with the action's inputs, not the workflow's.
-  status:
-    name: Status
+  publish-review:
+    name: Publish Review
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
     runs-on: ubuntu-24.04
@@ -8973,10 +8974,10 @@ jobs:
           HOLD_LABEL: ${{ inputs.hold-label }}
           TRUSTED_AUTHOR_IDS: ${{ inputs.allowed-author-ids }}
           LANE_ID: ${{ inputs.lane == 'security' && 'claude-security-review' || 'claude-review' }}
-          STATUS_JOB: Status
-          # This job's name before it was `Status`. Remove once no open pull
-          # request holds a cost decision made before the rename.
-          STATUS_JOB_LEGACY: review-status
+          STATUS_JOB: Publish Review
+          # This job's former names. Drop one once no open pull request holds
+          # a cost decision made before that name changed.
+          STATUS_JOB_LEGACY: Status,review-status
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}

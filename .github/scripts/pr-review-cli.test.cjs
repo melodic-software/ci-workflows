@@ -27,7 +27,7 @@ const {
   "review-key": key,
   "review-subscription": subscription,
   "review-fallback": fallback,
-  status,
+  "publish-review": status,
 } = workflow.jobs;
 const step = (job, id) => job.steps.find((s) => s.id === id);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -139,7 +139,7 @@ test("every model job tells its launcher whether the fallback token is set, neve
 
 // A skipped job shows its `name:` unevaluated, so an expression there would
 // show as the check name (ci-workflows#866). The caller job tells the lanes
-// apart: `PR Review / Status`, `PR Review Security / Status`.
+// apart: `PR Review / Publish Review`, `PR Review Security / Publish Review`.
 test("every job carries a literal name, the same in both lanes", () => {
   const names = Object.fromEntries(
     Object.entries(workflow.jobs).map(([id, job]) => [id, job.name]),
@@ -151,16 +151,16 @@ test("every job carries a literal name, the same in both lanes", () => {
     "review-key": "Review Key",
     "review-subscription": "Review Subscription",
     "review-fallback": "Review Fallback",
-    status: "Status",
+    "publish-review": "Publish Review",
   });
   for (const [id, name] of Object.entries(names)) {
     assert.doesNotMatch(String(name ?? id), /\$\{\{/u, id);
   }
   // The hold step reads its own job's earlier runs by name: the current name,
-  // and the name runs finished before the rename carry.
+  // and both names runs finished before a rename carry.
   const hold = status.steps.find((s) => s.env?.STATUS_JOB);
-  assert.equal(hold?.env.STATUS_JOB, "Status");
-  assert.equal(hold?.env.STATUS_JOB_LEGACY, "review-status");
+  assert.equal(hold?.env.STATUS_JOB, "Publish Review");
+  assert.equal(hold?.env.STATUS_JOB_LEGACY, "Status,review-status");
 });
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
@@ -977,10 +977,10 @@ test("every job that needs the resolve-pull-request job opens its gate with a st
   );
   assert.deepEqual(dependents.map(([name]) => name).sort(), [
     "check-key-credit",
+    "publish-review",
     "review-fallback",
     "review-key",
     "review-subscription",
-    "status",
   ]);
   for (const [name, job] of dependents) {
     assert.match(String(job.if), /!cancelled\(\)|always\(\)/u, name);
@@ -5359,7 +5359,7 @@ test("every upload follows a credential scan over the same path, and a scan that
     "review-key": key,
     "review-subscription": subscription,
     "review-fallback": fallback,
-    status,
+    "publish-review": status,
   })) {
     job.steps.forEach((upload, index) => {
       if (!isUpload(upload)) return;
@@ -5416,8 +5416,8 @@ test("every upload follows a credential scan over the same path, and a scan that
     "review-key",
     "review-subscription",
     "review-fallback",
-    "status",
-    "status",
+    "publish-review",
+    "publish-review",
   ]);
 });
 
