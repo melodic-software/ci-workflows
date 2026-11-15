@@ -47,8 +47,9 @@ const TRUST_PATHS = [
 // pushed at 10:45.
 const RUN_ID = 99;
 const RUN_PATH = ".github/workflows/pr-review-hosted.yml";
-const STATUS_JOB = "Status";
-const STATUS_JOB_LEGACY = "review-status";
+const STATUS_JOB = "Publish Review";
+const FORMER_NAMES = ["Status", "review-status"];
+const STATUS_JOB_LEGACY = FORMER_NAMES.join(",");
 const laneRun = ({
   id = 11,
   sha = "a".repeat(40),
@@ -1469,29 +1470,44 @@ test("an empty STATUS_JOB reads no run and keeps the cost hold", async () => {
   assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
 });
 
-// A decision made against a run whose status job carries the former name
+// A decision made against a run whose status job carries a former name
 // carries through STATUS_JOB_LEGACY, one against a run under the current
 // name through STATUS_JOB, and a job that only shares a word with either is
 // never read.
-test("the cost decision carries from the status job under its current or its former name", async () => {
+test("the cost decision carries from the status job under its current or a former name", async () => {
   for (const [label, name, env, hold] of [
     ["a run after the rename", `PR Review / ${STATUS_JOB}`, {}, "false"],
     [
-      "a run before the rename",
-      `PR Review / ${STATUS_JOB_LEGACY}`,
+      "a security lane run after the rename",
+      `PR Review Security / ${STATUS_JOB}`,
       {},
       "false",
     ],
+    ...FORMER_NAMES.flatMap((former) => [
+      [`a run named ${former}`, `PR Review / ${former}`, {}, "false"],
+      [
+        `a run named ${former}, legacy names unset`,
+        `PR Review / ${former}`,
+        { STATUS_JOB_LEGACY: "" },
+        "true",
+      ],
+    ]),
     [
       "a run before the caller jobs were named",
-      `pr-review / ${STATUS_JOB_LEGACY}`,
+      "pr-review / review-status",
       {},
       "false",
     ],
     [
-      "a run before the rename, legacy name unset",
-      `PR Review / ${STATUS_JOB_LEGACY}`,
-      { STATUS_JOB_LEGACY: "" },
+      "one legacy name, as an older caller passes it",
+      "PR Review / review-status",
+      { STATUS_JOB_LEGACY: "review-status" },
+      "false",
+    ],
+    [
+      "a former name the legacy list leaves out",
+      "PR Review / Status",
+      { STATUS_JOB_LEGACY: "review-status" },
       "true",
     ],
     ["the CI Status job", "CI Status", {}, "true"],
@@ -1511,12 +1527,23 @@ test("the cost decision carries from the status job under its current or its for
 });
 
 test("an unusable STATUS_JOB_LEGACY reads no run and keeps the cost hold", async () => {
-  const { core, github } = await apply(
-    costEnv(["cost"], { STATUS_JOB_LEGACY: "review-status\n" }),
-    { comments: [decision()] },
-  );
-  assert.equal(core.outputs.hold, "true");
-  assert.ok(!github.calls.some(([name]) => name === "listWorkflowRuns"));
+  for (const legacy of [
+    "review-status\n",
+    "Status,review-status\n",
+    "Status,",
+    ",Status",
+    "Status,,review-status",
+  ]) {
+    const { core, github } = await apply(
+      costEnv(["cost"], { STATUS_JOB_LEGACY: legacy }),
+      { comments: [decision()] },
+    );
+    assert.equal(core.outputs.hold, "true", JSON.stringify(legacy));
+    assert.ok(
+      !github.calls.some(([name]) => name === "listWorkflowRuns"),
+      JSON.stringify(legacy),
+    );
+  }
 });
 
 test("the hold comment carries the run's binding above its footer and the run's record lists it; a re-run lists its run's earlier one", async () => {

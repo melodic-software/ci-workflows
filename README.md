@@ -1425,8 +1425,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   default-branch tip, and the diff and pull request context as files whose
   `FULL DIFF:`, `REVIEW SCOPE: incremental` and `PR CONTEXT:` prompt lines
   name them. It returns its findings, summary and inline comments as
-  structured output. The status job (`Status` in both lanes, so its
-  check is `<caller job name> / Status`), with no model, posts them through
+  structured output. The `publish-review` job (`Publish Review` in both
+  lanes, so its check is `<caller job name> / Publish Review`; runs from
+  before the rename show `Status` or `review-status`, and the hold step
+  still reads both), with no model, posts them through
   `.github/actions/publish-review`. `publish: comments` posts one COMMENT
   review as `github-actions[bot]`, the lane's marker comment and the
   `claude-lane-review-complete` notice, and goes red when no review

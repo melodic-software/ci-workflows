@@ -53,12 +53,12 @@ const FLOOR = parseWorkflow(
 const RUNNER = {
   GITHUB_WORKFLOW_REF:
     "melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@refs/tags/v0.65.2",
-  GITHUB_JOB: "status",
+  GITHUB_JOB: "publish-review",
   GITHUB_RUN_ID: "39931677333",
   GITHUB_RUN_ATTEMPT: "2",
 };
 const WHERE =
-  "workflow=.github/workflows/pr-review-cli.yml job=status run=39931677333 attempt=2";
+  "workflow=.github/workflows/pr-review-cli.yml job=publish-review run=39931677333 attempt=2";
 const NOTICE = "::notice title=api-budget::";
 const CALLS = "::notice title=api-calls::";
 const ROUTES = "::notice title=api-routes::";
