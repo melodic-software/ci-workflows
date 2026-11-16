@@ -16,8 +16,11 @@ test-cmd: >-
   node --test .github/actions/report-lane-outcome/*.test.cjs &&
   node --test .github/actions/run-claude-cli/*.test.cjs &&
   node --test .github/actions/check-managed-files/*.test.cjs &&
-  npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund &&
-  node --test .github/actions/check-dependabot-policy/*.test.mjs
+  { npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund &&
+  node --test .github/actions/check-dependabot-policy/*.test.mjs;
+  rc=$?;
+  rm -rf .github/actions/check-dependabot-policy/node_modules;
+  exit "$rc"; }
 check-cmd: >-
   biome ci --config-path=fixtures/typescript/good/biome.json --error-on-warnings fixtures/typescript/good &&
   biome ci --config-path=biome.json --error-on-warnings .github/scripts
@@ -33,4 +36,4 @@ tool-pin:
   biome: "2.5.11"
   node: "24.21.0"
 gates: []
-notes: "Pins: Biome is .github/actions/biome/action.yml's fallback-version, because package.json pins no @biomejs/biome; node is .node-version, as CI's test job reads it (pr-require-checks.yml). CI passes --reporter=github; it changes only the output format and is left out. The JavaScript under .github/actions/** (*.cjs, *.mjs) is never linted in CI: biome.json includes only .github/scripts/**, and these commands keep that scope. The check-cmd and test-cmd stop at the first failure, as CI's Biome and test jobs do (no step there sets continue-on-error). The npm ci --prefix .github/actions/check-dependabot-policy line in test-cmd mirrors CI's step at pr-require-checks.yml, which installs that subpackage's dependencies (ajv) before its test; the root install (graphql) is left to /toolchain:check's own npm ci --ignore-scripts rule. node --test exits 0 when a test is skipped; read its skipped count. The test job's last step, check-workflow-call-surface.cjs (pr-require-checks.yml), is a workflow check and runs from yaml.yaml. Glob gaps: CI's typescript filter also fires on any .github/** change, **/biome.json and fixtures/typescript/** (pr-require-checks.yml), and its test job on .node-version, package.json, package-lock.json and schemas/github/**; these globs select only script files."
+notes: "Pins: Biome is .github/actions/biome/action.yml's fallback-version, because package.json pins no @biomejs/biome; node is .node-version, as CI's test job reads it (pr-require-checks.yml). CI passes --reporter=github; it changes only the output format and is left out. The JavaScript under .github/actions/** (*.cjs, *.mjs) is never linted in CI: biome.json includes only .github/scripts/**, and these commands keep that scope. The check-cmd and test-cmd stop at the first failure, as CI's Biome and test jobs do (no step there sets continue-on-error). The npm ci --prefix .github/actions/check-dependabot-policy line in test-cmd mirrors CI's step at pr-require-checks.yml, which installs that subpackage's dependencies (ajv) before its test. test-cmd then removes that node_modules, keeping the test's exit status: CI's zizmor audits .github on a fresh checkout without it, and zizmor given a subdirectory collects every nested workflow, the third-party ones inside node_modules included (https://docs.zizmor.sh/usage/#input-collection), so a lint run after a check run would fail on them; the root install (graphql) is left to /toolchain:check's own npm ci --ignore-scripts rule. node --test exits 0 when a test is skipped; read its skipped count. The test job's last step, check-workflow-call-surface.cjs (pr-require-checks.yml), is a workflow check and runs from yaml.yaml. Glob gaps: CI's typescript filter also fires on any .github/** change, **/biome.json and fixtures/typescript/** (pr-require-checks.yml), and its test job on .node-version, package.json, package-lock.json and schemas/github/**; these globs select only script files."
