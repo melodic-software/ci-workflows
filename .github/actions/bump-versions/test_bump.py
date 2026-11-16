@@ -229,21 +229,23 @@ class PublishGuardTest(unittest.TestCase):
         self.assertEqual(bump.tag_cooldown(rows[:1]), 3)
         self.assertEqual(bump.tag_cooldown(rows[2:]), 0)
 
-    def test_bump_with_a_major_row_is_left_for_review(self) -> None:
+    def test_only_a_first_number_change_is_left_for_review(self) -> None:
         rows = [
             {"current": "1.4.0", "target": "1.5.0"},
             {"current": "0.24.2", "target": "0.25.0"},
         ]
-        self.assertTrue(bump.has_major(rows))
-        self.assertFalse(bump.has_major(rows[:1]))
+        self.assertFalse(bump.has_major(rows))
         self.assertTrue(bump.has_major([{"current": "2.9.0", "target": "3.0.0"}]))
+        self.assertTrue(bump.has_major([*rows, {"current": "0.9.0", "target": "1.0.0"}]))
+        with self.assertRaises(bump.BumpError):
+            bump.has_major([{"current": "abc", "target": "1.0.0"}])
 
     def test_publish_holds_a_bump_with_a_major_row_for_review(self) -> None:
         cases = {
             "major": [{"tool": "x", "current": "2.9.0", "target": "3.0.0"}],
-            "0.x minor": [
+            "0.x to 1.0": [
                 {"current": "1.4.0", "target": "1.5.0"},
-                {"current": "0.24.2", "target": "0.25.0"},
+                {"current": "0.24.2", "target": "1.0.0"},
             ],
         }
         marker = "<!-- version-bump-targets: t -->"
@@ -295,6 +297,16 @@ class PublishGuardTest(unittest.TestCase):
         with mock.patch.object(bump, "run") as run:
             bump.arm_auto_merge(row, [], "o/r", {"date": now})
             run.assert_called_once()
+
+    def test_a_minor_move_below_one_is_armed(self) -> None:
+        row = {"pr": 9, "tagCooldown": 0}
+        rows = [{"current": "0.24.2", "target": "0.25.0"}]
+        now = dt.datetime.now(dt.UTC).isoformat()
+        with mock.patch.object(bump, "run") as run:
+            bump.arm_auto_merge(row, rows, "o/r", {"date": now})
+            run.assert_called_once()
+            self.assertIn("--auto", run.call_args.args[0])
+        self.assertTrue(row["autoMerge"])
 
 
 class LineAndFormatTest(unittest.TestCase):
