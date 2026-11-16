@@ -30,9 +30,10 @@ name: Intake Label Needs Triage
 #
 # LOOP SAFETY (no risk, two independent reasons): (1) adding a label emits
 # `issues.labeled`, never `issues.opened`/`reopened`, so this cannot
-# re-trigger itself; (2) except for `workflow_dispatch`/`repository_dispatch`,
-# GITHUB_TOKEN-authored events do not start new workflow runs at all
-# (https://docs.github.com/en/actions/reference/events-that-trigger-workflows).
+# re-trigger itself; (2) a GITHUB_TOKEN-authored event starts no new workflow
+# run, except `workflow_dispatch`/`repository_dispatch` and the `pull_request`
+# runs of a pull request it opens or updates, which wait for approval
+# (https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
 #
 # IDEMPOTENT: `addLabels` is a no-op when the label is already present, and
 # the guard skips once any tier-prefixed label exists — including a tier a

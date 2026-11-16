@@ -1160,11 +1160,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   ```
 
   Loop-safe by construction: adding a label emits `issues.labeled`, never
-  `opened`/`reopened`, and GitHub does not start new workflow runs at all for
-  `GITHUB_TOKEN`-authored events (except `workflow_dispatch`/
-  `repository_dispatch`), so this cannot re-trigger itself. Idempotent: a
-  re-run is a no-op once the target label or any other tier-prefixed label is
-  present. A human triager assigning a real tier after this workflow ran is
+  `opened`/`reopened`, and an event `GITHUB_TOKEN` authors starts no new
+  workflow run, except `workflow_dispatch`/`repository_dispatch` and the
+  `pull_request` runs of a pull request it opens or updates, which wait for
+  approval ([GitHub][trigger-from-workflow]), so this cannot re-trigger
+  itself. Idempotent: a re-run is a no-op once the target label or any other
+  tier-prefixed label is present. A human triager assigning a real tier after this workflow ran is
   expected to remove the floor label as part of that transition — this
   workflow only guarantees a floor and does not police tier assignment.
 - `.github/workflows/maintenance-check-links-online.yml` — the weekly online
@@ -1952,4 +1953,5 @@ mirrors of the standards catalog.
 [reuse-workflows]: https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows
 [reusing-workflow-configurations]: https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations
 [semver]: https://semver.org/
+[trigger-from-workflow]: https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
 [zizmor-release-v1-30-0]: https://github.com/zizmorcore/zizmor/releases/tag/v1.30.0
