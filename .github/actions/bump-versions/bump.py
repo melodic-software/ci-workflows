@@ -1532,8 +1532,19 @@ def tag_cooldown(rows: list[dict[str, Any]]) -> int:
 
 
 def has_major(rows: list[dict[str, Any]]) -> bool:
-    """Whether any row moves to a release of class major, a 0.x minor move included."""
-    return any(change_class(r["current"], r["target"]) == "major" for r in rows)
+    """Whether any row changes its first version number.
+
+    A 0.x minor move is class major for the cooldown (change_class) and is still armed: no
+    review step reads it in the repositories this action runs in, so holding it only adds a
+    merge by hand after the same checks.
+    """
+    for row in rows:
+        cur, new = parse_version(row["current"]), parse_version(row["target"])
+        if cur is None or new is None:
+            raise BumpError(f"cannot classify {row['current']} -> {row['target']}")
+        if cur[0] != new[0]:
+            return True
+    return False
 
 
 def disarm_auto_merge(pr: int, repo: str) -> None:
@@ -1564,8 +1575,9 @@ def arm_auto_merge(
 
     A tag's commit date (and the module proxy's .info Time for a git-sourced module) is set
     by whoever made the commit, so for those sources the cooldown also runs from the bot's
-    own commit, whose date GitHub sets. A bump holding a major move is never armed: the org
-    update policy sends majors to review, so its pull request waits for a person.
+    own commit, whose date GitHub sets. A bump whose first version number changes is never
+    armed: the org update policy sends majors to review, so its pull request waits for a
+    person. A 0.x minor move is armed after the major cooldown.
     """
     if has_major(rows):
         disarm_auto_merge(bump["pr"], repo)
