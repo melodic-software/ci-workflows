@@ -6018,7 +6018,10 @@ test("the extract step names the data files the job left out, and a count its li
 // Binary files (claude-code-plugins#13097's fixtures.tar.gz archives): the
 // full-diff step names the files in scope numstat counts no lines for, and
 // the extract step records them in the coverage without changing a count.
-test("the full-diff step names the binary files in scope, in every leg", () => {
+// Content alone decides: the head's .gitattributes neither turns a text
+// lockfile it marks -diff into a binary file (ci-workflows#1109) nor hides
+// a binary file it marks diff, whatever the path is named.
+test("the full-diff step names the binary files in scope by content, not the head's .gitattributes, in every leg", () => {
   const { spawnSync } = require("node:child_process");
   const git = (cwd, ...args) => {
     const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -6039,6 +6042,7 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
   write("a/fixtures.tar.gz", gz(1));
   write("gone.bin", gz(9));
   write("src/a.js", "a1\n");
+  write("pkg/package-lock.json", '{"lockfileVersion":3}\n');
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "base");
   const base = git(origin, "rev-parse", "HEAD");
@@ -6046,6 +6050,14 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
   write("b/fixtures.tar.gz", gz(3));
   write("odd name.bin", gz(4));
   write("src/a.js", "a2\n");
+  write(
+    ".gitattributes",
+    "package-lock.json -diff\n*.lock -diff\nforced.png diff\nnotes.txt -diff\n",
+  );
+  write("pkg/package-lock.json", '{"lockfileVersion":3,"packages":{}}\n');
+  write("notes.txt", "plain text the head marks -diff\n");
+  write("x/yarn.lock", gz(5));
+  write("forced.png", gz(6));
   fs.rmSync(path.join(origin, "gone.bin"));
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "head");
@@ -6079,11 +6091,13 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
     const out = fs.readFileSync(output, "utf8");
     // Every file stays in scope; the deleted one is on no list, and the
     // binary with a space in its name is counted in scope but not named.
-    assert.match(out, /^files=4$/mu, job.name);
-    assert.match(out, /^binary=2$/mu, job.name);
+    // The -diff lockfile and text file are text; the binary named like a
+    // lockfile and the binary marked diff are named.
+    assert.match(out, /^files=9$/mu, job.name);
+    assert.match(out, /^binary=4$/mu, job.name);
     assert.equal(
       fs.readFileSync(path.join(work, ".claude-lane/binary-files.txt"), "utf8"),
-      "a/fixtures.tar.gz\nb/fixtures.tar.gz\n",
+      "a/fixtures.tar.gz\nb/fixtures.tar.gz\nforced.png\nx/yarn.lock\n",
       job.name,
     );
     assert.equal(

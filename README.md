@@ -1796,7 +1796,10 @@ with:
 
 **Binary files.** A whole review names the files in scope that
 `git diff --numstat` counts no lines for (`-<TAB>-`), at a path of letters,
-digits and `._/@+-`, as `binary_files` in its coverage. They stay in the diff,
+digits and `._/@+-`, as `binary_files` in its coverage. Content alone decides:
+the job reads attributes from the empty tree, so the head's `.gitattributes`
+neither lists a text file it marks `-diff` (a lockfile) nor hides a binary file
+it marks `diff`. They stay in the diff,
 the file list and the file total, so a review that leaves them unread is still
 `partial`; its reason names the first 10
 (`; <n> binary file(s) not reviewable as text: <path>, ... and <m> more`).

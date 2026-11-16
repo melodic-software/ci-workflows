@@ -1501,12 +1501,18 @@ jobs:
           files="$(git diff --name-only --find-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" | tee "$FILE_LIST" | wc -l | tr -d ' ')"
           # Binary files in scope: those numstat counts no lines for (`-<TAB>-`;
           # no --text here), named in $binary_list for the review summary. The
-          # diff above holds them as text no review reads. Only plain paths
-          # are named, and a failure names none.
+          # diff above holds them as text no review reads. Attributes come from
+          # the empty tree, so content alone decides: the head's .gitattributes
+          # can neither make a text file it marks -diff (a lockfile) binary nor
+          # hide a binary file it marks diff. Only plain paths are named, and a
+          # failure names none.
           binary_list=.claude-lane/binary-files.txt
-          binary="$(git diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
+          binary="$(git --attr-source="$(git hash-object -t tree /dev/null)" diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
             awk -F '\t' 'NF == 3 && $1 == "-" && $2 == "-" && $3 ~ /^[A-Za-z0-9._\/@+-]+$/ && length($3) <= 500 { print $3 }' |
-            tee "$binary_list" | wc -l | tr -d ' ')" || binary=0
+            tee "$binary_list" | wc -l | tr -d ' ')" || {
+            echo "::warning::The binary-file list failed; no binary file is named."
+            binary=0
+          }
           left=""
           if [ "${#data[@]}" -gt 0 ]; then
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."
@@ -4193,12 +4199,18 @@ jobs:
           files="$(git diff --name-only --find-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" | tee "$FILE_LIST" | wc -l | tr -d ' ')"
           # Binary files in scope: those numstat counts no lines for (`-<TAB>-`;
           # no --text here), named in $binary_list for the review summary. The
-          # diff above holds them as text no review reads. Only plain paths
-          # are named, and a failure names none.
+          # diff above holds them as text no review reads. Attributes come from
+          # the empty tree, so content alone decides: the head's .gitattributes
+          # can neither make a text file it marks -diff (a lockfile) binary nor
+          # hide a binary file it marks diff. Only plain paths are named, and a
+          # failure names none.
           binary_list=.claude-lane/binary-files.txt
-          binary="$(git diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
+          binary="$(git --attr-source="$(git hash-object -t tree /dev/null)" diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
             awk -F '\t' 'NF == 3 && $1 == "-" && $2 == "-" && $3 ~ /^[A-Za-z0-9._\/@+-]+$/ && length($3) <= 500 { print $3 }' |
-            tee "$binary_list" | wc -l | tr -d ' ')" || binary=0
+            tee "$binary_list" | wc -l | tr -d ' ')" || {
+            echo "::warning::The binary-file list failed; no binary file is named."
+            binary=0
+          }
           left=""
           if [ "${#data[@]}" -gt 0 ]; then
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."
@@ -6858,12 +6870,18 @@ jobs:
           files="$(git diff --name-only --find-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" | tee "$FILE_LIST" | wc -l | tr -d ' ')"
           # Binary files in scope: those numstat counts no lines for (`-<TAB>-`;
           # no --text here), named in $binary_list for the review summary. The
-          # diff above holds them as text no review reads. Only plain paths
-          # are named, and a failure names none.
+          # diff above holds them as text no review reads. Attributes come from
+          # the empty tree, so content alone decides: the head's .gitattributes
+          # can neither make a text file it marks -diff (a lockfile) binary nor
+          # hide a binary file it marks diff. Only plain paths are named, and a
+          # failure names none.
           binary_list=.claude-lane/binary-files.txt
-          binary="$(git diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
+          binary="$(git --attr-source="$(git hash-object -t tree /dev/null)" diff --numstat --no-renames --diff-filter=d "$base" "$HEAD_SHA" "${only[@]}" |
             awk -F '\t' 'NF == 3 && $1 == "-" && $2 == "-" && $3 ~ /^[A-Za-z0-9._\/@+-]+$/ && length($3) <= 500 { print $3 }' |
-            tee "$binary_list" | wc -l | tr -d ' ')" || binary=0
+            tee "$binary_list" | wc -l | tr -d ' ')" || {
+            echo "::warning::The binary-file list failed; no binary file is named."
+            binary=0
+          }
           left=""
           if [ "${#data[@]}" -gt 0 ]; then
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."

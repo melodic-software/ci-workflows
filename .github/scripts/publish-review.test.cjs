@@ -760,6 +760,20 @@ test("a partial review still posts the findings it made inline", async () => {
   );
 });
 
+// A binary file on the list never makes a review partial by itself: only a
+// read count short of the scope does (ci-workflows#1109).
+test("a review that read every file is complete with a binary file in scope", async () => {
+  const coverage = { read: 2, changed: 2, binary_files: ["img/logo.png"] };
+  const { writes, log } = await publish({
+    KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
+  });
+  assert.deepEqual(log.failed, []);
+  assert.equal(
+    writes[1][1].body.split("\n")[2],
+    `**claude-review** reviewed \`${HEAD}\`: read 2 of 2 changed file(s); 1 finding(s), 1 as inline comments.`,
+  );
+});
+
 // A generated data file the job left out of the scope is named in the
 // coverage, so the complete review and the shadow report both say which file
 // no one reviewed; the completion notice, which merge gates parse, is unchanged.
