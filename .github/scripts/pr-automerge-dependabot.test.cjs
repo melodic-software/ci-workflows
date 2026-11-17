@@ -1013,6 +1013,40 @@ test("a grouped update whose Updates lines name its versions arms", async () => 
   assert.equal(armCalls.length, 1);
 });
 
+test("a grouped update whose body was cut off after its table arms", async () => {
+  const checkout = { ...setupDotnet, dependencyName: "actions/checkout" };
+  const { armCalls, notices } = await runGate({
+    updates: [setupDotnet, checkout],
+    title:
+      "build: bump the vendor-actions group across 1 directory with 2 updates",
+    body: [
+      "| Package | From | To |",
+      "| --- | --- | --- |",
+      "| [actions/setup-dotnet](https://github.com/actions/setup-dotnet) | `6.0.0` | `6.1.0` |",
+      "| [actions/checkout](https://github.com/actions/checkout) | `6.0.0` | `6.1.0` |",
+      "",
+      "Updates `actions/setup-dotnet` from 6.0.0 to 6.1.0",
+    ].join("\n"),
+  });
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("a table row the metadata lacks skips", async () => {
+  assertSkipped(
+    await runGate({
+      updates: [setupDotnet],
+      title:
+        "build: bump the vendor-actions group across 1 directory with 2 updates",
+      body: [
+        "| [actions/setup-dotnet](https://github.com/actions/setup-dotnet) | `6.0.0` | `6.1.0` |",
+        "| [actions/checkout](https://github.com/actions/checkout) | `5.0.0` | `6.0.0` |",
+      ].join("\n"),
+    }),
+    /metadata does not include actions\/checkout from 5\.0\.0 to 6\.0\.0/u,
+  );
+});
+
 test("a title naming other versions than the metadata skips and disarms", async () => {
   const result = await runGate({
     updates: [setupDotnet],

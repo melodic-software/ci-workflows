@@ -41,7 +41,9 @@ function breaksBelowOne(update, own) {
 
 // The metadata comes from the commit message, the title and body from the
 // PR; both are Dependabot's, so a disagreement means one was edited. A
-// grouped PR names its updates in `Updates` lines.
+// grouped PR names its updates in a table and again in `Updates` lines;
+// GitHub cuts a long body off at 65,535 characters, which drops the last
+// `Updates` lines of a large group, so the table at the top counts too.
 function metadataMismatch(pr, updates) {
   const claimed = new Set();
   const title = /\bbump (\S+) from (\S+) to (\S+)/iu.exec(
@@ -52,6 +54,11 @@ function metadataMismatch(pr, updates) {
     /^Updates `([^`]+)` from (\S+) to (\S+)\s*$/gmu,
   )) {
     claimed.add(`${line[1]} from ${line[2]} to ${line[3]}`);
+  }
+  for (const row of String(pr.body ?? "").matchAll(
+    /^\| \[([^\]]+)\]\([^)]*\) \| `([^`]+)` \| `([^`]+)` \|\s*$/gmu,
+  )) {
+    claimed.add(`${row[1]} from ${row[2]} to ${row[3]}`);
   }
   const actual = new Set();
   for (const update of updates) {
@@ -64,11 +71,11 @@ function metadataMismatch(pr, updates) {
   }
   for (const entry of actual) {
     if (!claimed.has(entry))
-      return `the title and Updates lines do not name ${entry}`;
+      return `the title, table and Updates lines do not name ${entry}`;
   }
   for (const entry of claimed) {
     if (!actual.has(entry))
-      return `the metadata does not include ${entry}, which the title or an Updates line names`;
+      return `the metadata does not include ${entry}, which the title, a table row or an Updates line names`;
   }
   return "";
 }
