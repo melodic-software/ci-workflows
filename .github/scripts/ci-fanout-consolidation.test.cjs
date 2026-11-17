@@ -1,10 +1,12 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
 const { evaluate } = require("./actions-expression.cjs");
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 const ciWorkflowPath = path.join(
@@ -427,22 +429,40 @@ test("pr-require-checks.yml consolidates the hygiene composites into the checks 
   );
 });
 
+// Tracked files only: a package installed under .github (node_modules) ships
+// workflows of its own that this repository never runs.
 function yamlFilesUnder(directory) {
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .flatMap((entry) => {
-      const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        return yamlFilesUnder(entryPath);
-      }
-      return /\.ya?ml$/u.test(entry.name) ? [entryPath] : [];
-    })
+  return execFileSync("git", ["-C", directory, "ls-files", "-z"], {
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter((file) => /\.ya?ml$/u.test(file))
+    .map((file) => path.join(directory, file))
     .sort();
 }
 
+const movingLabels = /\b(?:ubuntu|windows)-latest\b/u;
+
+test("the label check reads tracked files, not packages installed under .github", () => {
+  const root = makeTemporaryDirectory("ci-fanout-labels-");
+  for (const file of [
+    ".github/workflows/tracked.yml",
+    ".github/actions/pkg/node_modules/dep/.github/workflows/ci.yml",
+  ]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), "runs-on: ubuntu-latest\n");
+  }
+  execFileSync("git", ["-C", root, "init", "-q"]);
+  execFileSync("git", ["-C", root, "add", ".github/workflows/tracked.yml"]);
+  const githubRoot = path.join(root, ".github");
+  const offenders = yamlFilesUnder(githubRoot)
+    .filter((file) => movingLabels.test(fs.readFileSync(file, "utf8")))
+    .map((file) => path.relative(githubRoot, file));
+  assert.deepEqual(offenders, [path.join("workflows", "tracked.yml")]);
+});
+
 test("hosted workflow contracts use explicit GA operating-system labels", () => {
   const githubRoot = path.join(repositoryRoot, ".github");
-  const movingLabels = /\b(?:ubuntu|windows)-latest\b/u;
   const files = yamlFilesUnder(githubRoot);
   assert.ok(files.length > 0, "the .github tree must not be empty");
   for (const file of files) {
