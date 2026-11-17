@@ -192,6 +192,8 @@ jobs:
           EXPECTED_OWNER: melodic-software
           EXPECTED_REPOSITORIES: ${{ needs.build-sync-matrix.outputs.expected-repositories }}
           TRUST_ROOT_REPOSITORIES: melodic-software/azure-iac
+          # The calling repository, the sync source: the App opens its re-pin PR there.
+          SOURCE_REPOSITORY: ${{ github.repository }}
           GITHUB_API_URL: ${{ github.api_url }}
           INSTALLATION_ID: ${{ steps.token.outputs.installation-id }}
         with:
@@ -379,16 +381,20 @@ jobs:
             if (reachableTrustRoots.length > 0) {
               fail(`trust root ${reachableTrustRoots.join(', ')} is selected on installation ${expectedInstallationId}; remove it under Repository access before any sync runs`);
             }
-            // A missing target fails only its own sync job; excess access is reported, never blocking.
+            // The sync source is expected access; any other excess is reported, never blocking.
+            const sourceRepository = required('SOURCE_REPOSITORY');
+            const overGranted = excess.filter((repository) => repository !== sourceRepository);
+            // A missing target fails only its own sync job.
             core.setOutput('unreachable-repositories', JSON.stringify(missing));
             // One annotation per kind: GitHub caps warning annotations per step.
             if (missing.length > 0) {
               core.warning(`Standards sync App cannot reach manifest targets ${missing.join(', ')}; their sync jobs will fail.`);
             }
-            if (excess.length > 0) {
-              core.warning(`Standards sync App over-grant: ${excess.join(', ')} selected on installation ${expectedInstallationId} but not manifest targets. Remove them under Repository access.`);
+            if (overGranted.length > 0) {
+              core.warning(`Standards sync App over-grant: ${overGranted.join(', ')} selected on installation ${expectedInstallationId} but not manifest targets. Remove them under Repository access.`);
             }
-            core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${excess.length} over-granted).`);
+            const sourceNote = overGranted.length < excess.length ? `; sync source ${sourceRepository} selected as expected` : '';
+            core.info(`Attested ${expectedSet.size - missing.length} of ${expectedSet.size} manifest targets for ${expectedSlug} (${overGranted.length} over-granted${sourceNote}).`);
 
   sync:
     name: Sync (${{ matrix.repo }})
