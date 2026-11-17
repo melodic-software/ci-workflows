@@ -83,6 +83,10 @@ inputs:
     description: As run-claude-cli's.
     required: false
     default: "true"
+  live-log:
+    description: As run-claude-cli's, for each chunk's leg.
+    required: false
+    default: "true"
   plugin-dirs:
     description: As run-claude-cli's.
     required: false
@@ -203,6 +207,7 @@ runs:
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
+        LANE_LIVE_LOG: ${{ inputs.live-log }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
         LANE_ADD_DIRS: ${{ inputs.add-dirs }}
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}

@@ -23,6 +23,8 @@ const {
   CREDENTIAL_VARIABLES,
   FILE_COMMAND_VARIABLES,
   LaneError,
+  LIVE_VALUE_CHARS,
+  LIVE_WITHHELD,
   NPM_REGISTRY,
   SANDBOX_SETTINGS,
   SIGNING_KEY_FINGERPRINT,
@@ -296,6 +298,8 @@ async function runCase({
   spawn = withoutBwrap,
   maxStdoutBytes,
   now,
+  liveLog = false,
+  write,
 }) {
   caseNumber += 1;
   const dir = path.join(root, `case-${caseNumber}`);
@@ -353,8 +357,15 @@ async function runCase({
     jsonSchema: '{"type":"object"}',
     workDir: dir,
     runId: "123",
+    liveLog,
   };
-  const outcome = await runLeg(config, { baseEnv, spawn, maxStdoutBytes, now });
+  const outcome = await runLeg(config, {
+    baseEnv,
+    spawn,
+    maxStdoutBytes,
+    now,
+    write,
+  });
   const callLines = fs.existsSync(calls)
     ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean)
     : [];
@@ -3181,4 +3192,242 @@ test("a rejected window below 0.70 still gets the warning line", async () => {
     "::warning title=run-claude-cli usage::AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN is near a subscription usage limit: " +
       "window=seven_day utilization=0.5 status=rejected resets=2026-01-08T00:00:00Z",
   );
+});
+
+const TURNS = [
+  { type: "system", subtype: "init", tools: ["SYSTEM-TEXT"] },
+  {
+    type: "assistant",
+    message: {
+      id: "m1",
+      content: [
+        { type: "thinking", thinking: "THINKING-TEXT" },
+        { type: "text", text: "I will check the tree.\n\nThen fix it." },
+      ],
+    },
+  },
+  {
+    type: "assistant",
+    message: {
+      id: "m1",
+      content: [
+        {
+          type: "tool_use",
+          id: "t1",
+          name: "Bash",
+          input: { command: "git status", description: "Show status" },
+        },
+      ],
+    },
+  },
+  {
+    type: "user",
+    message: {
+      content: [
+        { type: "tool_result", tool_use_id: "t1", content: "TOOL-RESULT-TEXT" },
+        { type: "text", text: "USER-TEXT" },
+      ],
+    },
+  },
+  {
+    type: "assistant",
+    message: {
+      id: "m2",
+      content: [
+        { type: "redacted_thinking", data: "REDACTED-DATA" },
+        {
+          type: "tool_use",
+          id: "t2",
+          name: "Read",
+          input: { file_path: "/w/a.txt", limit: 20 },
+        },
+      ],
+    },
+  },
+  {
+    type: "user",
+    message: {
+      content: [{ type: "tool_result", tool_use_id: "t2", content: "OTHER-RESULT" }],
+    },
+  },
+  { type: "assistant", message: { id: "m3", content: [{ type: "text", text: "Done." }] } },
+  result({ result: "FINAL-RESULT-TEXT" }),
+];
+
+async function liveCase(messages, options = {}) {
+  const printed = [];
+  const outcome = await runCase({
+    sub: messages,
+    subExit: 0,
+    liveLog: true,
+    write: (text) => printed.push(text),
+    ...options,
+  });
+  return { ...outcome, printed: printed.join("").split("\n").filter(Boolean) };
+}
+
+test("the live view prints the agent's text lines and tool calls with their turn, and nothing else", async () => {
+  const { printed, outputs } = await liveCase(TURNS);
+  assert.deepEqual(printed, [
+    "[turn 1] I will check the tree.",
+    "[turn 1] Then fix it.",
+    "[turn 1] tool Bash command=git status description=Show status",
+    "[turn 2] tool Read file_path=/w/a.txt limit=20",
+    "[turn 3] Done.",
+  ]);
+  const all = printed.join("\n");
+  for (const hidden of [
+    "SYSTEM-TEXT",
+    "THINKING-TEXT",
+    "REDACTED-DATA",
+    "TOOL-RESULT-TEXT",
+    "USER-TEXT",
+    "OTHER-RESULT",
+    "FINAL-RESULT-TEXT",
+  ]) {
+    assert.equal(all.includes(hidden), false, hidden);
+  }
+  assert.equal(outputs["lane-class"], "");
+});
+
+test("the live view never prints an assistant message the CLI wrote as an error", async () => {
+  for (const messages of [CREDIT_STOP, AUTH, SESSION_LIMIT]) {
+    const { printed } = await liveCase(messages, { subExit: 1 });
+    assert.deepEqual(printed, []);
+  }
+});
+
+test("with live-log false the leg prints nothing", async () => {
+  const printed = [];
+  await runCase({ sub: TURNS, subExit: 0, write: (text) => printed.push(text) });
+  assert.deepEqual(printed, []);
+});
+
+test("each tool argument value is cut to the fixed length with newlines collapsed", async () => {
+  const command = `echo one\r\necho two\n${"x".repeat(500)}`;
+  const { printed } = await liveCase([
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "Bash",
+            input: { command, options: { nested: "a\nb" } },
+          },
+        ],
+      },
+    },
+    result({}),
+  ]);
+  const flat = command.replace(/[\r\n]+/gu, " ");
+  assert.equal(LIVE_VALUE_CHARS, 200);
+  assert.deepEqual(printed, [
+    `[turn 1] tool Bash command=${flat.slice(0, 200)}... options={"nested":"a\\nb"}`,
+  ]);
+});
+
+test("a live line holding a credential prints as the placeholder, even when the cut hides it", async () => {
+  const straddle = `${"y".repeat(LIVE_VALUE_CHARS - 5)}${TOKEN}`;
+  assert.equal(holdsCredential(straddle.slice(0, LIVE_VALUE_CHARS), [TOKEN]), false);
+  const { printed } = await liveCase([
+    {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: `safe line\nthe token is ${TOKEN}` },
+          { type: "text", text: "a key sk-ant-api03-abcdefghij here" },
+          { type: "tool_use", name: "Bash", input: { command: straddle } },
+          { type: "tool_use", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    },
+    result({}),
+  ]);
+  assert.deepEqual(printed, [
+    "[turn 1] safe line",
+    `[turn 1] ${LIVE_WITHHELD}`,
+    `[turn 1] ${LIVE_WITHHELD}`,
+    `[turn 1] ${LIVE_WITHHELD}`,
+    "[turn 1] tool Bash command=ls",
+  ]);
+  assert.equal(holdsCredential(printed.join("\n"), [TOKEN]), false);
+  assert.equal(printed.join("\n").includes(TOKEN.slice(0, 5)), false);
+});
+
+test("malformed assistant events print what they can and the leg still ends normally", async () => {
+  const { printed, outputs, records } = await liveCase([
+    { type: "assistant" },
+    { type: "assistant", message: null },
+    { type: "assistant", message: { content: "not a list" } },
+    {
+      type: "assistant",
+      message: {
+        content: [
+          null,
+          {},
+          { type: "text", text: 5 },
+          { type: "tool_use", name: 7, input: null },
+          { type: "tool_use", input: ["a"] },
+        ],
+      },
+    },
+    null,
+    "a string",
+    result({}),
+  ]);
+  assert.deepEqual(printed, ["[turn 1] tool 7", "[turn 1] tool "]);
+  assert.equal(outputs["lane-class"], "");
+  assert.equal(records[0].class, "");
+});
+
+test("run prints the live view inside the stop-commands block, by default", async () => {
+  const dir = path.join(root, "run-live");
+  const env = runEnv(dir, { LANE_API_KEY: "", LANE_SUBSCRIPTION_TOKEN: TOKEN });
+  env.FAKE_SUB = legFile(dir, "sub.jsonl", TURNS);
+  env.FAKE_SUB_EXIT = "0";
+  const lines = await captureStdout(() => run(env));
+  const opened = lines.findIndex((l) => l.startsWith("::stop-commands::"));
+  const closed = lines.indexOf(`::${lines[opened].slice("::stop-commands::".length)}::`);
+  const live = lines.map((l, i) => [l, i]).filter(([l]) => l.startsWith("[turn "));
+  assert.equal(live.length, 5);
+  for (const [line, at] of live) assert.ok(at > opened && at < closed, line);
+
+  const offDir = path.join(root, "run-live-off");
+  const offEnv = runEnv(offDir, {
+    LANE_API_KEY: "",
+    LANE_SUBSCRIPTION_TOKEN: TOKEN,
+    LANE_LIVE_LOG: "false",
+  });
+  offEnv.FAKE_SUB = legFile(offDir, "sub.jsonl", TURNS);
+  offEnv.FAKE_SUB_EXIT = "0";
+  const offLines = await captureStdout(() => run(offEnv));
+  assert.equal(offLines.some((l) => l.startsWith("[turn ")), false);
+});
+
+test("readConfig turns the live view on by default, off with false, and refuses other values", async () => {
+  for (const value of [undefined, "", "true", " true "]) {
+    assert.equal(readConfig(configEnv({ LANE_LIVE_LOG: value })).liveLog, true, String(value));
+  }
+  assert.equal(readConfig(configEnv({ LANE_LIVE_LOG: "false" })).liveLog, false);
+  for (const value of ["no", "False", "0"]) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_LIVE_LOG: value })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message === `live-log ${JSON.stringify(value)} is not true, false or empty`,
+      value,
+    );
+  }
+});
+
+test("the live-log input defaults to true and reaches the run step of both actions", async () => {
+  const cli = readAction("run-claude-cli");
+  assert.equal(cli.inputs["live-log"].default, "true");
+  const step = cli.runs.steps.find((s) => s.id === "run");
+  assert.equal(step.env.LANE_LIVE_LOG, "${{ inputs.live-log }}");
+  const chunks = readAction("run-review-chunks");
+  assert.equal(chunks.inputs["live-log"].default, "true");
+  const loop = chunks.runs.steps.find((s) => s.id === "loop");
+  assert.equal(loop.env.LANE_LIVE_LOG, "${{ inputs.live-log }}");
 });

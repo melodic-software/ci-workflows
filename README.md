@@ -806,6 +806,18 @@ consumer to audit it.
   `sandbox: false`, which passes no settings and skips the socat check, so
   that Bash runs unsandboxed as the runner user.
 
+  **Live view.** `live-log` (`true` by default) prints the agent's text and
+  each tool call to the step log as the CLI emits them, inside the step's
+  `::stop-commands::` block, so no printed line runs as a workflow command.
+  Each line starts with `[turn <n>]`; a tool call prints as
+  `tool <name> <arg>=<value>`, each value cut to 200 characters with
+  newlines collapsed. Tool results, thinking, system and user messages, the
+  final result text and an assistant message the CLI wrote as an error never
+  print, and a line holding the leg's credential or an Anthropic key shape
+  prints as `[line withheld: it matched the credential check]`. A lane whose
+  agent reads private content sets `live-log: false`; run-review-chunks
+  passes the same input to every chunk's leg.
+
   **Loopback key proxy.** By default the managed settings must pin
   `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that
   routes the leg through a key proxy on the runner's loopback, so the leg
