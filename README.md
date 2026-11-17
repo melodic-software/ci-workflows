@@ -1306,8 +1306,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   views of the installation's repositories. It compares them with the full
   unfiltered manifest: a target the App cannot reach fails only that target's
   sync job, and a selected repository that is not a target is reported as an
-  over-grant warning without blocking the sync, unless it is the trust root
-  `melodic-software/azure-iac`, which fails the whole run. A caller's `targets` filter
+  over-grant warning without blocking the sync, unless it is the calling
+  repository (the sync source, where the App opens its re-pin PR), which is
+  expected access, or the trust root `melodic-software/azure-iac`, which fails
+  the whole run even as the caller. A caller's `targets` filter
   limits materialization only; it never narrows this installation-scope
   comparison. After that barrier, the workflow scopes a different GitHub App
   token to each target and opens a signed, human-reviewed PR enumerating every

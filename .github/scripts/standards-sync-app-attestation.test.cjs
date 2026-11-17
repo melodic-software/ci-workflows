@@ -107,6 +107,7 @@ async function runAttestation({
     GITHUB_API_URL: "https://api.github.com",
     INSTALLATION_ID: "144867070",
     TRUST_ROOT_REPOSITORIES: "melodic-software/azure-iac",
+    SOURCE_REPOSITORY: "melodic-software/standards",
     ...env,
   });
   try {
@@ -327,6 +328,77 @@ test("the workflow names azure-iac as a trust root", () => {
     workflow,
     /TRUST_ROOT_REPOSITORIES: melodic-software\/azure-iac\n/u,
   );
+});
+
+test("the workflow passes the calling repository as the sync source", () => {
+  assert.match(
+    workflow,
+    /SOURCE_REPOSITORY: \$\{\{ github\.repository \}\}\n/u,
+  );
+});
+
+test("the selected sync source is expected access, not an over-grant", async () => {
+  const result = await runAttestation({
+    pages: [
+      {
+        total_count: 3,
+        repositories: [
+          repository("repository-1", 1),
+          repository("repository-2", 2),
+          repository("standards", 3),
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.info, [
+    "Attested 2 of 2 manifest targets for melodic-standards-sync (0 over-granted; sync source melodic-software/standards selected as expected).",
+  ]);
+});
+
+test("a trust root fails the attestation even as the sync source", async () => {
+  await assert.rejects(
+    runAttestation({
+      env: { SOURCE_REPOSITORY: "melodic-software/azure-iac" },
+      pages: [
+        {
+          total_count: 3,
+          repositories: [
+            repository("repository-1", 1),
+            repository("repository-2", 2),
+            repository("azure-iac", 3),
+          ],
+        },
+      ],
+    }),
+    /trust root melodic-software\/azure-iac is selected on installation 144867070/u,
+  );
+});
+
+test("excess beside the sync source is still an over-grant", async () => {
+  const result = await runAttestation({
+    pages: [
+      {
+        total_count: 4,
+        repositories: [
+          repository("repository-1", 1),
+          repository("repository-2", 2),
+          repository("standards", 3),
+          repository("excess", 4),
+        ],
+      },
+    ],
+  });
+  assert.equal(result.warnings.length, 1);
+  assert.match(
+    result.warnings[0],
+    /over-grant: melodic-software\/excess selected on installation 144867070/u,
+  );
+  assert.doesNotMatch(result.warnings[0], /melodic-software\/standards/u);
+  assert.deepEqual(result.info, [
+    "Attested 2 of 2 manifest targets for melodic-standards-sync (1 over-granted; sync source melodic-software/standards selected as expected).",
+  ]);
 });
 
 test("equal-count access with one swap reports both the unreachable target and the over-grant", async () => {
