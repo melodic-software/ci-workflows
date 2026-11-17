@@ -53,6 +53,8 @@ description: >-
   fallback job adds one warning annotation naming the secret, so a green
   run still shows the dead token; that leg's summary row says the fallback
   job runs instead, or, with `handoff-only`, that no further leg runs.
+  Unless `live-log` is `false`, the step log shows the agent's text and
+  tool calls as they arrive, never a tool result.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
@@ -150,6 +152,18 @@ inputs:
       the runner user; set it only when the lane's Bash needs other hosts,
       for example a nested `claude` or `npm ci`. Any other value fails the
       step.
+    required: false
+    default: "true"
+  live-log:
+    description: >-
+      `true` (the default) prints the agent's text and each tool call to the
+      step log as the CLI emits them, one line each, prefixed with the turn
+      number; a tool call prints as `tool <name> <arg>=<value>`, each value
+      cut to 200 characters with newlines collapsed. Tool results, thinking,
+      system and user messages and the final result text never print, and a
+      line holding the leg's credential or an Anthropic key shape prints as
+      a placeholder. `false` prints none of it; set it for a lane whose agent
+      reads private content. Any other value fails the step.
     required: false
     default: "true"
   plugin-dirs:
@@ -348,6 +362,7 @@ runs:
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
+        LANE_LIVE_LOG: ${{ inputs.live-log }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
         LANE_ADD_DIRS: ${{ inputs.add-dirs }}
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}

@@ -67,10 +67,17 @@
 //     api-key leg (managed-settings.cjs, readConfig).
 //   - Secret names are derived from the role, or are FALLBACK_SECRET, and
 //     never taken from input.
-//   - The CLI's stdout is captured in memory, read line by line only for a
-//     rejected rate_limit_event, and written to files only after the leg
-//     exits. Its stderr and closed-pattern tokens reach the job log,
-//     inside ::stop-commands::; the job summary shows only closed tokens.
+//   - The CLI's stdout is captured in memory, read line by line for a
+//     rejected rate_limit_event and, unless the live-log input is `false`,
+//     for the live view, and written to files only after the leg exits. The
+//     live view prints only assistant text lines and tool calls (each
+//     argument value cut to LIVE_VALUE_CHARS, newlines collapsed), each
+//     prefixed with its turn; a line holding a credential prints as
+//     LIVE_WITHHELD. Never a tool result, thinking block, system or user
+//     message, the result text, or an assistant message the CLI wrote as an
+//     error. The CLI's stderr, the live view and closed-pattern tokens reach
+//     the job log, inside ::stop-commands::; the job summary shows only
+//     closed tokens.
 //   - The log file is written only after a scan finds no credential in it.
 //     It alone keeps a CLI-authored error line. The execution file is
 //     scanned the same way and kept either way, since callers parse it;
@@ -144,6 +151,8 @@ const FILE_COMMAND_VARIABLES = [
 // The most CLI stdout the leg may produce; past it the leg is killed and ends
 // with class `other`.
 const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
+const LIVE_VALUE_CHARS = 200;
+const LIVE_WITHHELD = "[line withheld: it matched the credential check]";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 // Release manifest location and signing key, as
 // https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing
@@ -266,14 +275,18 @@ class LaneError extends Error {
 
 // The sandbox input: `true` or empty turns it on, `false` turns it off, and
 // any other value fails the step.
-function sandboxEnabled(env) {
-  const value = (env.LANE_SANDBOX ?? "").trim();
+function switchedOn(env, name, label) {
+  const value = (env[name] ?? "").trim();
   if (!["", "true", "false"].includes(value)) {
     throw new LaneError(
-      `sandbox ${JSON.stringify(value)} is not true, false or empty`,
+      `${label} ${JSON.stringify(value)} is not true, false or empty`,
     );
   }
   return value !== "false";
+}
+
+function sandboxEnabled(env) {
+  return switchedOn(env, "LANE_SANDBOX", "sandbox");
 }
 
 function required(env, name, pattern, label) {
@@ -388,6 +401,7 @@ function readConfig(env) {
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
     permissionMode,
     sandbox: sandboxEnabled(env),
+    liveLog: switchedOn(env, "LANE_LIVE_LOG", "live-log"),
     watchdogMaxWaitMs: required(
       env,
       "LANE_WATCHDOG_MAX_WAIT_MS",
@@ -888,13 +902,7 @@ function restoreModes(modes) {
 // later event replaces, never stops the leg. Null for every other line.
 function limitWatch(deadlineMs) {
   let pending = null;
-  return (line) => {
-    let message;
-    try {
-      message = JSON.parse(line.toString("utf8"));
-    } catch {
-      return null;
-    }
+  return (message) => {
     const type = message?.type;
     if (type === "assistant" || type === "user") pending = null;
     else if (type === "rate_limit_event") {
@@ -912,6 +920,73 @@ function limitWatch(deadlineMs) {
       return pending;
     }
     return null;
+  };
+}
+
+function parseLine(line) {
+  try {
+    return JSON.parse(line.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function liveValue(value, limit) {
+  const text =
+    typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
+  const flat = text.replace(/[\r\n]+/gu, " ");
+  return limit === undefined || flat.length <= limit
+    ? flat
+    : `${flat.slice(0, limit)}...`;
+}
+
+function toolCallLine(block, limit) {
+  const input =
+    block.input !== null &&
+    typeof block.input === "object" &&
+    !Array.isArray(block.input)
+      ? block.input
+      : {};
+  return [
+    "tool",
+    liveValue(String(block.name ?? ""), limit),
+    ...Object.entries(input).map(
+      ([name, value]) => `${liveValue(name, limit)}=${liveValue(value, limit)}`,
+    ),
+  ].join(" ");
+}
+
+function liveView(write, secretValues) {
+  let turn = 0;
+  let inTurn = false;
+  return (message) => {
+    if (message?.type === "user") inTurn = false;
+    if (message?.type !== "assistant" || typeof message.error === "string") {
+      return;
+    }
+    if (!inTurn) {
+      turn += 1;
+      inTurn = true;
+    }
+    const content = message.message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      let lines = [];
+      if (block?.type === "text" && typeof block.text === "string") {
+        lines = block.text
+          .split(/[\r\n]+/u)
+          .filter((line) => line.trim() !== "")
+          .map((line) => [line, line]);
+      } else if (block?.type === "tool_use") {
+        lines = [[toolCallLine(block), toolCallLine(block, LIVE_VALUE_CHARS)]];
+      }
+      for (const [full, shown] of lines) {
+        const held =
+          holdsCredential(full, secretValues) ||
+          holdsCredential(shown, secretValues);
+        write(`[turn ${turn}] ${held ? LIVE_WITHHELD : shown}\n`);
+      }
+    }
   };
 }
 
@@ -977,6 +1052,7 @@ async function runLeg(
     spawn = spawnAsync,
     now = () => new Date(),
     maxStdoutBytes = MAX_LEG_STDOUT_BYTES,
+    write = (text) => process.stdout.write(text),
   } = {},
 ) {
   const prompt = promptText(config);
@@ -998,6 +1074,8 @@ async function runLeg(
     const waitCapMs = Number(config.watchdogMaxWaitMs);
     let limitResets = null;
     const watch = limitWatch(() => now().getTime() + waitCapMs);
+    const live =
+      config.liveLog === true ? liveView(write, [leg.value]) : () => {};
     const { exitCode, stdout, stopped } = await runChild(
       spawn,
       legCommand(config, readOnly),
@@ -1007,7 +1085,9 @@ async function runLeg(
         timeoutMs: config.legTimeoutMs,
         maxBytes: maxStdoutBytes,
         onLine: (line) => {
-          limitResets = watch(line);
+          const message = parseLine(line);
+          live(message);
+          limitResets = watch(message);
           return limitResets !== null;
         },
       },
@@ -1606,6 +1686,8 @@ module.exports = {
   FALLBACK_SECRET,
   FILE_COMMAND_VARIABLES,
   LaneError,
+  LIVE_VALUE_CHARS,
+  LIVE_WITHHELD,
   MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
   SANDBOX_SETTINGS,
