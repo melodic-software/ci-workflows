@@ -582,11 +582,17 @@ test("a warn-only hit in the reason posts it with a warning", async () => {
 });
 
 // A cost decision binds to the pull request and covers the net diff it was
-// made at: the head of this lane's newest cost hold marker before it.
+// made at: the head of this lane's newest cost hold marker before it. It
+// carries a line link to its owner-decisions row and the owner's words.
+const ROW =
+  "https://github.com/melodic-software/architecture/blob/main/docs/owner-decisions.md#L42";
+const QUOTE = 'verbatim: "approve the larger runner"';
+const recorded = (text) =>
+  `**Decision recorded.** Cost: ${text}\n\nRow: ${ROW}\n${QUOTE}`;
 const decision = ({
   id = 1,
   userId = OWNER_ID,
-  body = "**Decision recorded.** Cost: approve the larger runner.",
+  body = recorded("approve the larger runner."),
   createdAt = "2026-10-23T12:00:00Z",
   type = "User",
   app = null,
@@ -691,9 +697,7 @@ test("a cost decision on the Refs issue that names the pull request keeps the co
   const { core, writes, github } = await apply(costEnv(), {
     pull: refsPull("Refs: #9436\n\n## Summary"),
     issueComments: {
-      9436: [
-        decision({ body: "**Decision recorded.** Cost: approved for #7." }),
-      ],
+      9436: [decision({ body: recorded("approved for #7.") })],
     },
   });
   assert.equal(core.outputs.hold, "false");
@@ -727,7 +731,7 @@ test("a cost decision on the closing issue that names the pull request keeps the
       },
     },
     issueComments: {
-      9436: [decision({ body: "**Decision recorded.** Cost: yes, #7." })],
+      9436: [decision({ body: recorded("yes, #7.") })],
     },
   });
   assert.equal(core.outputs.hold, "false");
@@ -737,9 +741,7 @@ test("a cost decision on the Refs issue that names another pull request still ho
   const { core, writes } = await apply(costEnv(), {
     pull: refsPull("Refs: #9436"),
     issueComments: {
-      9436: [
-        decision({ body: "**Decision recorded.** Cost: approved for #70." }),
-      ],
+      9436: [decision({ body: recorded("approved for #70.") })],
     },
   });
   assert.equal(core.outputs.hold, "true");
@@ -766,13 +768,16 @@ test("a cost decision by anyone but a trusted person still holds", async () => {
 test("an edited, quoted, older or non-cost decision still holds", async () => {
   for (const [name, options] of [
     ["edited", { comments: [decision()], edited: new Set(["IC_1"]) }],
-    [
-      "quoted",
-      { comments: [decision({ body: "> **Decision recorded.** Cost: yes" })] },
-    ],
+    ["quoted", { comments: [decision({ body: `> ${recorded("yes")}` })] }],
     [
       "not a cost decision",
-      { comments: [decision({ body: "**Decision recorded.** Option 2." })] },
+      {
+        comments: [
+          decision({
+            body: `**Decision recorded.** Option 2.\n\n${ROW}\n${QUOTE}`,
+          }),
+        ],
+      },
     ],
     [
       "older than the pull request",
@@ -781,7 +786,7 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
         issueComments: {
           9436: [
             decision({
-              body: "**Decision recorded.** Cost: #7",
+              body: recorded("#7"),
               createdAt: "2026-10-22T00:00:00Z",
             }),
           ],
@@ -794,7 +799,7 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
         pull: refsPull("Refs: #9436"),
         pullNumbers: new Set([7, 9436]),
         issueComments: {
-          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+          9436: [decision({ body: recorded("#7") })],
         },
       },
     ],
@@ -804,7 +809,7 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
         pull: refsPull("Refs: #9436"),
         misnumbered: new Set([9436]),
         issueComments: {
-          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+          9436: [decision({ body: recorded("#7") })],
         },
       },
     ],
@@ -813,7 +818,7 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
       {
         pull: refsPull("Refs: #9436\nRefs: #9437"),
         issueComments: {
-          9436: [decision({ body: "**Decision recorded.** Cost: #7" })],
+          9436: [decision({ body: recorded("#7") })],
         },
       },
     ],
@@ -821,6 +826,65 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
     const { core } = await apply(costEnv(), options);
     assert.equal(core.outputs.hold, "true", name);
   }
+});
+
+test("a cost decision counts only with its owner-decisions row and the owner's words", async () => {
+  const head = "**Decision recorded.** Cost: approve the larger runner.";
+  const pinned = `https://github.com/melodic-software/architecture/blob/${"a".repeat(40)}/docs/owner-decisions.md?plain=1#L7`;
+  const counted = await apply(costEnv(), {
+    comments: [decision({ body: `${head}\n${pinned}\nverbatim:"yes"` })],
+  });
+  assert.equal(counted.core.outputs.hold, "false", "both present");
+  const row = /lacks a link to its row in the owner-decisions record/u;
+  const quote = /lacks the owner's words quoted verbatim/u;
+  for (const [name, body, why] of [
+    ["row missing", `${head}\n${QUOTE}`, row],
+    ["quote missing", `${head}\n${ROW}`, quote],
+    ["row in an HTML comment", `${head}\n<!-- ${ROW} -->\n${QUOTE}`, row],
+    ["quote in an HTML comment", `${head}\n${ROW}\n<!-- ${QUOTE} -->`, quote],
+    ["an empty quote", `${head}\n${ROW}\nverbatim: ""`, quote],
+    [
+      "a row of another record",
+      `${head}\n${ROW.replace("owner-decisions", "decisions")}\n${QUOTE}`,
+      row,
+    ],
+    [
+      "a row with no line",
+      `${head}\n${ROW.replace("#L42", "")}\n${QUOTE}`,
+      row,
+    ],
+    [
+      "both missing",
+      head,
+      /lacks a link to its row in the owner-decisions record \(.*\) and the owner's words quoted verbatim/u,
+    ],
+  ]) {
+    const { core, github } = await apply(costEnv(), {
+      comments: [decision({ body })],
+    });
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(core.infos.join("\n"), why, name);
+    assert.equal(
+      github.calls.some(([n]) => n === "getWorkflowRun"),
+      false,
+      name,
+    );
+  }
+});
+
+test("the newest cost decision lacking a row is not replaced by an older complete one", async () => {
+  const { core } = await apply(costEnv(), {
+    comments: [
+      decision({ id: 1, createdAt: "2026-10-23T12:00:00Z" }),
+      decision({
+        id: 2,
+        createdAt: "2026-10-23T12:30:00Z",
+        body: `**Decision recorded.** Cost: yes.\n${QUOTE}`,
+      }),
+    ],
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.match(core.infos.join("\n"), /lacks a link to its row/u);
 });
 
 test("a carried cost decision leaves only critical-security to hold", async () => {

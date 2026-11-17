@@ -47,6 +47,26 @@ function modelHold(env, core) {
 // linked issue that names `#<number>` and is newer than the pull request. It
 // covers only the net diff it was made at (carryDecision).
 const DECISION_LINE = /^\*\*Decision recorded\.\*\*[ \t]+Cost:/u;
+// What the chosen decision must also carry, outside HTML comments
+// (claude-code-plugins@a287efbe35 .github/scripts/pr-merge/merge-holds.mjs DECISION_ROW,
+// DECISION_QUOTE and decisionGaps): a line link to its row in the
+// owner-decisions record, and the owner's words quoted after `verbatim:`.
+// The record is private, so only the shape is checked.
+const DECISION_ROW =
+  /https:\/\/github\.com\/melodic-software\/architecture\/blob\/(?:main|[0-9a-f]{40})\/docs\/owner-decisions\.md(?:\?plain=1)?#L[1-9][0-9]*/u;
+const DECISION_QUOTE = /(?<![A-Za-z0-9_])verbatim:[ \t]*"[^"\n]*[^" \t\r\n][^"\n]*"/u;
+const DECISION_GAPS = {
+  row: "a link to its row in the owner-decisions record (https://github.com/melodic-software/architecture/blob/<commit or main>/docs/owner-decisions.md#L<line>)",
+  quote: 'the owner\'s words quoted verbatim (verbatim: "<his words>")',
+};
+// What cost decision `body` lacks of DECISION_GAPS, outside HTML comments.
+function decisionGaps(body) {
+  const text = String(body ?? "").replace(HTML_COMMENT, "");
+  return [
+    ...(DECISION_ROW.test(text) ? [] : [DECISION_GAPS.row]),
+    ...(DECISION_QUOTE.test(text) ? [] : [DECISION_GAPS.quote]),
+  ];
+}
 const PULL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { createdAt body closingIssuesReferences(first: 2) { totalCount nodes { number repository { nameWithOwner } } } }
@@ -474,7 +494,12 @@ async function run({ github, context, core, env = process.env }) {
     try {
       const comments = await listPrComments();
       const decision = await costDecided(github, owner, repo, number, env, comments);
-      if (decision)
+      // The chosen decision itself must carry both; an older complete one
+      // never stands in for it.
+      const gaps = decision ? decisionGaps(decision.body) : [];
+      if (gaps.length > 0)
+        result = { carry: false, why: `the recorded cost decision lacks ${gaps.join(" and ")}` };
+      else if (decision)
         result = await carryDecision(github, owner, repo, env, context.runId, decision);
     } catch {
       result = { carry: false, why: "a read failed" };
