@@ -11,7 +11,8 @@
 #   (pr-require-checks.yml)
 # - check-jsonschema, one call per schema family (pr-require-checks.yml,
 #   one of them through pr-run-checks.yml)
-# - zizmor over .github with the regular persona, blocking on any finding
+# - zizmor over the tracked workflows, actions and Dependabot config under
+#   .github with the regular persona, blocking on any finding
 #   (pr-require-checks.yml; pr-audit-workflows.yml)
 # - the reusable workflow_call surface check against the merge base
 #   (pr-require-checks.yml)
@@ -28,9 +29,17 @@ check-cmd: |
   check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml || rc=1
   check-jsonschema --schemafile https://raw.githubusercontent.com/SchemaStore/schemastore/8324c4fe6ccf1698c05d053e8b9d4c4a08c23a1f/src/schemas/json/github-workflow.json .github/workflows/*.yml || rc=1
   check-jsonschema --builtin-schema vendor.github-actions .github/actions/*/action.yml .github/actions/*/*/action.yml || rc=1
-  zizmor --strict-collection --persona=regular --offline .github || rc=1
+  git ls-files -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml' '.github/**/action.yml' '.github/**/action.yaml' '.github/dependabot.yml' '.github/dependabot.yaml' | xargs -0 zizmor --strict-collection --persona=regular --offline || rc=1
   node .github/scripts/check-workflow-call-surface.cjs origin/main melodic-software/ci-workflows || rc=1
   exit "$rc"
+requires:
+  check-cmd:
+    - name: actionlint (the kjanat/actionlint build CI pins)
+      probe: >-
+        sha=$(awk '/^  attestation-source-digest:/{f=1} f && /^    default:/{print $2; exit}' "$REPO_ROOT/.github/actions/actionlint/action.yml") &&
+        [ -n "$sha" ] && bin=$(command -v actionlint) &&
+        grep -qaF "vcs.revision=$sha" "$bin" && grep -qaF "vcs.modified=false" "$bin"
+      hint: "install the kjanat/actionlint release named by the version and sha256 defaults of .github/actions/actionlint/action.yml (https://github.com/kjanat/actionlint/releases)"
 fix-cmd: null
 code-fix-cmd: null
 opt-in: "GitHub Actions workflows present"
@@ -46,4 +55,4 @@ tool-pin:
   zizmor: "1.30.0"
   PSScriptAnalyzer: "1.25.0"
 gates: []
-notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/actionlint/action.yml, .github/actions/check-jsonschema/action.yml, .github/workflows/pr-audit-workflows.yml, .github/actions/psscriptanalyzer/action.yml. The actionlint pin is the kjanat/actionlint fork (actionlint/action.yml), whose version numbers overlap upstream's; upstream rhysd/actionlint fails on the $/ references in every workflow here. CI runs actionlint with -color and zizmor with --format=github --color=never; those change only the output and are left out. zizmor --offline is narrower than CI, which runs the online audits with a GitHub token: a local run spends no GitHub API calls. The workflow schema is fetched from raw.githubusercontent.com, as in CI. The call-surface check compares the HEAD commit, not the working tree, with its merge base against origin/main, where CI uses the pull request base. Invoke-CompositeRunPssa.ps1 fails, not skips, when PSScriptAnalyzer 1.25.0 is missing. Left out because they need a GitHub token, a clone of another repository or a pull request: the actionlint attestation steps (pr-require-checks.yml), the inline actionlint-ShellCheck proof (which writes to RUNNER_TEMP), check-workflow-naming (clones melodic-software/standards), check-managed-files and OSV-Scanner. Glob gaps: CI's actionlint, jsonschema, zizmor and workflow-call-surface lanes also fire on any other .github/** change, on fixtures/composite-action/** and on **/action.yml outside .github (pr-require-checks.yml)."
+notes: "Lint-only: owned by /toolchain:lint. Pins: .github/actions/actionlint/action.yml, .github/actions/check-jsonschema/action.yml, .github/workflows/pr-audit-workflows.yml, .github/actions/psscriptanalyzer/action.yml. The actionlint pin is the kjanat/actionlint fork (actionlint/action.yml), whose version numbers overlap upstream's; upstream rhysd/actionlint fails on the $/ references in every workflow here. The requires probe tells that build apart without a version string: it reads the attestation-source-digest default of actionlint/action.yml, the source commit CI's attestation check requires of the pinned asset, and passes only when the actionlint on PATH embeds that commit as its Go build info vcs.revision with vcs.modified=false. Any other build, stock rhysd/actionlint or a fork built from another commit, embeds another revision or none, and a missing or empty pin reads absent; while the probe fails the whole check-cmd is skipped. CI runs actionlint with -color and zizmor with --format=github --color=never; those change only the output and are left out. CI runs zizmor on .github; check-cmd passes it the tracked workflow, action and Dependabot files under .github instead, the set CI's run collects: a fresh CI checkout has no installed node_modules under .github, while a local one may (typescript.yaml's requires asks for one under .github/actions/check-dependabot-policy), and zizmor does not apply the root .gitignore to a subdirectory input, so given .github it would also audit the third-party workflows inside that node_modules. zizmor --offline is narrower than CI, which runs the online audits with a GitHub token: a local run spends no GitHub API calls. The workflow schema is fetched from raw.githubusercontent.com, as in CI. The call-surface check compares the HEAD commit, not the working tree, with its merge base against origin/main, where CI uses the pull request base. Invoke-CompositeRunPssa.ps1 fails, not skips, when PSScriptAnalyzer 1.25.0 is missing. Left out because they need a GitHub token, a clone of another repository or a pull request: the actionlint attestation steps (pr-require-checks.yml), the inline actionlint-ShellCheck proof (which writes to RUNNER_TEMP), check-workflow-naming (clones melodic-software/standards), check-managed-files and OSV-Scanner. Glob gaps: CI's actionlint, jsonschema, zizmor and workflow-call-surface lanes also fire on any other .github/** change, on fixtures/composite-action/** and on **/action.yml outside .github (pr-require-checks.yml)."
