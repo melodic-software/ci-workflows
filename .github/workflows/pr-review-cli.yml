@@ -189,6 +189,14 @@ name: PR Review CLI
 #     `**Decision recorded.** Cost:` on the pull request, or on its one
 #     closing issue (else its one `Refs:` issue) naming `#<number>` after
 #     the pull request opened, and that decision covers the head. The
+#     newest such comment on the pull request, else the newest on that
+#     issue, is the decision, and it must also carry, outside
+#     HTML comments, a line link to its row in the owner-decisions record
+#     and the owner's words after `verbatim:` in double quotes
+#     (claude-code-plugins merge-holds.mjs decisionGaps); else the step
+#     names what it lacks and the cost hold stays. An older complete one
+#     never stands in. That makes a cleared hold auditable, not provable:
+#     sessions post as the owner and write the record too. The
 #     decided head comes from this lane's own check-run notices, never a
 #     comment: any workflow on GITHUB_TOKEN posts as github-actions[bot].
 #     With the job token (actions: read, checks: read) the status job reads
