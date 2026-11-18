@@ -78,6 +78,16 @@ const fs = require("node:fs");
 );
 fs.chmodSync(fakeCli, 0o755);
 
+// Runs what follows `--`, so the step that binds its file-command files
+// read-only also runs on hosts where bubblewrap cannot start.
+const bwrapShim = path.join(root, "bwrap-shim");
+fs.mkdirSync(bwrapShim);
+fs.writeFileSync(
+  path.join(bwrapShim, "bwrap"),
+  '#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n',
+);
+fs.chmodSync(path.join(bwrapShim, "bwrap"), 0o755);
+
 let caseNumber = 0;
 
 function post(endpoint, urlPath, body, headers = {}) {
@@ -616,6 +626,7 @@ test("the step never prints telemetry, and its warning reaches the runner", () =
   const env = {
     ...leg.baseEnv,
     ...CONFIG_ENV,
+    PATH: `${bwrapShim}${path.delimiter}${process.env.PATH}`,
     LANE_PROMPT_FILE: leg.config.promptFile,
     LANE_CLI_PATH: fakeCli,
     LANE_WORK_DIR: leg.dir,
@@ -632,7 +643,11 @@ test("the step never prints telemetry, and its warning reaches the runner", () =
     [path.join(__dirname, "lane.cjs"), "run"],
     { env, encoding: "utf8" },
   );
-  assert.equal(step.status, 0, step.stderr);
+  assert.equal(
+    step.status,
+    0,
+    `the step exited ${step.status}\nstdout:\n${step.stdout}\nstderr:\n${step.stderr}`,
+  );
   const printed = `${step.stdout}${step.stderr}`;
   assert.equal(printed.includes(MARKER), false);
   assert.equal(printed.includes(KEY), false);
