@@ -190,7 +190,8 @@ test("an unreadable commit list fails", async () => {
 const TARGET = "melodic-software/target";
 
 // Stands in for standards' sync-manifest.sh: dest-paths lists the target's
-// destinations and apply copies each source with its Git index mode, which is
+// destinations, retired-paths its rows whose source is `-`, and apply copies
+// each source with its Git index mode and deletes each retired path, which is
 // the engine contract verify-sync.sh relies on.
 const STUB_ENGINE = `#!/usr/bin/env bash
 set -euo pipefail
@@ -207,6 +208,13 @@ while (($#)); do
 done
 while IFS=$'\\t' read -r t source dest; do
   [[ $t == "$target" ]] || continue
+  if [[ $source == - ]]; then
+    case $command in
+      retired-paths) printf '%s\\n' "$dest" ;;
+      apply) rm -f "$target_root/$dest" ;;
+    esac
+    continue
+  fi
   case $command in
     dest-paths) printf '%s\\n' "$dest" ;;
     apply)
@@ -381,7 +389,49 @@ test("a deletion fails, named", () => {
   assertRejected(verify(fx), fx.sha, "README.md: deleted; sync never deletes");
 });
 
-test("a rename fails, named", () => {
+const retireOld = (s) =>
+  fs.appendFileSync(
+    path.join(s, "fixture-map.tsv"),
+    `${TARGET}\t-\tmanaged/old.txt\n`,
+  );
+
+test("a deletion of a path retired-paths lists passes", () => {
+  const fx = fixture({
+    mutateStandards: retireOld,
+    mutateBase: (t) => write(t, "managed/old.txt", "old\n"),
+    mutateHead: (t) => fs.rmSync(path.join(t, "managed/old.txt")),
+  });
+  const result = verify(fx);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("a deletion beside a retired path still fails, named", () => {
+  const fx = fixture({
+    mutateStandards: retireOld,
+    mutateBase: (t) => write(t, "managed/old.txt", "old\n"),
+    mutateHead: (t) => {
+      fs.rmSync(path.join(t, "managed/old.txt"));
+      fs.rmSync(path.join(t, "README.md"));
+    },
+  });
+  const result = verify(fx);
+  assertRejected(result, fx.sha, "README.md: deleted; sync never deletes");
+  assert.ok(!result.stderr.includes("managed/old.txt"), result.stderr);
+});
+
+test("a sync PR keeping a retired path fails", () => {
+  const fx = fixture({
+    mutateStandards: retireOld,
+    mutateBase: (t) => write(t, "managed/old.txt", "old\n"),
+  });
+  assertRejected(
+    verify(fx),
+    fx.sha,
+    `managed/old.txt: differs from apply at ${fx.sha}`,
+  );
+});
+
+test("a rename fails on both of its paths, named", () => {
   const fx = fixture({
     mutateHead: (t) =>
       fs.renameSync(path.join(t, "README.md"), path.join(t, "docs.md")),
@@ -389,8 +439,30 @@ test("a rename fails, named", () => {
   assertRejected(
     verify(fx),
     fx.sha,
-    "README.md -> docs.md: change type R100; sync never renames or copies",
+    "README.md: deleted; sync never deletes",
+    `docs.md: not a managed destination for ${TARGET}`,
   );
+});
+
+test("a move from a retired path to a managed one with the same bytes passes", () => {
+  const fx = fixture({
+    mutateStandards: (s) => {
+      retireOld(s);
+      write(s, "src/new.txt", "old\n");
+      fs.appendFileSync(
+        path.join(s, "fixture-map.tsv"),
+        `${TARGET}\tsrc/new.txt\tmanaged/new.txt\n`,
+      );
+    },
+    mutateBase: (t) => write(t, "managed/old.txt", "old\n"),
+    mutateHead: (t) =>
+      fs.renameSync(
+        path.join(t, "managed/old.txt"),
+        path.join(t, "managed/new.txt"),
+      ),
+  });
+  const result = verify(fx);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("managed bytes that differ from apply fail, named", () => {

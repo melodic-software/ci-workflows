@@ -2865,6 +2865,7 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
+      # BEGIN KEY-ONLY
       # Read by the next runs' check-key-credit job: the artifact it names
       # (gate.cjs markerName), uploaded only after the launcher's credit stop,
       # which only the key leg can end in. Its upload time starts the window;
@@ -2898,6 +2899,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # END KEY-ONLY
       # The CLI's init message must report the mode asked for; dontAsk may
       # read default, which run-claude-cli's `--permission-prompts none`
       # makes deny every call no rule allows, as dontAsk does. A mismatch, or
@@ -3659,6 +3661,7 @@ jobs:
       merge-base: ${{ steps.scope.outputs.merge-base }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
+      # BEGIN GENERATED: pr-review-cli review-subscription
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
@@ -6279,6 +6282,7 @@ jobs:
           responses: |
             ${{ runner.temp }}/compare.http
             ${{ runner.temp }}/pr-context.json.http
+      # END GENERATED: pr-review-cli review-subscription
 
   # The fallback leg, the central fallback subscription, as its own job on
   # a fresh VM, only after the subscription job handed off (a limit stop, a
@@ -6362,6 +6366,7 @@ jobs:
       merge-base: ${{ steps.scope.outputs.merge-base }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
     steps:
+      # BEGIN GENERATED: pr-review-cli review-fallback
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
@@ -8980,6 +8985,7 @@ jobs:
           responses: |
             ${{ runner.temp }}/compare.http
             ${{ runner.temp }}/pr-context.json.http
+      # END GENERATED: pr-review-cli review-fallback
 
   # The one job that writes, and no lane record (each leg writes its own).
   # No model runs here and nothing is checked out. Every value arrives
