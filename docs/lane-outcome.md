@@ -200,7 +200,7 @@ parent id is the leg's own, the first 16 hex digits of SHA-256 over
 `run-claude-cli:<traceId>:<github.job>:<lane>:<credential.secret>` with
 run-claude-cli's `lane` input, and is not the record's `spanId`. With no valid
 `traceId` the leg gets no `TRACEPARENT`; an inherited one is always replaced.
-The action does not turn telemetry on.
+The action exports telemetry only when its `otel-receiver` input is `true`.
 
 `githubCalls` counts the job's own GitHub API requests made before the
 report step, from the readings

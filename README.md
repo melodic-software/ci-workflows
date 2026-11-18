@@ -779,8 +779,8 @@ consumer to audit it.
   credential, `false` on a hit or a missing or unreadable file. Gate any
   upload of it on `execution-file-clean == 'true'`, so an empty value from a
   step that failed early stays closed. The CLI receives a `TRACEPARENT` under
-  the run attempt's lane-outcome trace id, and the action turns no telemetry
-  on. Every log line records the `lane` and
+  the run attempt's lane-outcome trace id; telemetry stays off unless
+  `otel-receiver` is `true` (below). Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
   `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake, or the fixed
@@ -819,6 +819,25 @@ consumer to audit it.
   prints as `[line withheld: it matched the credential check]`. A lane whose
   agent reads private content sets `live-log: false`; run-review-chunks
   passes the same input to every chunk's leg.
+
+  **Telemetry receiver.** `otel-receiver` (`false` by default) keeps the leg's
+  OpenTelemetry traces and logs. Left off, the action starts nothing and the
+  leg's environment is unchanged. Set to `true`, the step runs an
+  [OTLP/HTTP](https://opentelemetry.io/docs/specs/otlp/#otlphttp) receiver in
+  its own process, bound to `127.0.0.1` on a free port, and points the CLI at
+  it with `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, `OTEL_TRACES_EXPORTER=otlp`
+  and `OTEL_LOGS_EXPORTER=otlp`, with metrics off
+  ([Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage)).
+  Inherited `OTEL_*` settings are removed, so prompt and tool content stay
+  redacted; OTLP settings in the managed settings still win. The CLI's span
+  ids are kept as sent. The `otel-file` output is JSONL with one export request
+  per line, written only after a scan finds no credential in it, and is never
+  printed. Pass it to `upload-lane-transcript`'s `otel-file`, the only way to
+  upload it, which scans and seals it. The receiver stops when the leg ends,
+  however it ends, and a receiver failure adds a warning without changing the
+  leg's outcome. A leg's tool processes share the runner's loopback, so they
+  can send the receiver data too; the receiver keeps at most 60 MiB.
+  `run-review-chunks` runs no receiver.
 
   **Loopback key proxy.** By default the managed settings must pin
   `env.ANTHROPIC_BASE_URL` to `https://api.anthropic.com`. A caller that

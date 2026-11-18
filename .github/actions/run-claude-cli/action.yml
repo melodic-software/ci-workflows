@@ -56,7 +56,8 @@ description: >-
   Unless `live-log` is `false`, the step log shows the agent's text and
   tool calls as they arrive, never a tool result.
   The CLI receives a `TRACEPARENT` under the run attempt's lane-outcome trace
-  id (docs/lane-outcome.md, Run context); this action turns no telemetry on.
+  id (docs/lane-outcome.md, Run context). Telemetry stays off unless
+  `otel-receiver` is `true`.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
@@ -168,6 +169,18 @@ inputs:
       reads private content. Any other value fails the step.
     required: false
     default: "true"
+  otel-receiver:
+    description: >-
+      `true` runs an OTLP/HTTP receiver inside this step, bound to 127.0.0.1,
+      for the leg's traces and logs, and sets otel-file. `false` (the default)
+      or empty starts no receiver and leaves the leg's environment alone. Any
+      other value fails the step. With `true` the leg's inherited OTEL_*
+      settings are replaced, so telemetry goes only to the receiver and prompt
+      and tool content stay redacted; OTLP settings in the managed settings
+      still win over these. A receiver that fails adds a warning and never
+      changes the leg's outcome.
+    required: false
+    default: "false"
   plugin-dirs:
     description: >-
       Plugin directories, one per line, each passed to `--plugin-dir` and
@@ -306,6 +319,14 @@ outputs:
   log-file:
     description: JSONL execution log, one object for the leg; empty when the credential scan failed.
     value: ${{ steps.run.outputs.log-file }}
+  otel-file:
+    description: >-
+      With otel-receiver `true`, the leg's telemetry as uncompressed JSONL, one
+      OTLP/JSON export request per line, traces and logs together, written only
+      after a scan finds no credential in it; else empty. It is never printed.
+      Pass it only to upload-lane-transcript's otel-file, which scans and seals
+      it.
+    value: ${{ steps.run.outputs.otel-file }}
   structured-output-file:
     description: >-
       The final result's `structured_output` as a JSON file, written only when
@@ -365,6 +386,7 @@ runs:
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
         LANE_LIVE_LOG: ${{ inputs.live-log }}
+        LANE_OTEL_RECEIVER: ${{ inputs.otel-receiver }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
         LANE_ADD_DIRS: ${{ inputs.add-dirs }}
         LANE_JSON_SCHEMA_FILE: ${{ inputs.json-schema-file }}

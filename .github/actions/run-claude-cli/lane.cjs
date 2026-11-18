@@ -82,6 +82,13 @@
 //     It alone keeps a CLI-authored error line. The execution file is
 //     scanned the same way and kept either way, since callers parse it;
 //     execution-file-clean reports the scan.
+//   - Telemetry is off unless the otel-receiver input is `true`. Then the leg
+//     exports traces and logs to a receiver inside this process, on 127.0.0.1
+//     only (otlp-receiver.cjs), and every inherited telemetry destination is
+//     removed from its environment. What arrives stays in memory until the leg
+//     ends, is written only after a scan finds no credential in it, and is
+//     never printed. A receiver failure warns and never changes the leg's
+//     outcome.
 "use strict";
 
 const crypto = require("node:crypto");
@@ -108,6 +115,7 @@ const {
   expectedBaseUrl,
   settingsProblem,
 } = require("./managed-settings.cjs");
+const { startOtlpReceiver } = require("./otlp-receiver.cjs");
 
 const CLI_PACKAGE = "@anthropic-ai/claude-code";
 const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,99}$/u;
@@ -154,6 +162,22 @@ const FILE_COMMAND_VARIABLES = [
 const MAX_LEG_STDOUT_BYTES = 256 * 1024 * 1024;
 const LIVE_VALUE_CHARS = 200;
 const LIVE_WITHHELD = "[line withheld: it matched the credential check]";
+const OTEL_FILE = "otel.jsonl";
+// Inherited settings that could send the leg's telemetry anywhere but the
+// receiver, or put prompt and tool content in it
+// (https://code.claude.com/docs/en/monitoring-usage).
+const OTEL_INHERITED =
+  /^(?:OTEL_|CLAUDE_CODE_OTEL_|BETA_TRACING_ENDPOINT$|ENABLE_BETA_TRACING_DETAILED$)/u;
+// Closed texts for the step's one telemetry warning; none carries telemetry.
+const OTEL_WARNINGS = {
+  start:
+    "the telemetry receiver did not start, so this leg ran without telemetry",
+  empty: "the telemetry receiver got nothing from this leg",
+  capped:
+    "the telemetry limit was reached, so part of this leg's telemetry is left out",
+  credential: "the leg's telemetry held a credential and is left out",
+  failed: "the leg's telemetry could not be kept",
+};
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 // Release manifest location and signing key, as
 // https://code.claude.com/docs/en/setup#binary-integrity-and-code-signing
@@ -290,6 +314,17 @@ function sandboxEnabled(env) {
   return switchedOn(env, "LANE_SANDBOX", "sandbox");
 }
 
+// The otel-receiver input: only `true` turns it on.
+function otelReceiverOn(env) {
+  const value = (env.LANE_OTEL_RECEIVER ?? "").trim();
+  if (!["", "true", "false"].includes(value)) {
+    throw new LaneError(
+      `otel-receiver ${JSON.stringify(value)} is not true, false or empty`,
+    );
+  }
+  return value === "true";
+}
+
 function required(env, name, pattern, label) {
   const value = (env[name] ?? "").trim();
   if (!pattern.test(value)) {
@@ -403,6 +438,7 @@ function readConfig(env) {
     permissionMode,
     sandbox: sandboxEnabled(env),
     liveLog: switchedOn(env, "LANE_LIVE_LOG", "live-log"),
+    otelReceiver: otelReceiverOn(env),
     watchdogMaxWaitMs: required(
       env,
       "LANE_WATCHDOG_MAX_WAIT_MS",
@@ -481,8 +517,10 @@ function traceParent(baseEnv, leg, config) {
 
 // The CLI environment for the leg: every credential and file-command
 // variable and any inherited trace context removed, then only the leg's
-// credential and the run's trace context set.
-function legEnv(baseEnv, leg, config) {
+// credential and the run's trace context set. With a receiver's endpoint, the
+// leg exports traces and logs there as OTLP/HTTP JSON; prompt and tool content
+// stay redacted, the CLI's default.
+function legEnv(baseEnv, leg, config, otelEndpoint = null) {
   const env = { ...baseEnv };
   for (const name of CREDENTIAL_VARIABLES) delete env[name];
   for (const name of FILE_COMMAND_VARIABLES) delete env[name];
@@ -495,6 +533,20 @@ function legEnv(baseEnv, leg, config) {
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";
   env.CLAUDE_CODE_RETRY_WATCHDOG = "1";
   env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS = config.watchdogMaxWaitMs;
+  if (otelEndpoint !== null) {
+    for (const name of Object.keys(env)) {
+      if (OTEL_INHERITED.test(name)) delete env[name];
+    }
+    Object.assign(env, {
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1",
+      OTEL_TRACES_EXPORTER: "otlp",
+      OTEL_LOGS_EXPORTER: "otlp",
+      OTEL_METRICS_EXPORTER: "none",
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+      OTEL_EXPORTER_OTLP_ENDPOINT: otelEndpoint,
+    });
+  }
   return env;
 }
 
@@ -1083,6 +1135,36 @@ function runChild(
   });
 }
 
+// Null when the receiver cannot start: the leg then runs without telemetry.
+async function openReceiver(start) {
+  try {
+    return await start();
+  } catch {
+    return null;
+  }
+}
+
+// Stops the receiver and writes what it kept, unless that holds a credential.
+// Never throws: telemetry cannot change the leg's outcome.
+async function keepTelemetry(receiver, config, secretValues) {
+  if (receiver === null) return { file: "", warning: OTEL_WARNINGS.start };
+  try {
+    const { text, dropped } = await receiver.stop();
+    if (holdsCredential(text, secretValues)) {
+      return { file: "", warning: OTEL_WARNINGS.credential };
+    }
+    const capped = dropped > 0 ? OTEL_WARNINGS.capped : "";
+    if (text === "")
+      return { file: "", warning: capped || OTEL_WARNINGS.empty };
+    const file = path.join(config.workDir, OTEL_FILE);
+    // `wx`: a path the leg planted first is refused, never followed.
+    fs.writeFileSync(file, text, { flag: "wx", mode: 0o600 });
+    return { file, warning: capped };
+  } catch {
+    return { file: "", warning: OTEL_WARNINGS.failed };
+  }
+}
+
 async function runLeg(
   config,
   {
@@ -1091,6 +1173,7 @@ async function runLeg(
     now = () => new Date(),
     maxStdoutBytes = MAX_LEG_STDOUT_BYTES,
     write = (text) => process.stdout.write(text),
+    startReceiver = startOtlpReceiver,
   } = {},
 ) {
   const prompt = promptText(config);
@@ -1101,6 +1184,9 @@ async function runLeg(
   let record;
   let judged;
   let reason = "";
+  const telemetryOn = config.otelReceiver === true;
+  let receiver = null;
+  let telemetry = { file: "", warning: "" };
   try {
     const readOnly = readOnlyPaths(
       config,
@@ -1108,6 +1194,7 @@ async function runLeg(
       snapshots.map(({ file }) => file),
     );
     lockTrees(readOnly, modes);
+    if (telemetryOn) receiver = await openReceiver(startReceiver);
     const startedAt = now().toISOString();
     const waitCapMs = Number(config.watchdogMaxWaitMs);
     let limitResets = null;
@@ -1118,7 +1205,7 @@ async function runLeg(
       spawn,
       legCommand(config, readOnly),
       {
-        env: legEnv(baseEnv, leg, config),
+        env: legEnv(baseEnv, leg, config, receiver?.endpoint ?? null),
         input: prompt,
         timeoutMs: config.legTimeoutMs,
         maxBytes: maxStdoutBytes,
@@ -1193,14 +1280,21 @@ async function runLeg(
     });
   } finally {
     try {
-      restoreModes(modes);
+      if (telemetryOn) {
+        telemetry = await keepTelemetry(receiver, config, [leg.value]);
+      }
     } finally {
-      restoreFiles(snapshots);
+      try {
+        restoreModes(modes);
+      } finally {
+        restoreFiles(snapshots);
+      }
     }
   }
   const run = readRunRecord(executionFile);
   return {
     records: [record],
+    ...(telemetryOn ? { telemetryWarning: telemetry.warning } : {}),
     outputs: {
       "lane-class": judged.failureClass,
       handoff: String(reason !== ""),
@@ -1210,6 +1304,7 @@ async function runLeg(
       credential: leg.name,
       "handoff-reason": reason,
       "execution-file": executionFile,
+      ...(telemetryOn ? { "otel-file": telemetry.file } : {}),
     },
   };
 }
@@ -1661,6 +1756,11 @@ async function run(env) {
   // lane class ends the step, so a stopped leg still warns.
   const warning = clean ? usageWarning(outcome.records[0]) : null;
   if (warning !== null) process.stdout.write(`${warning}\n`);
+  if (outcome.telemetryWarning) {
+    process.stdout.write(
+      `::warning title=run-claude-cli telemetry::${outcome.telemetryWarning}\n`,
+    );
+  }
   // A refused subscription token hands off and the run can go green, so the
   // dead secret is named here.
   if (

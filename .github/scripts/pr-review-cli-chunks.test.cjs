@@ -485,9 +485,11 @@ test("the loop gives every leg run-claude-cli's launcher environment and preambl
   const run = launcher.runs.steps.find((s) => s.id === "run");
   const loopStep = chunks.runs.steps.find((s) => s.id === "loop");
   const expected = laneEnv(run);
-  // The prompt file is per chunk, and the loop runs no loopback key proxy.
+  // The prompt file is per chunk, and the loop runs no loopback key proxy and
+  // no telemetry receiver.
   delete expected.LANE_PROMPT_FILE;
   expected.LANE_LOOPBACK_BASE_URL = "";
+  expected.LANE_OTEL_RECEIVER = "";
   assert.deepEqual(laneEnv(loopStep), expected);
   assert.equal(
     chunks.inputs.preamble.default,
@@ -505,7 +507,7 @@ test("the loop gives every leg run-claude-cli's launcher environment and preambl
     );
   }
   for (const name of Object.keys(launcher.inputs))
-    if (!["prompt-file", "loopback-base-url"].includes(name))
+    if (!["prompt-file", "loopback-base-url", "otel-receiver"].includes(name))
       assert.ok(name in chunks.inputs, name);
 });
 
