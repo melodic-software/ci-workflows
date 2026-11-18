@@ -7,8 +7,15 @@ The shared steps of a consumer's `ci-status` job in one step:
 2. The draft policy (`draft: refuse | allow`).
 3. [`aggregate-results`](../aggregate-results/action.yml): the lanes verdict,
    recorded as the `ci-lanes` commit status, or carried forward on a
-   contract-only event. It runs even when step 1 or 2 failed, so every full
-   run records its verdict.
+   contract-only event.
+
+Steps 1 and 2 never fail the composite: their outcomes are the `contract` and
+`draft` outputs, and the consumer fails its job on them in a step of its own.
+`aggregate-results` carries a `ci-lanes` success forward only when the writer
+step concluded `success`, and the jobs API lists the composite as that one step,
+so its conclusion must follow the lanes alone. Otherwise a full run whose title
+was wrong would leave a success no contract-only run could carry once the title
+is fixed.
 
 The composite calls the other two through `$/`, so all three run at the commit
 the consumer pins. The job stays in the consumer: the required check `CI Status`
@@ -32,13 +39,22 @@ is a job name, and a job inside a reusable workflow would report as
     timeout-minutes: 3
     steps:
       - name: Aggregate lane results
+        id: report
         uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@<sha> # vX.Y.Z
         with:
           step-name: Aggregate lane results
           results: ${{ join(needs.*.result, ' ') }}
           exempt-authors: 'dependabot[bot]'
           draft: refuse
+      - name: Fail on the contract or draft policy
+        if: ${{ !cancelled() && (steps.report.outputs.contract == 'failure' || steps.report.outputs.draft == 'failure') }}
+        run: |
+          echo "::error::ci-status: the pull-request contract or the draft policy failed; see the step above."
+          exit 1
 ```
+
+- The last step is the one every consumer adds: without it a failed contract
+  or draft policy leaves `CI Status` green.
 
 - `step-name` is the step's own `name:`. The jobs API lists the composite as
   that one step, and `aggregate-results` finds its own step, and the writer
@@ -93,4 +109,6 @@ result.
 
 - `run.test.sh`: the draft policy (`draft.sh`).
 - `.github/scripts/ci-fanout-consolidation.test.cjs`: the step order, the
-  aggregation's `!cancelled()`, the contract-only copies and the hold drop.
+  `continue-on-error` contract and draft steps and their outputs, this
+  repository's failing step, the aggregation's `!cancelled()`, the
+  contract-only copies and the hold drop.

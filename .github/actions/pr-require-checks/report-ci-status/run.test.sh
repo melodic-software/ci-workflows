@@ -87,10 +87,19 @@ run_case "refuse fails a contract-only run that is still a draft" 1 \
   "draft pull request" 1 \
   DRAFT_POLICY=refuse EVENT_DRAFT=true CONTRACT_ONLY=true LIVE_DRAFT=true
 
-# Without the exact `false` match (a `!= true` test instead), a failed read
-# printing nothing would pass as ready.
+# Without both `set -e` on the read and the exact `false` match, a failed read
+# would pass as ready.
 run_case "refuse fails closed when the live read fails" 1 "HTTP 502" 1 \
   DRAFT_POLICY=refuse EVENT_DRAFT=true CONTRACT_ONLY=true GH_FAIL=1
+
+# Without the exact `false` match (a `!= true` test instead), a read that
+# succeeds but prints nothing or `null` would pass as ready.
+run_case "refuse fails closed on an empty live draft field" 1 \
+  "draft pull request" 1 \
+  DRAFT_POLICY=refuse EVENT_DRAFT=true CONTRACT_ONLY=true LIVE_DRAFT=
+run_case "refuse fails closed on a null live draft field" 1 \
+  "draft pull request" 1 \
+  DRAFT_POLICY=refuse EVENT_DRAFT=true CONTRACT_ONLY=true LIVE_DRAFT=null
 
 if [[ "$failures" -gt 0 ]]; then
   echo "$failures case(s) failed"

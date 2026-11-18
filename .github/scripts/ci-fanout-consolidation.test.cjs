@@ -315,7 +315,10 @@ const compositeStep = (uses) => {
   const step = compositeSteps.find((candidate) =>
     candidate.includes(`uses: $/.github/actions/pr-require-checks/${uses}\n`),
   );
-  assert.ok(step !== undefined, `the report-ci-status composite has no ${uses} step`);
+  assert.ok(
+    step !== undefined,
+    `the report-ci-status composite has no ${uses} step`,
+  );
   return step;
 };
 const foldedValue = (block, key) => {
@@ -350,12 +353,28 @@ test("the ci-status job runs the report-ci-status composite from this commit", (
   assert.match(ciStatusJob, /^ {10}treat-skipped-as: pass$/mu);
   // The step-name lookup matches the full run's writer step by name, so the
   // step keeps the name its full runs wrote under.
-  const stepName =
-    /^ {6}- name: (?<name>.+)\n {8}uses: \$\/\.github\/actions\/pr-require-checks\/report-ci-status$/mu.exec(
+  const reportStep =
+    /^ {6}- name: (?<name>.+)\n {8}id: (?<id>[a-z-]+)\n {8}uses: \$\/\.github\/actions\/pr-require-checks\/report-ci-status$/mu.exec(
       ciStatusJob,
-    )?.groups?.name;
-  assert.equal(stepName, "Aggregate lane results");
-  assert.match(ciStatusJob, new RegExp(`^ {10}step-name: ${stepName}$`, "mu"));
+    )?.groups;
+  assert.equal(reportStep?.name, "Aggregate lane results");
+  assert.match(
+    ciStatusJob,
+    new RegExp(`^ {10}step-name: ${reportStep.name}$`, "mu"),
+  );
+  // The composite's step concludes on the lanes alone, so the job fails on
+  // the contract and draft outputs in a step after it, which must run even
+  // when an earlier step failed.
+  const afterReport = ciStatusJob.slice(
+    ciStatusJob.indexOf("pr-require-checks/report-ci-status\n"),
+  );
+  assert.match(
+    afterReport,
+    new RegExp(
+      String.raw`^ {8}if: \$\{\{ !cancelled\(\) && \(steps\.${reportStep.id}\.outputs\.contract == 'failure' \|\| steps\.${reportStep.id}\.outputs\.draft == 'failure'\) \}\}\n {8}run: \|\n(?: {10}.*\n)*? {10}exit 1$`,
+      "mu",
+    ),
+  );
 
   // A contract-only run holds for an in-flight full run under a ceiling, and
   // the full run re-runs any red contract-only sibling on success. The budget
@@ -396,9 +415,28 @@ test("the report-ci-status composite runs the contract, then the draft policy, t
   assert.ok(contract !== -1 && draft !== -1 && aggregate !== -1);
   assert.ok(contract < draft && draft < aggregate);
 
-  // The contract and draft steps keep the default `success()`: the draft step
-  // has nothing to add after a failed contract.
-  assert.doesNotMatch(compositeStep("check-contract"), /^ {6}if:/mu);
+  // The contract and draft steps run on every run and never fail the
+  // composite: aggregate-results trusts a carried success only when the
+  // writer step, this whole composite, concluded `success`. Their outcomes
+  // are the outputs the caller fails on.
+  const contractStep = compositeStep("check-contract");
+  const draftStep = compositeSteps.find((step) => step.includes("draft.sh"));
+  assert.ok(draftStep !== undefined);
+  for (const [step, id] of [
+    [contractStep, "contract"],
+    [draftStep, "draft"],
+  ]) {
+    assert.doesNotMatch(step, /^ {6}if:/mu);
+    assert.match(step, /^ {6}continue-on-error: true$/mu);
+    assert.match(step, new RegExp(`^ {6}id: ${id}$`, "mu"));
+    assert.match(
+      ciStatusComposite,
+      new RegExp(
+        String.raw`^ {2}${id}:\n(?: {4}.*\n)*? {4}value: \$\{\{ steps\.${id}\.outcome \}\}$`,
+        "mu",
+      ),
+    );
+  }
   // `!cancelled()` so a failed contract or draft step does not skip the
   // `ci-lanes` status write the next contract-only run reads back.
   const aggregateStep = compositeStep("aggregate-results");

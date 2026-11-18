@@ -2,8 +2,9 @@ name: Report CI Status
 description: >-
   The shared steps of a caller's `ci-status` job in one step: the pull-request
   contract, the draft policy, and the lane aggregation with its `ci-lanes`
-  carry-forward. The aggregation runs even when the contract or draft step
-  failed, so every full run records its lanes verdict.
+  carry-forward. The step's conclusion follows the lanes alone; the contract
+  and draft results are the `contract` and `draft` outputs, and the caller
+  fails its job on them in a step of its own.
 
 inputs:
   results:
@@ -70,11 +71,29 @@ inputs:
       status) and `actions: write` (the run listing and sibling re-runs).
     default: ${{ github.token }}
 
+outputs:
+  contract:
+    description: >-
+      The contract step's outcome: `success` or `failure`. The caller fails
+      its job on `failure` in a step after this one.
+    value: ${{ steps.contract.outcome }}
+  draft:
+    description: >-
+      The draft step's outcome: `success` or `failure`. The caller fails its
+      job on `failure` in a step after this one.
+    value: ${{ steps.draft.outcome }}
+
 runs:
   using: composite
   steps:
+    # The contract and draft steps never fail this step: aggregate-results
+    # trusts a carried `ci-lanes` success only when the writer step, which is
+    # this whole composite, concluded `success`, so its conclusion must follow
+    # the lanes alone. Their results are outputs, and the caller fails the
+    # job on them in a step of its own.
     - name: Check the pull-request contract
       id: contract
+      continue-on-error: true
       uses: $/.github/actions/pr-require-checks/check-contract
       with:
         token: ${{ inputs.token }}
@@ -83,6 +102,7 @@ runs:
 
     - name: Apply the draft policy
       id: draft
+      continue-on-error: true
       shell: bash
       env:
         DRAFT_POLICY: ${{ inputs.draft }}

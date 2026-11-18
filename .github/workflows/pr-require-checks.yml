@@ -763,6 +763,7 @@ jobs:
       # finds the writer step of the full run it carries forward by this name,
       # and an open pull request's full run may predate the composite.
       - name: Aggregate lane results
+        id: report
         uses: $/.github/actions/pr-require-checks/report-ci-status
         with:
           # Dependabot pull requests link no issue.
@@ -781,3 +782,11 @@ jobs:
           # how many steps of the job are in progress.
           step-name: Aggregate lane results
           results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
+      # The composite's step concludes on the lanes alone, so a contract-only
+      # run can carry its `ci-lanes` success forward; the contract and draft
+      # results fail the job here instead.
+      - name: Fail on the contract or draft policy
+        if: ${{ !cancelled() && (steps.report.outputs.contract == 'failure' || steps.report.outputs.draft == 'failure') }}
+        run: |
+          echo "::error::ci-status: the pull-request contract or the draft policy failed; see the step above."
+          exit 1
