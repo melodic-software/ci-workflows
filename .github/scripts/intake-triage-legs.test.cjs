@@ -899,13 +899,12 @@ test("exactly one job, with no model, writes the triage", () => {
     .map(([name]) => name);
   // The report-skip job writes only skipped-label on an issue no model read.
   assert.deepEqual(writers, ["apply", "report-skip"]);
-  for (const job of [claude, subscription, fallback]) {
-    assert.equal(
-      job.steps.some((step) => step.name === "Apply the triage"),
-      false,
-      job.name,
-    );
-  }
+  const job = claude;
+  assert.equal(
+    job.steps.some((step) => step.name === "Apply the triage"),
+    false,
+    job.name,
+  );
 });
 
 // The key-credit gate (claude-code-plugins#13586): a job with no secret reads
@@ -1077,4 +1076,17 @@ test("every leg builds its schema and reads its verdict through the one shared a
   assert.equal(inputs["verdict-schema"].default, "");
   assert.equal(inputs["verdict-schema"].type, "string");
   assert.equal(outputs.verdict.value, `\${{ jobs.apply.outputs.verdict }}`);
+});
+
+test("the subscription and fallback steps match those generated from the claude job", () => {
+  const { check } = require("./generate-model-legs.cjs");
+  const text = fs.readFileSync(
+    path.join(__dirname, "..", "workflows", "intake-triage.yml"),
+    "utf8",
+  );
+  assert.deepEqual(
+    check(text, require("./model-legs/intake-triage.cjs")),
+    [],
+    "Run: node .github/scripts/generate-model-legs.cjs",
+  );
 });
