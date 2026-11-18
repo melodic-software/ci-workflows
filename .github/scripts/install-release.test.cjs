@@ -59,8 +59,11 @@ function writeExecutable(file, source) {
   fs.chmodSync(file, 0o755);
 }
 
-function fixture() {
+// Each fixture creates its own temp root and registers its removal, so every
+// test cleans up regardless of how it exits.
+function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-release-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const runnerTemp = path.join(root, "runner-temp");
   const mocks = path.join(root, "mocks");
   const shadow = path.join(root, "shadow");
@@ -135,16 +138,19 @@ printf '${label} %s\\n' "\${1:-}"
 `;
 }
 
-// Each fixture() creates its own temp root; register its removal once so
-// every test cleans up regardless of how it exits.
-function fixtureWithCleanup(t) {
-  const state = fixture();
-  t.after(() => fs.rmSync(state.root, { recursive: true, force: true }));
-  return state;
+function curlCalls(state) {
+  return fs.readFileSync(state.curlLog, "utf8").split("\0").filter(Boolean);
+}
+
+function assertOnlyBinDir(state) {
+  assert.deepEqual(
+    fs.readdirSync(path.join(state.runnerTemp, "ci-workflows")),
+    ["bin"],
+  );
 }
 
 test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
-  const state = fixtureWithCleanup(t);
+  const state = fixture(t);
   const source = path.join(state.root, "raw-tool");
   writeExecutable(source, toolSource("raw"));
   const env = baseEnv(state, source);
@@ -182,15 +188,9 @@ test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
       called.endsWith("/ci-workflows/bin/fixture-tool"),
     ),
   );
-  assert.deepEqual(
-    fs.readdirSync(path.join(state.runnerTemp, "ci-workflows")),
-    ["bin"],
-  );
+  assertOnlyBinDir(state);
 
-  const calls = fs
-    .readFileSync(state.curlLog, "utf8")
-    .split("\0")
-    .filter(Boolean);
+  const calls = curlCalls(state);
   const first = calls.slice(0, calls.length / 2);
   assert.equal(first[0], "-q");
   assert.ok(!first.includes("--request"));
@@ -213,7 +213,7 @@ test("raw installs are bounded, exact-path verified, and idempotent", (t) => {
 });
 
 test("checksummed tar members support stripping before installation", (t) => {
-  const state = fixtureWithCleanup(t);
+  const state = fixture(t);
   const tree = path.join(state.root, "tree");
   fs.mkdirSync(path.join(tree, "package"), { recursive: true });
   writeExecutable(
@@ -241,14 +241,11 @@ test("checksummed tar members support stripping before installation", (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /tar --version/u);
-  assert.deepEqual(
-    fs.readdirSync(path.join(state.runnerTemp, "ci-workflows")),
-    ["bin"],
-  );
+  assertOnlyBinDir(state);
 });
 
 test("a checksum failure stops before extraction or installation", (t) => {
-  const state = fixtureWithCleanup(t);
+  const state = fixture(t);
   const source = path.join(state.root, "not-an-archive");
   fs.writeFileSync(source, "corrupt");
   const result = run({
@@ -262,14 +259,11 @@ test("a checksum failure stops before extraction or installation", (t) => {
       path.join(state.runnerTemp, "ci-workflows", "bin", "fixture-tool"),
     ),
   );
-  assert.deepEqual(
-    fs.readdirSync(path.join(state.runnerTemp, "ci-workflows")),
-    ["bin"],
-  );
+  assertOnlyBinDir(state);
 });
 
 test("unsupported runners fail before network access", (t) => {
-  const state = fixtureWithCleanup(t);
+  const state = fixture(t);
   const source = path.join(state.root, "raw-tool");
   writeExecutable(source, toolSource("raw"));
 
@@ -284,7 +278,7 @@ test("unsupported runners fail before network access", (t) => {
 });
 
 test("ASSET_CACHE_DIR reuses a verified download and skips curl on hit", (t) => {
-  const state = fixtureWithCleanup(t);
+  const state = fixture(t);
   const source = path.join(state.root, "raw-tool");
   writeExecutable(source, toolSource("cached"));
   const cacheDir = path.join(state.root, "asset-cache");
@@ -296,10 +290,7 @@ test("ASSET_CACHE_DIR reuses a verified download and skips curl on hit", (t) => 
   const miss = run(env);
   assert.equal(miss.status, 0, miss.stderr);
   assert.ok(fs.existsSync(path.join(cacheDir, "asset")));
-  const missCalls = fs
-    .readFileSync(state.curlLog, "utf8")
-    .split("\0")
-    .filter(Boolean);
+  const missCalls = curlCalls(state);
   assert.ok(missCalls.length > 0, "cache miss must download once");
 
   fs.writeFileSync(state.curlLog, "");

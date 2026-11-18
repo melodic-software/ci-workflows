@@ -69,15 +69,15 @@ const consumedOutputs = (workflow) =>
     ),
   );
 
+const declared = declaredOutputs(
+  fs.readFileSync(path.join(repositoryRoot, COMPOSITE_PATH), "utf8"),
+);
+
 for (const lane of LANES) {
-  const workflow = laneSource(lane);
-  const consumed = consumedOutputs(workflow);
+  const consumed = consumedOutputs(laneSource(lane));
 
   test(`${lane}: every consumed outcome output is declared by the composite's source`, () => {
     assert.ok(consumed.size > 0, "the lane must consume outcome outputs");
-    const declared = declaredOutputs(
-      fs.readFileSync(path.join(repositoryRoot, COMPOSITE_PATH), "utf8"),
-    );
     for (const name of consumed) {
       assert.ok(
         declared.has(name),

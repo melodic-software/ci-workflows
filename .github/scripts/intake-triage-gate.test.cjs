@@ -36,6 +36,7 @@ const gate = (github, ids = "", authorIds = "", issueNumber = "") =>
     }),
   );
 const kyle = { id: 153232337, login: "kyle-sexton" };
+const stranger = { id: 9, login: "stranger" };
 
 // A workflow_dispatch run: the actor is whoever sent the dispatch.
 const dispatch = (actor, actorId) => ({
@@ -101,10 +102,7 @@ test("an unlisted author waits for a person, OWNER and MEMBER included", () => {
     "MANNEQUIN",
     "NONE",
   ]) {
-    const event = issueEvent("stranger", association, {
-      id: 9,
-      login: "stranger",
-    });
+    const event = issueEvent("stranger", association, stranger);
     assert.equal(gate(event), false, association);
     assert.equal(gate(event, "9", "153232337"), false, association);
   }
@@ -122,7 +120,7 @@ test("a malformed author list admits no one", () => {
 
 test("a listed person acting on an issue someone else wrote starts nothing", () => {
   const event = issueEvent("kyle-sexton", "CONTRIBUTOR", kyle, {
-    author: { id: 9, login: "stranger" },
+    author: stranger,
   });
   assert.equal(gate(event, "", "153232337"), false);
 });
@@ -168,7 +166,6 @@ test("only the opened action starts a run, for a listed person or bot", () => {
 });
 
 test("a listed bot acting on an issue someone else wrote starts nothing", () => {
-  const stranger = { id: 9, login: "stranger" };
   const onStrangersIssue = issueEvent("lanes-app[bot]", "NONE", lanesApp, {
     author: stranger,
   });
@@ -272,7 +269,7 @@ test("a gated-out opened issue runs the report-skip job, which may apply a label
         needs: { "check-key-credit": { result } },
       }),
     );
-  const opened = issueEvent("stranger", "NONE", { id: 9, login: "stranger" });
+  const opened = issueEvent("stranger", "NONE", stranger);
   assert.equal(runs("skipped", opened), true);
   for (const result of ["success", "failure"]) {
     assert.equal(runs(result, opened), false, result);

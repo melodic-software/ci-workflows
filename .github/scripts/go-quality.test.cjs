@@ -6,22 +6,14 @@ const path = require("node:path");
 const test = require("node:test");
 
 const root = path.join(__dirname, "..", "..");
-const workflow = fs.readFileSync(
-  path.join(root, ".github", "workflows", "pr-run-checks-go.yml"),
-  "utf8",
+const read = (relativePath) =>
+  fs.readFileSync(path.join(root, relativePath), "utf8");
+const workflow = read(".github/workflows/pr-run-checks-go.yml");
+const ciWorkflow = read(".github/workflows/pr-require-checks.yml");
+const windowsFixtureTest = read(
+  "fixtures/go/windows-race/windows_race_test.go",
 );
-const ciWorkflow = fs.readFileSync(
-  path.join(root, ".github", "workflows", "pr-require-checks.yml"),
-  "utf8",
-);
-const windowsFixtureTest = fs.readFileSync(
-  path.join(root, "fixtures", "go", "windows-race", "windows_race_test.go"),
-  "utf8",
-);
-const guard = fs.readFileSync(
-  path.join(root, ".github", "scripts", "govulncheck-sarif-guard.sh"),
-  "utf8",
-);
+const guard = read(".github/scripts/govulncheck-sarif-guard.sh");
 
 function occurrences(source, pattern) {
   return [...source.matchAll(pattern)].length;
