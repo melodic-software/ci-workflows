@@ -9,14 +9,14 @@
 // a comment body is written only when that action kept it, or when it is
 // this review lane's own unedited finding (laneFinding). A thread is
 // settled when a listed account resolved it, or a listed human replied in it.
-// For each
-// settled thread the step diffs its resolution head against the head and
-// records whether the lines under it changed; any failure answers yes.
+// For each settled thread the step diffs its resolution head against the head
+// and records whether the lines under it changed; any failure answers yes.
 "use strict";
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const SHA = /^[0-9a-f]{40}$/u;
 const LIST_PATH = ".github/standards/trusted-actors/trusted-actors.json";
@@ -99,7 +99,7 @@ function laneFinding(c, bound = new Map()) {
 // the clone (`source`). Each cited run is read once; a comment whose check fails to read is left out.
 async function boundLaneFindings(threads, { github, owner, repo, number, source }) {
   const { laneChecker, withoutBinding } = await import(
-    require("node:url").pathToFileURL(path.join(source, "plugins/review/lib/lane-binding.mjs")).href
+    pathToFileURL(path.join(source, "plugins/review/lib/lane-binding.mjs")).href
   );
   const check = laneChecker({
     pr: number,
@@ -208,13 +208,15 @@ async function run({ github, context, core }) {
   const env = process.env;
   const { owner, repo } = context.repo;
   const head = env.HEAD_SHA;
+  const number = Number(env.PR_NUMBER);
   // A file the head ships at this path never reaches the model.
   fs.rmSync(env.OUTPUT_FILE, { force: true });
 
   // Threads first: with none that could be settled, nothing else is read.
-  const threads = (await github.graphql(THREADS_QUERY, { owner, name: repo, number: Number(env.PR_NUMBER) })).repository
-    .pullRequest.reviewThreads;
-  if (!(threads.nodes ?? []).some((t) => t?.isResolved === true || (t?.comments?.nodes?.length ?? 0) >= 2)) {
+  const threads = (await github.graphql(THREADS_QUERY, { owner, name: repo, number })).repository.pullRequest
+    .reviewThreads;
+  const nodes = threads.nodes ?? [];
+  if (!nodes.some((t) => t?.isResolved === true || (t?.comments?.nodes?.length ?? 0) >= 2)) {
     core.info("No resolved or answered review threads.");
     return;
   }
@@ -256,14 +258,8 @@ async function run({ github, context, core }) {
       .map((i) => [i.id, { authorId: i.author_id, login: i.author_login, body: i.body }]),
   );
 
-  const bound = await boundLaneFindings(threads.nodes ?? [], {
-    github,
-    owner,
-    repo,
-    number: Number(env.PR_NUMBER),
-    source: env.SOURCE,
-  });
-  const settled = settledThreads(threads.nodes ?? [], kept, ids, humans, bound);
+  const bound = await boundLaneFindings(nodes, { github, owner, repo, number, source: env.SOURCE });
+  const settled = settledThreads(nodes, kept, ids, humans, bound);
   if (settled.length === 0) {
     core.info("No settled review threads.");
     return;

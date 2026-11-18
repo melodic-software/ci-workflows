@@ -292,10 +292,8 @@ printf 'Checking %d embedded run: block(s); reported line N is line N-1 of the r
 status=0
 cd -- "$workdir"
 
-# Fan-out ShapeCheck over extracted scripts the same way shellcheck/run.sh does:
-# ShellCheck itself is serial per process, so one invocation over dozens of
-# extracted blocks is a serial wall. Batches replay in order so the log matches
-# a single process; the exit status is the maximum over batches.
+# Fan-out ShellCheck over extracted scripts as shellcheck/run.sh does: one
+# process is serial, so batches run in parallel and replay in order.
 run_embedded_shellcheck() {
   local -a sc_args=()
   while (($# > 0)); do
@@ -308,7 +306,7 @@ run_embedded_shellcheck() {
   done
   local capture batch=0 index=0 count=$# st=0 list log rc
   local jobs=4 batch_size
-  if ((count <= 1 || jobs <= 1)); then
+  if ((count <= 1)); then
     shellcheck "${sc_args[@]}" "$@" || st=$?
     return "$st"
   fi

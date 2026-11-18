@@ -9,10 +9,10 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const root = path.join(__dirname, "..");
@@ -70,22 +70,34 @@ function run(script, env, directory) {
 }
 
 function trust(actors, authorIds = "", botIds = "") {
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "check-author-trust-"),
+  const { result, outputs } = run(
+    trustRun,
+    { ACTORS: actors, AUTHOR_IDS: authorIds, BOT_IDS: botIds },
+    makeTemporaryDirectory("check-author-trust-"),
   );
-  try {
-    const { result, outputs } = run(
-      trustRun,
-      { ACTORS: actors, AUTHOR_IDS: authorIds, BOT_IDS: botIds },
-      directory,
-    );
-    return {
-      status: result.status,
-      trusted: outputs.trusted && JSON.parse(outputs.trusted),
-    };
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
+  return {
+    status: result.status,
+    trusted: outputs.trusted && JSON.parse(outputs.trusted),
+  };
+}
+
+// Runs the render step in `directory`, over its pr-context.json, and returns
+// the file it writes; `label` prefixes the failure message.
+function render(directory, repository, trusted, label = "") {
+  const { result } = run(
+    step("pr-context").run,
+    {
+      REPOSITORY: repository,
+      TRUSTED: trusted,
+      CONTEXT_FILE: ".claude-lane/pr-context.md",
+    },
+    directory,
+  );
+  assert.equal(result.status, 0, `${label}${result.stderr}`);
+  return fs.readFileSync(
+    path.join(directory, ".claude-lane", "pr-context.md"),
+    "utf8",
+  );
 }
 
 const issue = (
@@ -112,64 +124,51 @@ function context(
   issues,
   { authorIds = "", botIds = "", trustFails = false } = {},
 ) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pr-context-"));
-  try {
-    const response = {
-      data: {
-        repository: {
-          pullRequest: {
-            number: 5,
-            title: "PR-TITLE",
-            body: "PR-BODY line one\nline two",
-            closingIssuesReferences: { nodes: issues },
-          },
+  const directory = makeTemporaryDirectory("pr-context-");
+  const response = {
+    data: {
+      repository: {
+        pullRequest: {
+          number: 5,
+          title: "PR-TITLE",
+          body: "PR-BODY line one\nline two",
+          closingIssuesReferences: { nodes: issues },
         },
       },
-    };
-    fs.mkdirSync(path.join(directory, "bin"));
-    fs.writeFileSync(
-      path.join(directory, "response.json"),
-      JSON.stringify(response),
-    );
-    fs.writeFileSync(
-      path.join(directory, "bin", "gh"),
-      `#!/bin/sh\ncat "${path.join(directory, "response.json")}"\n`,
-      { mode: 0o755 },
-    );
-    const fetch = run(
-      step("pr-context-fetch").run,
-      {
-        GH_TOKEN: "x",
-        OWNER: "melodic-software",
-        REPO_NAME: "demo",
-        PR_NUMBER: "5",
-      },
-      directory,
-    );
-    assert.equal(fetch.result.status, 0, fetch.result.stderr);
-    const checked = run(
-      trustRun,
-      { ACTORS: fetch.outputs.actors, AUTHOR_IDS: authorIds, BOT_IDS: botIds },
-      directory,
-    );
-    assert.equal(checked.result.status, 0, checked.result.stderr);
-    const render = run(
-      step("pr-context").run,
-      {
-        REPOSITORY: "melodic-software/demo",
-        TRUSTED: trustFails ? "" : checked.outputs.trusted,
-        CONTEXT_FILE: ".claude-lane/pr-context.md",
-      },
-      directory,
-    );
-    assert.equal(render.result.status, 0, render.result.stderr);
-    return fs.readFileSync(
-      path.join(directory, ".claude-lane", "pr-context.md"),
-      "utf8",
-    );
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
+    },
+  };
+  fs.mkdirSync(path.join(directory, "bin"));
+  fs.writeFileSync(
+    path.join(directory, "response.json"),
+    JSON.stringify(response),
+  );
+  fs.writeFileSync(
+    path.join(directory, "bin", "gh"),
+    `#!/bin/sh\ncat "${path.join(directory, "response.json")}"\n`,
+    { mode: 0o755 },
+  );
+  const fetch = run(
+    step("pr-context-fetch").run,
+    {
+      GH_TOKEN: "x",
+      OWNER: "melodic-software",
+      REPO_NAME: "demo",
+      PR_NUMBER: "5",
+    },
+    directory,
+  );
+  assert.equal(fetch.result.status, 0, fetch.result.stderr);
+  const checked = run(
+    trustRun,
+    { ACTORS: fetch.outputs.actors, AUTHOR_IDS: authorIds, BOT_IDS: botIds },
+    directory,
+  );
+  assert.equal(checked.result.status, 0, checked.result.stderr);
+  return render(
+    directory,
+    "melodic-software/demo",
+    trustFails ? "" : checked.outputs.trusted,
+  );
 }
 
 const PLACEHOLDER =
@@ -282,44 +281,27 @@ test("the PR context drops AI attribution lines from the description, filtered b
     ["filter before cap", `${long}\n${ATTRIBUTION}\ntail`, `${long}\ntail`],
   ];
   for (const [name, body, expected] of cases) {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pr-context-"));
-    try {
-      fs.writeFileSync(
-        path.join(directory, "pr-context.json"),
-        JSON.stringify({
-          data: {
-            repository: {
-              pullRequest: {
-                number: 5,
-                title: "T",
-                body,
-                closingIssuesReferences: { nodes: [] },
-              },
+    const directory = makeTemporaryDirectory("pr-context-");
+    fs.writeFileSync(
+      path.join(directory, "pr-context.json"),
+      JSON.stringify({
+        data: {
+          repository: {
+            pullRequest: {
+              number: 5,
+              title: "T",
+              body,
+              closingIssuesReferences: { nodes: [] },
             },
           },
-        }),
-      );
-      const { result } = run(
-        step("pr-context").run,
-        {
-          REPOSITORY: "o/r",
-          TRUSTED: "[]",
-          CONTEXT_FILE: ".claude-lane/pr-context.md",
         },
-        directory,
-      );
-      assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-      const file = fs.readFileSync(
-        path.join(directory, ".claude-lane", "pr-context.md"),
-        "utf8",
-      );
-      assert.ok(
-        file.endsWith(`## Pull request #5: T\n\n${expected}\n`),
-        `${name}: the description reads as expected`,
-      );
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
+      }),
+    );
+    const file = render(directory, "o/r", "[]", `${name}: `);
+    assert.ok(
+      file.endsWith(`## Pull request #5: T\n\n${expected}\n`),
+      `${name}: the description reads as expected`,
+    );
   }
 });
 

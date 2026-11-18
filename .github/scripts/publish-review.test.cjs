@@ -7,6 +7,7 @@
 // warn-only label).
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -231,6 +232,14 @@ async function publish(overrides, options) {
   return { writes, log };
 }
 
+// publish with `review` as the key leg's review.
+const publishReview = (review, overrides, options) =>
+  publish({ KEY_REVIEW: JSON.stringify(review), ...overrides }, options);
+
+// The marker comment a run created.
+const createdMarker = (writes) =>
+  writes.find(([name]) => name === "createComment");
+
 test("comments mode posts one COMMENT review of footed comments, the marker and the completion notice", async () => {
   const { writes, log } = await publish({});
   assert.deepEqual(log.failed, []);
@@ -305,7 +314,7 @@ test("a rerun posts no comment this lane already posted on the head", async () =
 
 test("a bad anchor posts no review and lists the findings in the marker's summary", async () => {
   const review = { ...REVIEW, comments: [{ ...REVIEW.comments[0], line: 9 }] };
-  const { writes, log } = await publish({ KEY_REVIEW: JSON.stringify(review) });
+  const { writes, log } = await publishReview(review);
   assert.deepEqual(
     writes.map(([name]) => name),
     ["createComment"],
@@ -322,7 +331,7 @@ test("a credential-shaped review posts nothing and fails; a warn-only label post
     ...REVIEW,
     summary: `key ${FAKE_KEY}`,
   };
-  const withheld = await publish({ KEY_REVIEW: JSON.stringify(leak) });
+  const withheld = await publishReview(leak);
   assert.deepEqual(withheld.writes, []);
   assert.match(
     withheld.log.failed[0],
@@ -333,7 +342,7 @@ test("a credential-shaped review posts nothing and fails; a warn-only label post
     ...REVIEW,
     summary: 'The diff sets password = "hunter2hunter2".',
   };
-  const warned = await publish({ KEY_REVIEW: JSON.stringify(quoted) });
+  const warned = await publishReview(quoted);
   assert.deepEqual(warned.log.failed, []);
   assert.equal(warned.writes.length, 2);
   assert.match(
@@ -512,19 +521,10 @@ test("summary mode writes a scanned shadow report with the review and the leg's 
     "Off by one.\n\nclaude-lane: claude-review",
   );
   const leakDir = path.join(root, "shadow-leak");
-  await publish({
-    PUBLISH: "summary",
-    ARTIFACT_DIR: leakDir,
-    KEY_REVIEW: JSON.stringify({
-      ...REVIEW,
-      comments: [
-        {
-          ...REVIEW.comments[0],
-          body: FAKE_KEY,
-        },
-      ],
-    }),
-  });
+  await publishReview(
+    { ...REVIEW, comments: [{ ...REVIEW.comments[0], body: FAKE_KEY }] },
+    { PUBLISH: "summary", ARTIFACT_DIR: leakDir },
+  );
   // The withheld review leaves a report with its class and none of its text.
   const withheld = fs.readFileSync(
     path.join(leakDir, "claude-review.json"),
@@ -537,7 +537,7 @@ test("summary mode writes a scanned shadow report with the review and the leg's 
 test("every completion notice carries the title a merge gate filters on", async () => {
   const runs = [
     await publish({}),
-    await publish({ KEY_REVIEW: JSON.stringify({ ...REVIEW, comments: [] }) }),
+    await publishReview({ ...REVIEW, comments: [] }),
     await publish({
       SCOPE_REVIEW: "false",
       SKIP: "no-change",
@@ -573,7 +573,7 @@ async function demotedMarker(summary, bodies, findings = bodies.length) {
       body,
     })),
   };
-  const { writes } = await publish({ KEY_REVIEW: JSON.stringify(review) });
+  const { writes } = await publishReview(review);
   assert.deepEqual(
     writes.map(([name]) => name),
     ["createComment"],
@@ -605,13 +605,11 @@ test("a demoted CRITICAL batch adds a critical-findings line the model left out"
 });
 
 test("an inline batch and a summary with two count lines keep the model's text", async () => {
-  const inline = await publish({
-    KEY_REVIEW: JSON.stringify({
-      ...REVIEW,
-      summary: "Summary.\n\ncritical-findings: 0",
-    }),
+  const inline = await publishReview({
+    ...REVIEW,
+    summary: "Summary.\n\ncritical-findings: 0",
   });
-  const marker = inline.writes.find(([name]) => name === "createComment");
+  const marker = createdMarker(inline.writes);
   assert.deepEqual(criticalLines(marker[1].body), [0]);
   const twice = await demotedMarker(
     "critical-findings: 0\ncritical-findings: 1",
@@ -630,7 +628,7 @@ test("a malformed comment beside a valid one posts the valid one inline and the 
     comments: [REVIEW.comments[0]],
     malformed: [{ path: "b.js", line: 4, body: "Wrong side.<!-- x -->" }],
   };
-  const { writes, log } = await publish({ KEY_REVIEW: JSON.stringify(review) });
+  const { writes, log } = await publishReview(review);
   assert.deepEqual(log.failed, []);
   const [posted, marker] = writes;
   assert.equal(posted[0], "createReview");
@@ -649,25 +647,21 @@ test("a malformed CRITICAL comment raises the summary's critical-findings line",
     comments: [REVIEW.comments[0]],
     malformed: [{ body: "Injection.\n\nseverity: CRITICAL" }],
   });
-  const raised = await publish({
-    KEY_REVIEW: JSON.stringify(review("Summary.\n\ncritical-findings: 0")),
-  });
-  const marker = raised.writes.find(([name]) => name === "createComment");
+  const raised = await publishReview(
+    review("Summary.\n\ncritical-findings: 0"),
+  );
+  const marker = createdMarker(raised.writes);
   assert.deepEqual(criticalLines(marker[1].body), [1]);
   // With no line, one is added; the malformed finding counts once.
-  const added = await publish({
-    KEY_REVIEW: JSON.stringify(review("Summary.")),
-  });
-  const addedMarker = added.writes.find(([name]) => name === "createComment");
+  const added = await publishReview(review("Summary."));
+  const addedMarker = createdMarker(added.writes);
   assert.deepEqual(criticalLines(addedMarker[1].body), [1]);
   // A malformed SUGGESTION leaves the line as written.
-  const suggestion = await publish({
-    KEY_REVIEW: JSON.stringify({
-      ...review("Summary.\n\ncritical-findings: 0"),
-      malformed: [{ body: "Naming.\n\nseverity: SUGGESTION" }],
-    }),
+  const suggestion = await publishReview({
+    ...review("Summary.\n\ncritical-findings: 0"),
+    malformed: [{ body: "Naming.\n\nseverity: SUGGESTION" }],
   });
-  const kept = suggestion.writes.find(([name]) => name === "createComment");
+  const kept = createdMarker(suggestion.writes);
   assert.deepEqual(criticalLines(kept[1].body), [0]);
 });
 
@@ -711,13 +705,11 @@ test("a partial review states its coverage first, records no head and fails, wit
       /^read 3 of 4 changed file\(s\); the diff is 1330000 bytes, over one review's read budget; 1 binary file\(s\) not reviewable as text: `t\/fixtures\.tar\.gz`\. /u,
     ],
   ]) {
-    const { writes, log } = await publish({
-      KEY_REVIEW: JSON.stringify({
-        ...REVIEW,
-        findings: 0,
-        comments: [],
-        coverage,
-      }),
+    const { writes, log } = await publishReview({
+      ...REVIEW,
+      findings: 0,
+      comments: [],
+      coverage,
     });
     assert.equal(log.failed.length, 1);
     assert.match(log.failed[0], /^claude-review: failure-class=partial: /u);
@@ -744,11 +736,9 @@ test("a partial review states its coverage first, records no head and fails, wit
 });
 
 test("a partial review still posts the findings it made inline", async () => {
-  const { writes, log } = await publish({
-    KEY_REVIEW: JSON.stringify({
-      ...REVIEW,
-      coverage: { read: 1, changed: 2 },
-    }),
+  const { writes, log } = await publishReview({
+    ...REVIEW,
+    coverage: { read: 1, changed: 2 },
   });
   assert.deepEqual(
     writes.map(([name]) => name),
@@ -767,9 +757,7 @@ test("a complete review names each generated data file it left out", async () =>
   const data =
     "plugins/source-control/skills/babysit-prs/scripts/verify-legacy-fails.json";
   const coverage = { read: 1, changed: 1, data_files: [data] };
-  const { writes, log } = await publish({
-    KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
-  });
+  const { writes, log } = await publishReview({ ...REVIEW, coverage });
   assert.deepEqual(log.failed, []);
   const status = writes[1][1].body.split("\n")[2];
   assert.equal(
@@ -779,13 +767,13 @@ test("a complete review names each generated data file it left out", async () =>
   assert.deepEqual(log.notices, [
     `claude-lane-review-complete lane=claude-review sha=${HEAD} findings=1 inline=1 scope=whole`,
   ]);
-  const shadow = await publish({
-    PUBLISH: "summary",
-    KEY_REVIEW: JSON.stringify({
+  const shadow = await publishReview(
+    {
       ...REVIEW,
       coverage: { read: 1, changed: 1, data_files: ["a.json", "b/c.json"] },
-    }),
-  });
+    },
+    { PUBLISH: "summary" },
+  );
   assert.match(
     shadow.log.summary,
     /- Coverage: read 1 of 1 changed file\(s\); 2 data file\(s\) not reviewed: `a\.json`, `b\/c\.json`\n/u,
@@ -795,11 +783,9 @@ test("a complete review names each generated data file it left out", async () =>
 test("the status line names the first 10 data files and counts the rest", async () => {
   const names = (n) => Array.from({ length: n }, (_, i) => `d/${i + 1}.json`);
   const status = async (n) => {
-    const { writes } = await publish({
-      KEY_REVIEW: JSON.stringify({
-        ...REVIEW,
-        coverage: { read: 1, changed: 1, data_files: names(n) },
-      }),
+    const { writes } = await publishReview({
+      ...REVIEW,
+      coverage: { read: 1, changed: 1, data_files: names(n) },
     });
     return writes[1][1].body.split("\n")[2];
   };
@@ -837,22 +823,17 @@ test("a review with no coverage, or coverage past its scope, is incomplete", asy
     { read: 1, changed: 1, binary_files: "a.gz" },
     { read: 1, changed: 1, binary_files: ["a`b.gz"] },
   ]) {
-    const { writes, log } = await publish({
-      KEY_REVIEW: JSON.stringify({ ...REVIEW, coverage }),
-    });
+    const { writes, log } = await publishReview({ ...REVIEW, coverage });
     assert.deepEqual(writes, [], JSON.stringify(coverage));
     assert.match(log.failed[0], /failure-class=incomplete/u);
   }
 });
 
 test("summary mode reports a partial review in the shadow report and never fails", async () => {
-  const { writes, log } = await publish({
-    PUBLISH: "summary",
-    KEY_REVIEW: JSON.stringify({
-      ...REVIEW,
-      coverage: { read: 1, changed: 4 },
-    }),
-  });
+  const { writes, log } = await publishReview(
+    { ...REVIEW, coverage: { read: 1, changed: 4 } },
+    { PUBLISH: "summary" },
+  );
   assert.deepEqual(writes, []);
   assert.deepEqual(log.failed, []);
   assert.match(log.summary, /- Outcome: partial\n/u);
@@ -875,17 +856,14 @@ function readRecord(file) {
 }
 
 const digest = (body) =>
-  require("node:crypto")
-    .createHash("sha256")
-    .update(body, "utf8")
-    .digest("hex");
+  crypto.createHash("sha256").update(body, "utf8").digest("hex");
+// A fresh comment record path.
+const recordFile = () =>
+  path.join(makeTemporaryDirectory("lane-record-"), "comments.jsonl");
 const BINDING = `<!-- claude-lane-run id=4242 sha=${HEAD} -->`;
 
 test("each comment carries the run's binding above its footer, and the record lists what the run posted", async () => {
-  const record = path.join(
-    makeTemporaryDirectory("lane-record-"),
-    "comments.jsonl",
-  );
+  const record = recordFile();
   const { writes, log } = await publish({
     GITHUB_RUN_ID: "4242",
     LANE_RECORD: record,
@@ -906,10 +884,7 @@ test("each comment carries the run's binding above its footer, and the record li
 });
 
 test("a re-run records the comments its run already posted and posts nothing twice; another run's are neither reposted nor recorded", async () => {
-  const record = path.join(
-    makeTemporaryDirectory("lane-record-"),
-    "comments.jsonl",
-  );
+  const record = recordFile();
   const ours = `Off by one.\n${BINDING}\n\nclaude-lane: claude-review`;
   const posted = [
     {
@@ -940,10 +915,7 @@ test("a re-run records the comments its run already posted and posts nothing twi
       sha256: digest(ours),
     },
   ]);
-  const other = path.join(
-    makeTemporaryDirectory("lane-record-"),
-    "comments.jsonl",
-  );
+  const other = recordFile();
   const later = await publish(
     { GITHUB_RUN_ID: "5000", LANE_RECORD: other, MARKER_ID: "99" },
     { posted },
@@ -957,10 +929,7 @@ test("a re-run records the comments its run already posted and posts nothing twi
 
 test("a finding moved to the summary loses its binding and footer there", async () => {
   const review = { ...REVIEW, comments: [{ ...REVIEW.comments[0], line: 9 }] };
-  const { writes } = await publish({
-    KEY_REVIEW: JSON.stringify(review),
-    GITHUB_RUN_ID: "4242",
-  });
+  const { writes } = await publishReview(review, { GITHUB_RUN_ID: "4242" });
   assert.match(writes[0][1].body, /`a\.js:9` \(RIGHT\): Off by one\.$/mu);
   assert.doesNotMatch(writes[0][1].body, /claude-lane-run|claude-lane: /u);
 });

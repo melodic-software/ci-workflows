@@ -45,21 +45,15 @@ function breaksBelowOne(update, own) {
 // GitHub cuts a long body off at 65,535 characters, which drops the last
 // `Updates` lines of a large group, so the table at the top counts too.
 function metadataMismatch(pr, updates) {
-  const claimed = new Set();
-  const title = /\bbump (\S+) from (\S+) to (\S+)/iu.exec(
-    String(pr.title ?? ""),
-  );
-  if (title) claimed.add(`${title[1]} from ${title[2]} to ${title[3]}`);
-  for (const line of String(pr.body ?? "").matchAll(
-    /^Updates `([^`]+)` from (\S+) to (\S+)\s*$/gmu,
-  )) {
-    claimed.add(`${line[1]} from ${line[2]} to ${line[3]}`);
-  }
-  for (const row of String(pr.body ?? "").matchAll(
-    /^\| \[([^\]]+)\]\([^)]*\) \| `([^`]+)` \| `([^`]+)` \|\s*$/gmu,
-  )) {
-    claimed.add(`${row[1]} from ${row[2]} to ${row[3]}`);
-  }
+  const body = String(pr.body ?? "");
+  const claims = [
+    /\bbump (\S+) from (\S+) to (\S+)/iu.exec(String(pr.title ?? "")),
+    ...body.matchAll(/^Updates `([^`]+)` from (\S+) to (\S+)\s*$/gmu),
+    ...body.matchAll(
+      /^\| \[([^\]]+)\]\([^)]*\) \| `([^`]+)` \| `([^`]+)` \|\s*$/gmu,
+    ),
+  ].filter(Boolean);
+  const claimed = new Set(claims.map((m) => `${m[1]} from ${m[2]} to ${m[3]}`));
   const actual = new Set();
   for (const update of updates) {
     if (!update?.prevVersion || !update?.newVersion) {
@@ -193,10 +187,7 @@ async function gateFailure({ pr, updates, listCommits, inputs }) {
     return "the review-only-dependencies input is not a JSON array of names";
   }
   const publishers = parseJson(inputs.publisherAllowlist);
-  if (
-    !Array.isArray(publishers) ||
-    !publishers.every((entry) => typeof entry === "string" && entry.length > 0)
-  ) {
+  if (!isGlobList(publishers)) {
     return "the publisher-allowlist input is not a JSON array of non-empty globs";
   }
   const allowlist = publishers.map(globToRegExp);

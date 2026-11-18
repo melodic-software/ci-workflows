@@ -114,9 +114,6 @@ while [[ $# -gt 0 ]]; do
       include=true
       shift
       ;;
-    --paginate | --silent)
-      shift
-      ;;
     -*)
       shift
       ;;
@@ -285,46 +282,41 @@ run_case() {
   actual_status=$?
   set -e
   if [[ "$actual_status" -ne "$expected_status" ]]; then
-    echo "FAIL: expected exit $expected_status, got $actual_status"
-    cat "$log_file"
-    # Record and continue: the suite accumulates failures and reports them all.
-    failures=$((failures + 1))
+    fail_case "expected exit $expected_status, got $actual_status" "$log_file"
   fi
 }
 
+# fail_case <message> [file ...]
+# Records one failed expectation and prints the files that show why. The suite
+# records and continues: it accumulates failures and reports them all.
+fail_case() {
+  echo "FAIL: $1"
+  shift
+  [[ $# -eq 0 ]] || cat -- "$@"
+  failures=$((failures + 1))
+}
+
 expect_log() {
-  local expected="$1"
-  if ! grep -qF -- "$expected" "$log_file"; then
-    echo "FAIL: expected log to contain '$expected', got:"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if ! grep -qF -- "$1" "$log_file"; then
+    fail_case "expected log to contain '$1', got:" "$log_file"
   fi
 }
 
 expect_no_log() {
-  local unexpected="$1"
-  if grep -qF -- "$unexpected" "$log_file"; then
-    echo "FAIL: expected log NOT to contain '$unexpected', got:"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if grep -qF -- "$1" "$log_file"; then
+    fail_case "expected log NOT to contain '$1', got:" "$log_file"
   fi
 }
 
 expect_gh_call() {
-  local expected="$1"
-  if ! grep -qF -- "$expected" "$gh_log"; then
-    echo "FAIL: expected a gh call matching '$expected', got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+  if ! grep -qF -- "$1" "$gh_log"; then
+    fail_case "expected a gh call matching '$1', got:" "$gh_log"
   fi
 }
 
 expect_no_gh_call() {
-  local unexpected="$1"
-  if grep -qF -- "$unexpected" "$gh_log"; then
-    echo "FAIL: expected NO gh call matching '$unexpected', got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+  if grep -qF -- "$1" "$gh_log"; then
+    fail_case "expected NO gh call matching '$1', got:" "$gh_log"
   fi
 }
 
@@ -337,9 +329,7 @@ expect_gh_call_before() {
   first_line="$(grep -nF -- "$first" "$gh_log" | head -n1 | cut -d: -f1)"
   second_line="$(grep -nF -- "$second" "$gh_log" | head -n1 | cut -d: -f1)"
   if [[ -z "$first_line" || -z "$second_line" || "$first_line" -ge "$second_line" ]]; then
-    echo "FAIL: expected a gh call matching '$first' before one matching '$second', got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case "expected a gh call matching '$first' before one matching '$second', got:" "$gh_log"
   fi
 }
 
@@ -347,15 +337,13 @@ expect_gh_call_before() {
 # The shim counts calls per key, so this pins how many times the status list
 # was read, independent of which fixture answered.
 expect_status_reads() {
-  local expected="$1" actual=0
+  local actual=0
   local count_file="$calls/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.count"
   if [[ -f "$count_file" ]]; then
     actual="$(cat "$count_file")"
   fi
-  if [[ "$actual" -ne "$expected" ]]; then
-    echo "FAIL: expected $expected status read(s), got $actual"
-    cat "$gh_log"
-    failures=$((failures + 1))
+  if [[ "$actual" -ne "$1" ]]; then
+    fail_case "expected $1 status read(s), got $actual" "$gh_log"
   fi
 }
 
@@ -367,17 +355,13 @@ expect_calls() {
     actual="$(cat "$calls/${1}.count")"
   fi
   if [[ "$actual" -ne "$2" ]]; then
-    echo "FAIL: expected $2 call(s) to ${1}, got $actual"
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case "expected $2 call(s) to ${1}, got $actual" "$gh_log"
   fi
 }
 
 expect_no_sleep() {
   if [[ -s "$sleep_log" ]]; then
-    echo 'FAIL: expected no sleep, got:'
-    cat "$sleep_log"
-    failures=$((failures + 1))
+    fail_case 'expected no sleep, got:' "$sleep_log"
   fi
 }
 
@@ -386,25 +370,16 @@ expect_no_sleep() {
 # is empty instead.
 expect_no_gh_calls_at_all() {
   if [[ -s "$gh_log" ]]; then
-    echo 'FAIL: expected NO gh calls at all, got:'
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case 'expected NO gh calls at all, got:' "$gh_log"
   fi
 }
 
 expect_status_payload() {
-  local expected="$1"
   local payload="$calls/POST_repos_melodic-software_ci-workflows_statuses_${sha}.input.json"
   if [[ ! -f "$payload" ]]; then
-    echo "FAIL: expected a recorded status payload, none written"
-    cat "$gh_log"
-    failures=$((failures + 1))
-    return
-  fi
-  if ! grep -qF -- "$expected" "$payload"; then
-    echo "FAIL: expected status payload to contain '$expected', got:"
-    cat "$payload"
-    failures=$((failures + 1))
+    fail_case "expected a recorded status payload, none written" "$gh_log"
+  elif ! grep -qF -- "$1" "$payload"; then
+    fail_case "expected status payload to contain '$1', got:" "$payload"
   fi
 }
 
@@ -501,7 +476,6 @@ clear_status_fixtures() {
 
 clear_run_fixtures() {
   rm -f -- "$fixtures/${current_run_key}".* "$fixtures/${workflow_runs_key}".* "$fixtures/${graphql_key}".*
-  rm -f -- "$fixtures/${current_run_key}.json" "$fixtures/${workflow_runs_key}.json" "$fixtures/${graphql_key}.json"
 }
 
 # run_resource <run-id> <workflow-id> [typename]
@@ -600,8 +574,7 @@ expect_log 'rate limited; waiting 30s, then retrying once.'
 expect_log "Recorded ci-lanes=success on ${sha}."
 expect_no_log 'needs statuses: write'
 if [[ "$(cat "$sleep_log")" != 30 ]]; then
-  echo "FAIL: expected one 30s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 30s sleep, got: $(cat "$sleep_log")"
 fi
 clear_rate_limit_fixtures
 
@@ -618,8 +591,7 @@ expect_log 'is still rate limited after the wait; not retrying.'
 expect_log "::error::could not record ci-lanes on ${sha} (HTTP 403): rate limited past rate-limit-wait-seconds"
 expect_no_log 'retrying in'
 if [[ "$(cat "$calls/${status_post_key}.count")" != 2 ]]; then
-  echo "FAIL: expected 2 status writes, got $(cat "$calls/${status_post_key}.count")"
-  failures=$((failures + 1))
+  fail_case "expected 2 status writes, got $(cat "$calls/${status_post_key}.count")"
 fi
 clear_rate_limit_fixtures
 
@@ -631,8 +603,7 @@ run_case 0 'success success' pass ''
 expect_log 'returned HTTP 429 (rate-limit): You have exceeded a secondary rate limit.; x-ratelimit-remaining=12 x-ratelimit-reset=50 retry-after=7'
 expect_log 'waiting 7s, then retrying once.'
 if [[ "$(cat "$sleep_log")" != 7 ]]; then
-  echo "FAIL: expected one 7s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 7s sleep, got: $(cat "$sleep_log")"
 fi
 clear_rate_limit_fixtures
 
@@ -644,8 +615,7 @@ printf 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset:
 run_case 0 'success success' pass ''
 expect_log 'waiting 10s, then retrying once.'
 if [[ "$(cat "$sleep_log")" != 10 ]]; then
-  echo "FAIL: expected one 10s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 10s sleep, got: $(cat "$sleep_log")"
 fi
 clear_rate_limit_fixtures
 
@@ -657,8 +627,7 @@ printf 'HTTP/2.0 403 Forbidden\r\nRetry-After: 99999999999999999999\r\nX-Ratelim
 run_case 0 'success success' pass ''
 expect_log 'waiting 60s, then retrying once.'
 if [[ "$(cat "$sleep_log")" != 60 ]]; then
-  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 60s sleep, got: $(cat "$sleep_log")"
 fi
 clear_rate_limit_fixtures
 
@@ -1029,9 +998,7 @@ expect_calls "$graphql_key" 1
 expect_calls "$current_run_key" 0
 rest_calls="$(grep -cv '^api -X POST graphql ' "$gh_log" || true)"
 if [[ "$rest_calls" -ne 6 ]]; then
-  echo "FAIL: expected 6 REST calls (6 at 8b41a59, less 1, plus the status re-read), got ${rest_calls}"
-  cat "$gh_log"
-  failures=$((failures + 1))
+  fail_case "expected 6 REST calls (6 at 8b41a59, less 1, plus the status re-read), got ${rest_calls}" "$gh_log"
 fi
 
 # Without reading the GraphQL `errors` array a primary rate limit, which
@@ -1253,8 +1220,7 @@ expect_log "Waiting 32s for in-flight run(s) 4000 on ${sha} to finish (waited 17
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "$workflow_runs_key" 3
 if [[ "$(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")" != 2 ]]; then
-  echo "FAIL: expected 2 conditional listings, got: $(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")"
-  failures=$((failures + 1))
+  fail_case "expected 2 conditional listings, got: $(grep -cF -- 'If-None-Match: "runs-v1"' "$gh_log")"
 fi
 
 # Without keeping the etag per call, a listing whose content changed (a new
@@ -1305,9 +1271,7 @@ run_case 0 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=0
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_status_reads 2
 if [[ "$(grep -nF "commits/${sha}/statuses" "$gh_log" | tail -n1 | cut -d: -f1)" -le "$(grep -nF 'actions/workflows/777/runs' "$gh_log" | head -n1 | cut -d: -f1)" ]]; then
-  echo 'FAIL: expected the last status read after the run listing, got:'
-  cat "$gh_log"
-  failures=$((failures + 1))
+  fail_case 'expected the last status read after the run listing, got:' "$gh_log"
 fi
 expect_no_sleep
 
@@ -1326,8 +1290,7 @@ expect_log 'waited 240s of 240s on in-flight run(s): 4000'
 # the intervals double from 15 to the 40s cap, each plus 4242's jitter (2s on
 # 15 and 30, 7s on 40), and the last is cut to the 3s left.
 if [[ "$(paste -sd' ' "$sleep_log")" != '17 32 47 47 47 47 3' ]]; then
-  echo "FAIL: expected sleeps backing off from 15s to the cap, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected sleeps backing off from 15s to the cap, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
 fi
 expect_calls "$workflow_runs_key" 8
 
@@ -2090,8 +2053,7 @@ expect_log "::warning::the step of run 4000 that recorded ci-lanes=success on ${
 expect_log "${superseded_prefix}${superseded_automatic}"
 expect_no_log 'Carried forward'
 if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]]; then
-  echo "FAIL: expected the writer wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected the writer wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # The runs a hold sees: 4000 in flight, started at 12:00:00, then finished.
@@ -2116,8 +2078,7 @@ expect_log "Holding 32s for full run(s) 4000 in flight on ${sha} (720s left of 7
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_log 'superseded'
 if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
-  echo "FAIL: expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # Without re-reading after the hold, the older success read before it would
@@ -2146,8 +2107,7 @@ run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SE
 expect_log "${superseded_prefix}${superseded_manual}"
 expect_no_log 'Carried forward'
 if [[ "$(paste -sd' ' "$sleep_log")" != '32 13' ]]; then
-  echo "FAIL: expected holds of 32 and 13 seconds, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected holds of 32 and 13 seconds, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # Without keying the carry on the held run's start, this older success passes
@@ -2275,8 +2235,7 @@ jobs_raw 4200 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log 'Holding 32s for full run(s) 4000 4200'
 if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
-  echo "FAIL: expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected a 32s hold, then a 47s one, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # Without the status read the hold outlasts a verdict whose run stays in flight
@@ -2290,8 +2249,7 @@ jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log "${fail_prefix}${writer_failure_remedy}"
 if [[ "$(paste -sd' ' "$sleep_log")" != '32' ]]; then
-  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # Without the failed-read branch a transient listing error ends the hold early.
@@ -2310,8 +2268,7 @@ writer_jobs 4000 success
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 if [[ "$(paste -sd' ' "$sleep_log")" != '32 47' ]]; then
-  echo "FAIL: expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected a second poll after the failed listing, got: $(paste -sd' ' "$sleep_log")"
 fi
 # Without turning the resend off in the hold, the failed poll is sent again
 # at once instead of on the next poll.
@@ -2331,8 +2288,7 @@ run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SE
 expect_log "::error::could not list this workflow's runs on ${sha}"
 expect_no_log 'Carried forward'
 if [[ "$(head -1 "$sleep_log")" != 32 || "$(grep -c '^32$' "$sleep_log")" -ne 1 ]]; then
-  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # The same on the hold's status read.
@@ -2347,8 +2303,7 @@ jobs_raw 4000 "$full_run_jobs"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RATE_LIMIT_WAIT_SECONDS=0
 expect_no_log 'Carried forward'
 if [[ "$(grep -c '^32$' "$sleep_log")" -ne 1 ]]; then
-  echo "FAIL: expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 32s hold, got: $(paste -sd' ' "$sleep_log")"
 fi
 rm -f -- "$fixtures/${statuses_key}".*.err
 
@@ -2368,8 +2323,7 @@ run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SE
 expect_log 'holding 32s (waited 30s of 720s).'
 expect_no_log '::warning::the step'
 if [[ "$(paste -sd' ' "$sleep_log")" != '5 10 15 32 47 47 47 47' ]]; then
-  echo "FAIL: expected writer polls backing off from 5s to the 30s ceiling, then hold polls from 32s, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected writer polls backing off from 5s to the 30s ceiling, then hold polls from 32s, got: $(paste -sd' ' "$sleep_log")"
 fi
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_log 'superseded'
@@ -2514,8 +2468,7 @@ expect_calls "$workflow_runs_key" 3
 jitter_second="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 2 of 3).*/\1/p' "$log_file")"
 jitter_third="$(sed -n 's/.*sending it again in \([0-9]*\)s (attempt 3 of 3).*/\1/p' "$log_file")"
 if [[ ! "$jitter_second" =~ ^[0-9]+$ || ! "$jitter_third" =~ ^[0-9]+$ || "$jitter_second" -gt 4 || "$jitter_third" -gt 8 ]]; then
-  echo "FAIL: expected at most a 4s then an 8s wait, got: ${jitter_second:-none} ${jitter_third:-none}"
-  failures=$((failures + 1))
+  fail_case "expected at most a 4s then an 8s wait, got: ${jitter_second:-none} ${jitter_third:-none}"
 fi
 rm -f -- "$fixtures/${workflow_runs_key}.fail-times"
 
@@ -2559,9 +2512,7 @@ expect_rerun_after_last_listing() {
   last_listing="$(grep -nF 'actions/workflows/777/runs' "$gh_log" | tail -n1 | cut -d: -f1)"
   rerun_line="$(grep -nF "actions/runs/${1}/rerun-failed-jobs" "$gh_log" | head -n1 | cut -d: -f1)"
   if [[ -z "$last_listing" || -z "$rerun_line" || "$rerun_line" -le "$last_listing" ]]; then
-    echo "FAIL: expected the re-run of ${1} after the last run listing, got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case "expected the re-run of ${1} after the last run listing, got:" "$gh_log"
   fi
 }
 
@@ -2633,8 +2584,7 @@ jobs_for 5300 failure skipped
 jobs_raw 5400 "$inflight_full_jobs"
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true
 if [[ "$(paste -sd' ' "$sleep_log")" != '10 20' ]]; then
-  echo "FAIL: expected sleeps of 10s and 20s, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected sleeps of 10s and 20s, got: $(paste -sd' ' "$sleep_log")"
 fi
 expect_calls GET_repos_melodic-software_ci-workflows_actions_runs_5400_jobs 1
 expect_calls GET_repos_melodic-software_ci-workflows_actions_runs_5300_jobs 3
@@ -2680,16 +2630,13 @@ expect_log "::warning::contract-only run(s) 5300 still in flight on ${sha} after
 expect_gh_call "POST repos/${repository}/actions/runs/5000/rerun-failed-jobs"
 expect_no_gh_call 'actions/runs/5300/rerun-failed-jobs'
 if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 90 ]]; then
-  echo "FAIL: expected the wait to sleep 90s in total, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected the wait to sleep 90s in total, got: $(paste -sd' ' "$sleep_log")"
 fi
 if [[ "$(paste -sd' ' "$sleep_log")" != '10 20 47 13' ]]; then
-  echo "FAIL: expected sleeps backing off from 10s, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected sleeps backing off from 10s, the last cut to the ceiling, got: $(paste -sd' ' "$sleep_log")"
 fi
 if [[ "$(cat "$rerun_runs_count")" -ne 5 ]]; then
-  echo "FAIL: expected 5 run listings (one per poll at 0, 10, 30, 77 and 90s), got: $(cat "$rerun_runs_count")"
-  failures=$((failures + 1))
+  fail_case "expected 5 run listings (one per poll at 0, 10, 30, 77 and 90s), got: $(cat "$rerun_runs_count")"
 fi
 
 # Without reading the input, a consumer whose gate jobs queue longer could not
@@ -2701,8 +2648,7 @@ jobs_raw 5300 "$inflight_contract_only_jobs"
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true YIELD_TO_FULL_RUN=true RERUN_WAIT_SECONDS=30
 expect_log "::warning::contract-only run(s) 5300 still in flight on ${sha} after 30s; not waiting longer to re-run them."
 if [[ "$(awk '{ total += $1 } END { print total + 0 }' "$sleep_log")" -ne 30 ]]; then
-  echo "FAIL: expected the wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected the wait to sleep 30s in total, got: $(paste -sd' ' "$sleep_log")"
 fi
 
 # Without the zero check, `0` would still list and read every in-flight
@@ -2950,9 +2896,7 @@ run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_calls "${runs_key_prefix}_4100_jobs" 1
 if [[ "$(wc -l <"$gh_log")" -gt 7 ]]; then
-  echo "FAIL: expected at most 7 API calls, got $(wc -l <"$gh_log")"
-  cat "$gh_log"
-  failures=$((failures + 1))
+  fail_case "expected at most 7 API calls, got $(wc -l <"$gh_log")" "$gh_log"
 fi
 
 clear_writer_fixtures
@@ -3029,9 +2973,7 @@ expect_calls "$current_run_key" 0
 expect_calls "${runs_key_prefix}_4242_jobs" 1
 expect_calls "${runs_key_prefix}_4000" 0
 if [[ "$(wc -l <"$gh_log")" -gt 15 ]]; then
-  echo "FAIL: expected at most 15 API calls (17 at 834f4e1, less 2), got $(wc -l <"$gh_log")"
-  cat "$gh_log"
-  failures=$((failures + 1))
+  fail_case "expected at most 15 API calls (17 at 834f4e1, less 2), got $(wc -l <"$gh_log")" "$gh_log"
 fi
 
 clear_writer_fixtures
@@ -3058,9 +3000,7 @@ expect_total_sleep_at_most() {
     total=$((total + seconds))
   done <"$sleep_log"
   if [[ "$total" -le 0 || "$total" -gt "$1" ]]; then
-    echo "FAIL: expected a total sleep in 1..$1 seconds, got $total"
-    cat "$sleep_log"
-    failures=$((failures + 1))
+    fail_case "expected a total sleep in 1..$1 seconds, got $total" "$sleep_log"
   fi
 }
 own_cause_prefix="::warning::could not identify this run's gate job and running step in repos/${repository}/actions/runs/4242/jobs: "
@@ -3109,8 +3049,7 @@ own_jobs "[{\"name\":\"lint\",\"conclusion\":\"skipped\"},{\"id\":9100,\"name\":
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 if [[ "$(cat "$sleep_log")" != 1 ]]; then
-  echo "FAIL: expected one 1-second sleep before the second read, got: $(tr '\n' ' ' <"$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 1-second sleep before the second read, got: $(tr '\n' ' ' <"$sleep_log")"
 fi
 clear_own_jobs
 
@@ -3148,8 +3087,7 @@ jq -cn --arg runner "$own_runner" --arg marker "$injected_marker" \
 run_case 1 'skipped skipped' pass true
 expect_no_log 'Carried forward'
 if [[ -e "$injected_marker" ]]; then
-  echo 'FAIL: a job name was evaluated by bash'
-  failures=$((failures + 1))
+  fail_case 'a job name was evaluated by bash'
 fi
 clear_own_jobs
 
@@ -3243,8 +3181,7 @@ printf '%s' '"job-v1"' >"$fixtures/${check_job_key}.etag"
 run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true JOB_CHECK_RUN_ID=9100
 expect_log "${check_job_cause_prefix}job 'ci-status' has no in-progress step after 9 reads."
 if [[ "$(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")" != 8 ]]; then
-  echo "FAIL: expected 8 conditional job reads, got: $(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")"
-  failures=$((failures + 1))
+  fail_case "expected 8 conditional job reads, got: $(grep -cF -- 'If-None-Match: "job-v1"' "$gh_log")"
 fi
 rm -f -- "$fixtures/${check_job_key}.etag"
 
@@ -3312,8 +3249,7 @@ expect_log "${own_cause_prefix}no in-progress job matched runner 'other runner' 
 expect_total_sleep_at_most 120
 # The lookup waits about 120 s for a lagging jobs API, not 15.
 if [[ "$(awk '{ t += $1 } END { print t + 0 }' "$sleep_log")" != 120 ]]; then
-  echo "FAIL: expected the own-job lookup to sleep 120s in all, got: $(tr '\n' ' ' <"$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected the own-job lookup to sleep 120s in all, got: $(tr '\n' ' ' <"$sleep_log")"
 fi
 expect_no_log 'Carried forward'
 # Without naming the lookup, the red reads as a missing lanes status, which
@@ -3345,8 +3281,7 @@ rm -f -- "$fixtures/${own_jobs_key}.fail-times"
 # expect_total_sleep <seconds>
 expect_total_sleep() {
   if [[ "$(awk '{ t += $1 } END { print t + 0 }' "$sleep_log")" != "$1" ]]; then
-    echo "FAIL: expected $1s of sleep in all, got: $(tr '\n' ' ' <"$sleep_log")"
-    failures=$((failures + 1))
+    fail_case "expected $1s of sleep in all, got: $(tr '\n' ' ' <"$sleep_log")"
   fi
 }
 
@@ -3449,9 +3384,7 @@ expect_log "::error::the own-job lookup failed"
 expect_no_log 'no successful ci-lanes status'
 # Without warning once per run, the yield listing and the writer check repeat it.
 if [[ "$(grep -cF -- '::warning::could not identify this run' "$log_file")" -ne 1 ]]; then
-  echo 'FAIL: expected exactly one own-gate warning, got:'
-  cat "$log_file"
-  failures=$((failures + 1))
+  fail_case 'expected exactly one own-gate warning, got:' "$log_file"
 fi
 
 # Without recording a failed read as the cause, the red names no cause at all.
@@ -3517,14 +3450,12 @@ echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
 for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rate-limit-wait-seconds record-pending yield-to-full-run yield-wait-seconds token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
-    echo "FAIL: action.yml declares no '${input_name}' input"
-    failures=$((failures + 1))
+    fail_case "action.yml declares no '${input_name}' input"
   fi
 done
 for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN YIELD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
-    echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
-    failures=$((failures + 1))
+    fail_case "action.yml does not pass '${environment_name}' to run.sh"
   fi
 done
 
@@ -3533,8 +3464,7 @@ done
 for input_name in rerun-contract-only-siblings record-pending yield-to-full-run; do
   input_default="$(awk -v key="  ${input_name}:" '$0 == key { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
   if [[ "$input_default" != "    default: 'false'" ]]; then
-    echo "FAIL: action.yml does not default ${input_name} to 'false' (got: ${input_default})"
-    failures=$((failures + 1))
+    fail_case "action.yml does not default ${input_name} to 'false' (got: ${input_default})"
   fi
 done
 
@@ -3543,8 +3473,7 @@ done
 # five-minute ci-status job budget). A drift here is invisible to every case
 # above, which sets the value explicitly.
 if ! grep -qF "    default: '240'" "$action_metadata"; then
-  echo "FAIL: action.yml does not default carry-forward-wait-seconds to 240"
-  failures=$((failures + 1))
+  fail_case "action.yml does not default carry-forward-wait-seconds to 240"
 fi
 
 # The rerun wait holds the full run's ci-status open, so its default must stay
@@ -3552,19 +3481,16 @@ fi
 # runs on run.sh's own fallback, which this does not see.
 rerun_wait_default="$(awk '$0 == "  rerun-wait-seconds:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$rerun_wait_default" != "    default: '90'" ]]; then
-  echo "FAIL: action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
-  failures=$((failures + 1))
+  fail_case "action.yml does not default rerun-wait-seconds to '90' (got: ${rerun_wait_default})"
 fi
 
 # step-name is opt-in: empty keeps the one-in-progress-step rule.
 if ! grep -qE '^  step-name:' "$action_metadata" || ! grep -qF '        STEP_NAME: ' "$action_metadata"; then
-  echo "FAIL: action.yml does not declare and wire the step-name input"
-  failures=$((failures + 1))
+  fail_case "action.yml does not declare and wire the step-name input"
 fi
 step_name_default="$(awk '$0 == "  step-name:" { found = 1; next } found && /^    default:/ { print; exit }' "$action_metadata")"
 if [[ "$step_name_default" != "    default: ''" ]]; then
-  echo "FAIL: action.yml does not default step-name to '' (got: ${step_name_default})"
-  failures=$((failures + 1))
+  fail_case "action.yml does not default step-name to '' (got: ${step_name_default})"
 fi
 
 # --- api-calls count -------------------------------------------------------
@@ -3578,14 +3504,10 @@ echo 'case: full mode reports its one status write as the api-calls notice and s
 run_case 0 'success success' pass '' true "GITHUB_STEP_SUMMARY=$summary_file"
 expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=0'
 if ! grep -qxF 'API calls: github-token=1 not-modified=0 graphql=0' "$summary_file"; then
-  echo 'FAIL: expected the api-calls line in the step summary, got:'
-  cat "$summary_file"
-  failures=$((failures + 1))
+  fail_case 'expected the api-calls line in the step summary, got:' "$summary_file"
 fi
 if [[ "$(tail -n1 "$log_file")" != '::notice title=api-calls::github-token=1 not-modified=0 graphql=0' ]]; then
-  echo 'FAIL: expected the api-calls notice as the last log line'
-  cat "$log_file"
-  failures=$((failures + 1))
+  fail_case 'expected the api-calls notice as the last log line' "$log_file"
 fi
 
 # Without the EXIT trap a failing run reports nothing; the exit status stays 1.

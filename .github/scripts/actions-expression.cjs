@@ -9,17 +9,14 @@
 
 const str = (value) =>
   value === null || value === undefined ? "" : String(value);
+const lower = (value) => str(value).toLowerCase();
 const functions = {
   contains: (haystack, needle) =>
     Array.isArray(haystack)
-      ? haystack.some(
-          (item) => str(item).toLowerCase() === str(needle).toLowerCase(),
-        )
-      : str(haystack).toLowerCase().includes(str(needle).toLowerCase()),
-  startsWith: (text, prefix) =>
-    str(text).toLowerCase().startsWith(str(prefix).toLowerCase()),
-  endsWith: (text, suffix) =>
-    str(text).toLowerCase().endsWith(str(suffix).toLowerCase()),
+      ? haystack.some((item) => lower(item) === lower(needle))
+      : lower(haystack).includes(lower(needle)),
+  startsWith: (text, prefix) => lower(text).startsWith(lower(prefix)),
+  endsWith: (text, suffix) => lower(text).endsWith(lower(suffix)),
   format: (template, ...args) =>
     template.replace(/\{(\d+)\}/gu, (_, i) => str(args[Number(i)])),
   fromJSON: (text) => JSON.parse(text),
@@ -35,13 +32,17 @@ const CONTEXTS = [
   "secrets",
   "env",
 ];
+const CONTEXT_PATH = new RegExp(
+  String.raw`\b(${CONTEXTS.join("|")})((?:\.[A-Za-z_][\w-]*)+)`,
+  "gu",
+);
 
 const evaluate = (expression, contexts) => {
   const body = expression
     .trim()
     .replace(/^\$\{\{([\s\S]*)\}\}$/u, "$1")
     .replace(
-      /\b(github|inputs|needs|steps|vars|secrets|env)((?:\.[A-Za-z_][\w-]*)+)/gu,
+      CONTEXT_PATH,
       (_, root, rest) =>
         `${root}${rest
           .slice(1)

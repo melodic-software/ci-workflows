@@ -20,7 +20,6 @@ fi
 
 failed=0
 while IFS= read -r -d '' path; do
-  [[ -n "$path" ]] || continue
   echo "::error file=$path::GitHub Actions metadata must be named action.yml, not action.yaml — this repo enforces action.yml exclusively (melodic-software/ci-workflows#267): rename this file."
   failed=1
 done <"$candidates"

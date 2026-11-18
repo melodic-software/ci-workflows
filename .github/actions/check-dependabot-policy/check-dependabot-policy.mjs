@@ -69,6 +69,8 @@ const WAIVE_BY_RULE = {
   "groups-missing": "groups",
 };
 
+const isMapping = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
 function finding(rule, file, entry, message) {
   return entry === undefined ? { rule, file, message } : { rule, file, entry, message };
 }
@@ -95,30 +97,27 @@ function validateStructure(value, validator, location) {
   throw new ConfigurationError(`${errorLocation} ${error.message}`);
 }
 
-async function readJson(filePath, location) {
-  let source;
+// The file's text, or undefined when it does not exist.
+async function readOptional(filePath, location) {
   try {
-    source = await readFile(filePath, "utf8");
+    return await readFile(filePath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
       return undefined;
     }
     throw new ConfigurationError(`${location} could not be read at ${filePath}: ${error.message}`);
   }
-  return parseUniqueJson(source, `${location} at ${filePath}`);
+}
+
+async function readJson(filePath, location) {
+  const source = await readOptional(filePath, location);
+  return source === undefined ? undefined : parseUniqueJson(source, `${location} at ${filePath}`);
 }
 
 async function readDependabot(filePath) {
-  let source;
-  try {
-    source = await readFile(filePath, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return undefined;
-    }
-    throw new ConfigurationError(
-      `dependabot config could not be read at ${filePath}: ${error.message}`,
-    );
+  const source = await readOptional(filePath, "dependabot config");
+  if (source === undefined) {
+    return undefined;
   }
   const document = parseDocument(source, {
     maxAliasCount: 0,
@@ -133,7 +132,7 @@ async function readDependabot(filePath) {
     );
   }
   const value = document.toJS({ maxAliasCount: 0 });
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isMapping(value)) {
     throw new ConfigurationError(`dependabot config at ${filePath} must be a mapping`);
   }
   return value;
@@ -275,16 +274,12 @@ function entryFindings(file, key, entry, policy) {
   }
   findings.push(...cooldownClassFindings(file, key, entry, policy));
   if (policy.requireGroups) {
-    const groups = entry.groups;
-    const groupValues =
-      groups !== null && typeof groups === "object" && !Array.isArray(groups)
-        ? Object.values(groups)
-        : [];
+    const groupValues = isMapping(entry.groups) ? Object.values(entry.groups) : [];
     // A group only batches version updates when its applies-to is absent (the
     // default) or version-updates; a security-updates-only group leaves regular
     // bumps at one pull request per dependency.
     const coversVersionUpdates = groupValues.some((group) => {
-      if (group === null || typeof group !== "object" || Array.isArray(group)) {
+      if (!isMapping(group)) {
         return false;
       }
       const appliesTo = group["applies-to"];
@@ -330,9 +325,7 @@ function entryFindings(file, key, entry, policy) {
   const ignore = Array.isArray(entry.ignore) ? entry.ignore : [];
   const disablingIgnore = ignore.some(
     (rule) =>
-      rule !== null &&
-      typeof rule === "object" &&
-      !Array.isArray(rule) &&
+      isMapping(rule) &&
       rule["dependency-name"] === "*" &&
       rule.versions === undefined &&
       rule["update-types"] === undefined,
@@ -422,7 +415,7 @@ export async function auditRepository({
   const consumedWaives = new Set();
   const seenKeys = new Set();
   for (const [index, entry] of updates.entries()) {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    if (!isMapping(entry)) {
       findings.push(
         finding(
           "malformed-update-entry",
@@ -489,18 +482,18 @@ export async function auditRepository({
   return sortFindings(findings);
 }
 
+const findingKey = (item) => [item.file, item.entry ?? "", item.rule, item.message].join("\0");
+
 function sortFindings(findings) {
   const unique = new Map();
   for (const item of findings) {
-    const key = [item.file, item.entry ?? "", item.rule, item.message].join("\0");
+    const key = findingKey(item);
     if (!unique.has(key)) {
       unique.set(key, item);
     }
   }
   return [...unique.values()].sort((left, right) =>
-    [left.file, left.entry ?? "", left.rule, left.message]
-      .join("\0")
-      .localeCompare([right.file, right.entry ?? "", right.rule, right.message].join("\0")),
+    findingKey(left).localeCompare(findingKey(right)),
   );
 }
 

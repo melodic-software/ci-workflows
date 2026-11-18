@@ -1,10 +1,13 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+
+const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 const workflow = fs.readFileSync(
@@ -90,10 +93,9 @@ test("native zizmor preserves the reusable interface and read-only default", () 
 // Runs the real run-step script with fake curl, sha256sum and tar so the
 // download path succeeds, and a fake zizmor that records its arguments.
 function runLane({ dirs, paths }) {
-  const { parseWorkflow } = require("./workflow-yaml.cjs");
-  const { spawnSync } = require("node:child_process");
-  const parsed = parseWorkflow(workflow);
-  const step = parsed.jobs.zizmor.steps.find((entry) => entry?.id === "zizmor");
+  const step = parseWorkflow(workflow).jobs.zizmor.steps.find(
+    (entry) => entry?.id === "zizmor",
+  );
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zizmor-lane-"));
   try {
     const bin = path.join(root, "bin");
@@ -135,7 +137,7 @@ function runLane({ dirs, paths }) {
         GITHUB_WORKSPACE: workspace,
         GITHUB_OUTPUT: path.join(root, "github-output"),
         PATHS: paths,
-        REQUESTED_VERSION: "v1.30.0",
+        REQUESTED_VERSION: `v${pinnedVersion}`,
         EXPECTED_SHA256: "0".repeat(64),
         ONLINE_AUDITS: "true",
         PERSONA: "regular",
@@ -143,8 +145,8 @@ function runLane({ dirs, paths }) {
         FAIL_ON_SEVERITY: "never",
         UPLOAD_SARIF: "false",
         ZIZMOR_TOKEN: "token",
-        PINNED_VERSION: "1.30.0",
-        ASSET_NAME: "zizmor-x86_64-unknown-linux-gnu.tar.gz",
+        PINNED_VERSION: pinnedVersion,
+        ASSET_NAME: assetName,
       },
     });
     const targets = fs.existsSync(argsFile)

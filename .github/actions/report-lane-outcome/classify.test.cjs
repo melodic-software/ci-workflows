@@ -1,7 +1,5 @@
-// Port of the classify-infra-failure.sh corpus to the JS classifier. The
-// shell version's final case (unset GITHUB_OUTPUT fails closed) has no
-// analog here: output delivery is owned by github-script's core.setOutput in
-// action.yml, not by this module.
+// The classifier's corpus. An unset GITHUB_OUTPUT has no case here: output
+// delivery is github-script's core.setOutput in action.yml, not this module.
 "use strict";
 
 const assert = require("node:assert/strict");
@@ -13,9 +11,14 @@ const {
   makeTemporaryDirectory,
 } = require("../../scripts/temporary-directories.cjs");
 const {
+  apiErrorFacts,
   classifyExecutionFile,
+  creditStopResetsAt,
   failedShellCalls,
+  isCreditStop,
   laneReport,
+  rateLimitWindows,
+  readLegLog,
   readRunRecord,
   recordText,
 } = require("./classify.cjs");
@@ -37,6 +40,12 @@ const DIAGNOSTIC =
 
 const temporaryDirectory = makeTemporaryDirectory("classify-");
 const executionFile = path.join(temporaryDirectory, "execution.json");
+
+// Writes `contents` as the execution file and returns its path.
+function writeExecution(contents) {
+  fs.writeFileSync(executionFile, JSON.stringify(contents));
+  return executionFile;
+}
 
 function resultMessage(apiErrorStatus, extra = {}) {
   return [
@@ -76,8 +85,7 @@ function apiErrorBody(errorType) {
 }
 
 function run(contents) {
-  fs.writeFileSync(executionFile, JSON.stringify(contents));
-  return classifyExecutionFile(executionFile);
+  return classifyExecutionFile(writeExecution(contents));
 }
 
 function assertClass(label, expectedClass, contents) {
@@ -123,55 +131,32 @@ test("a status present but null is treated as absent, so the substring pass runs
   );
 });
 
+// The substring pass over an error-variant result carrying `errorType`'s body.
+function assertTypeClass(errorType, expectedClass) {
+  assertClass(
+    errorType,
+    expectedClass,
+    errorMessage([DIAGNOSTIC, apiErrorBody(errorType)]),
+  );
+}
+
 test("the error-variant substring pass, one case per allowlisted token", () => {
-  assertClass(
-    "authentication_error",
-    "auth",
-    errorMessage([DIAGNOSTIC, apiErrorBody("authentication_error")]),
-  );
-  assertClass(
-    "billing_error",
-    "auth",
-    errorMessage([DIAGNOSTIC, apiErrorBody("billing_error")]),
-  );
-  assertClass(
-    "permission_error",
-    "auth",
-    errorMessage([DIAGNOSTIC, apiErrorBody("permission_error")]),
-  );
-  assertClass(
-    "rate_limit_error",
-    "rate-limit",
-    errorMessage([DIAGNOSTIC, apiErrorBody("rate_limit_error")]),
-  );
-  assertClass(
-    "overloaded_error",
-    "overloaded",
-    errorMessage([DIAGNOSTIC, apiErrorBody("overloaded_error")]),
-  );
-  assertClass(
-    "timeout_error",
-    "overloaded",
-    errorMessage([DIAGNOSTIC, apiErrorBody("timeout_error")]),
-  );
-  assertClass(
-    "api_error",
-    "overloaded",
-    errorMessage([DIAGNOSTIC, apiErrorBody("api_error")]),
-  );
+  for (const [errorType, expectedClass] of [
+    ["authentication_error", "auth"],
+    ["billing_error", "auth"],
+    ["permission_error", "auth"],
+    ["rate_limit_error", "rate-limit"],
+    ["overloaded_error", "overloaded"],
+    ["timeout_error", "overloaded"],
+    ["api_error", "overloaded"],
+  ]) {
+    assertTypeClass(errorType, expectedClass);
+  }
 });
 
 test("the client-error types stay `other` on the substring path", () => {
-  assertClass(
-    "invalid_request_error",
-    "other",
-    errorMessage([DIAGNOSTIC, apiErrorBody("invalid_request_error")]),
-  );
-  assertClass(
-    "not_found_error",
-    "other",
-    errorMessage([DIAGNOSTIC, apiErrorBody("not_found_error")]),
-  );
+  assertTypeClass("invalid_request_error", "other");
+  assertTypeClass("not_found_error", "other");
 });
 
 test("the synthetic diagnostic line alone must not match any token", () => {
@@ -218,22 +203,19 @@ test("a run that used every turn classifies as max-turns", () => {
 });
 
 test("an error result past the caller's cap keeps its errors[] class", () => {
-  fs.writeFileSync(
-    executionFile,
-    JSON.stringify([
-      {
-        type: "result",
-        subtype: "error_during_execution",
-        is_error: true,
-        num_turns: 20,
-        errors: [
-          'APIError: {"type":"error","error":{"type":"authentication_error","message":"x"}}',
-        ],
-      },
-    ]),
-  );
+  const file = writeExecution([
+    {
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      num_turns: 20,
+      errors: [
+        'APIError: {"type":"error","error":{"type":"authentication_error","message":"x"}}',
+      ],
+    },
+  ]);
   assert.equal(
-    classifyExecutionFile(executionFile, { maxTurns: "15" }).failureClass,
+    classifyExecutionFile(file, { maxTurns: "15" }).failureClass,
     "auth",
   );
 });
@@ -242,7 +224,7 @@ test("a success result past the caller's cap classifies as max-turns", () => {
   // The shape of claude-code-plugins run 39038437240: the action failed with
   // "Claude reported a successful result after 16 turns, exceeding the
   // configured maximum of 15" over a result message that reads as a success.
-  const pastCap = [
+  writeExecution([
     {
       type: "result",
       subtype: "success",
@@ -250,8 +232,7 @@ test("a success result past the caller's cap classifies as max-turns", () => {
       num_turns: 16,
       duration_ms: 65265,
     },
-  ];
-  fs.writeFileSync(executionFile, JSON.stringify(pastCap));
+  ]);
   const classify = (maxTurns) =>
     classifyExecutionFile(executionFile, { maxTurns }).failureClass;
   assert.equal(classify("15"), "max-turns");
@@ -280,8 +261,9 @@ test("a step that ran its whole budget classifies as timeout, file or not", () =
   assert.equal(missing.failureClass, "timeout");
   assert.equal(missing.reviewDetail, "(no execution file was produced)");
 
-  fs.writeFileSync(executionFile, JSON.stringify(resultMessage(429)));
-  const projected = classifyExecutionFile(executionFile, { timedOut: true });
+  const projected = classifyExecutionFile(writeExecution(resultMessage(429)), {
+    timedOut: true,
+  });
   assert.equal(projected.failureClass, "timeout");
   assert.equal(JSON.parse(projected.reviewDetail).class, "timeout");
 });
@@ -325,9 +307,10 @@ test("a failed Bun install with no execution file classifies as install-failed",
   );
 
   // An execution file means Claude ran: the run decides.
-  fs.writeFileSync(executionFile, JSON.stringify(resultMessage(429)));
   assert.equal(
-    classifyExecutionFile(executionFile, { installFailed: true }).failureClass,
+    classifyExecutionFile(writeExecution(resultMessage(429)), {
+      installFailed: true,
+    }).failureClass,
     "rate-limit",
   );
 });
@@ -364,8 +347,7 @@ const rateLimitEvent = (status, resetsAt, rateLimitType = "five_hour") => ({
 });
 
 function record(contents) {
-  fs.writeFileSync(executionFile, JSON.stringify(contents));
-  return readRunRecord(executionFile);
+  return readRunRecord(writeExecution(contents));
 }
 
 test("the run record reads turns and modelUsage keys from the result message", () => {
@@ -486,8 +468,8 @@ test("record facts: resets only on a limit stop, unknown and malformed values om
   }
 });
 
-// ci-workflows#806: a subscription job that ran because the key job
-// credit-stopped, or had no key, says so in the record.
+// A subscription job that ran because the key job credit-stopped, or had no
+// key, says so in the record.
 test("record facts: a fallback reason rides on the record only from its vocabulary", () => {
   const run = { turns: 4, models: [], resetsAt: null };
   const credential = "AUTOMATIONS_CLAUDE_CODE_OAUTH_TOKEN";
@@ -517,8 +499,6 @@ test("record facts: a fallback reason rides on the record only from its vocabula
 // Agent SDK reference: `api_error_status` on the result, `error` on a
 // synthesized assistant message. Which of those fields a real credit stop
 // fills is not yet observed.
-const { creditStopResetsAt, isCreditStop } = require("./classify.cjs");
-
 const TIER_CAP_TEXT =
   'API Error: 429 {"type":"error","error":{"type":"rate_limit_error",' +
   '"message":"You have reached your API usage limits: your organization has ' +
@@ -554,8 +534,7 @@ function stopMessages({
 }
 
 function classifyStop(messages, options) {
-  fs.writeFileSync(executionFile, JSON.stringify(messages));
-  return classifyExecutionFile(executionFile, options).failureClass;
+  return classifyExecutionFile(writeExecution(messages), options).failureClass;
 }
 
 test("credit-stop: an exhausted Console credit balance (400) with opt-in", () => {
@@ -745,7 +724,6 @@ test("credit-stop: never when the model could have written the text", () => {
 // error.type and request_id), with an error.details.error_code as the tier
 // spend-cap body above carries one; the code and the low-entropy request id
 // are made up, so the secret scan does not read them as a key.
-const { apiErrorFacts } = require("./classify.cjs");
 const PERMISSION_TEXT =
   'API Error: 403 {"type":"error","error":{"type":"permission_error",' +
   '"message":"not permitted","details":{"error_code":"workspace_access_denied"}},' +
@@ -972,8 +950,6 @@ test("lane record: costUsd rides on every outcome and is omitted when unknown", 
 // (code.claude.com/docs/en/agent-sdk/typescript.md, SDKRateLimitEvent:
 // status, resetsAt, utilization; python.md, RateLimitInfo: the five
 // rate_limit_type windows and utilization as a 0.0-1.0 fraction).
-const { rateLimitWindows, readLegLog } = require("./classify.cjs");
-
 const windowEvent = (status, rateLimitType, utilization, resetsAt = NEW_YEAR) => ({
   type: "rate_limit_event",
   rate_limit_info: { status, resetsAt, rateLimitType, utilization },
@@ -1147,10 +1123,8 @@ test("lane record: past 1,024 characters models go first, then usage, and the re
   assert.equal(large.credential.secret, credential);
 });
 
-// python.md documents RateLimitInfo in snake_case (rate_limit_type,
-// resets_at); the TypeScript reference and this module's older reads use
-// camelCase. No real CI stream has shown which one the CLI emits, so both
-// forms count, field by field.
+// python.md documents RateLimitInfo in snake_case, the TypeScript reference in camelCase;
+// no real CI stream shows which the CLI emits, so both count, field by field.
 test("rate-limit windows read the snake_case form as well as the camelCase one", () => {
   const snake = (status, rate_limit_type, utilization, resets_at = NEW_YEAR) => ({
     type: "rate_limit_event",
@@ -1183,10 +1157,8 @@ test("resets and its window come from a rejected event in either field form", ()
   assert.equal(camelStop.resetsWindow, "five_hour");
 });
 
-// Shapes from the #816 probe (CLI 2.1.305, stream-json): a non-zero Bash exit
-// records `{"type":"tool_result","content":"Exit code 1","is_error":true}`; a
-// denied call records `is_error: true` too and its id is listed in the result
-// message's `permission_denials` (Agent SDK `SDKPermissionDenial`).
+// CLI 2.1.305 stream-json: a failed Bash call records tool_result `is_error: true`;
+// a denied one does too and its id is listed in the result's `permission_denials`.
 const shellUse = (id, name = "Bash") => ({
   type: "assistant",
   message: { content: [{ type: "tool_use", id, name, input: { command: "gh pr diff 7" } }] },

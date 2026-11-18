@@ -8,6 +8,7 @@
 // claude-code-action skipping itself, and it must never read as a review.
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -15,7 +16,16 @@ const test = require("node:test");
 const {
   makeTemporaryDirectory,
 } = require("../../scripts/temporary-directories.cjs");
-const { MAX_MODELS } = require("./classify.cjs");
+const {
+  COUNT_MAX,
+  CREDENTIAL_PATTERN,
+  FAILURE_CLASSES,
+  FALLBACK_REASONS,
+  LANE_ID_PATTERN,
+  MAX_MODELS,
+  SECRET_NAME_PATTERN,
+  WINDOW_PATTERN,
+} = require("./classify.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
@@ -77,34 +87,7 @@ async function runOutcome({
   jobId = "",
   apiBudgetDir = "",
 }) {
-  const keys = [
-    "RUN_ID",
-    "RUN_ATTEMPT",
-    "JOB_ID",
-    "API_BUDGET_DIR",
-    "LANE_OUTCOME",
-    "EXECUTION_FILE",
-    "LOG_FILE",
-    "LANE_NAME",
-    "STEP_STARTED_AT",
-    "STEP_TIMEOUT_MINUTES",
-    "CREDENTIAL",
-    "MAX_TURNS",
-    "KNOWN_FAILURE_CLASS",
-    "FALLBACK_REASON",
-    "LANE_ID",
-    "HANDOFF",
-    "REQUIRE_COMPLETION",
-    "COMPLETION",
-    "COMPLETION_CLASS",
-    "DETECT_FAILED_SHELL",
-    "FAILED_SHELL_MIN_CALLS",
-    "ACTION_PATH",
-  ];
-  const originalValues = Object.fromEntries(
-    keys.map((key) => [key, process.env[key]]),
-  );
-  Object.assign(process.env, {
+  const stepEnv = {
     LANE_OUTCOME: outcome,
     EXECUTION_FILE: executionFile,
     LOG_FILE: logFile,
@@ -127,7 +110,12 @@ async function runOutcome({
     JOB_ID: jobId,
     API_BUDGET_DIR: apiBudgetDir,
     ACTION_PATH: __dirname,
-  });
+  };
+  const keys = Object.keys(stepEnv);
+  const originalValues = Object.fromEntries(
+    keys.map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, stepEnv);
   const outputs = {};
   const errors = [];
   const warnings = [];
@@ -1210,15 +1198,6 @@ test("the fallback leg after a subscription limit stop writes the contract's fal
 });
 
 test("the schema states the emitter's own patterns, closed sets and limits", () => {
-  const {
-    COUNT_MAX,
-    CREDENTIAL_PATTERN,
-    FAILURE_CLASSES,
-    FALLBACK_REASONS,
-    LANE_ID_PATTERN,
-    SECRET_NAME_PATTERN,
-    WINDOW_PATTERN,
-  } = require("./classify.cjs");
   const { properties } = schema;
   assert.equal(properties.lane.pattern, LANE_ID_PATTERN.source);
   assert.deepEqual(properties.class.enum, FAILURE_CLASSES);
@@ -1512,7 +1491,7 @@ test("with log-file the record carries the leg's token usage and windows from th
   assert.equal("usage" in without || "windows" in without, false);
 });
 
-const sha256 = (text) => require("node:crypto").createHash("sha256").update(text).digest("hex");
+const sha256 = (text) => crypto.createHash("sha256").update(text).digest("hex");
 
 test("the schema accepts a record with every run-context field and rejects value-shaped credentials and free text", () => {
   const full = {

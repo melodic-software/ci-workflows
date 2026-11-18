@@ -87,6 +87,19 @@ const SPLITTER = [
   "",
 ].join("\n");
 
+// The step's output file as the runner reads it: the last value of each key.
+const outputsOf = (file) =>
+  Object.fromEntries(
+    fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => [
+        line.slice(0, line.indexOf("=")),
+        line.slice(line.indexOf("=") + 1),
+      ]),
+  );
+
 // The split step as shipped, over a diff of `files` added one-line files
 // and `renames` pure renames the full-diff step listed as verified.
 function split(job, files, env = {}, { renames = 0 } = {}) {
@@ -140,16 +153,7 @@ function split(job, files, env = {}, { renames = 0 } = {}) {
     },
   });
   assert.equal(result.status, 0, result.stderr);
-  return {
-    outputs: Object.fromEntries(
-      fs
-        .readFileSync(output, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => line.split("=")),
-    ),
-    stdout: result.stdout,
-  };
+  return { outputs: outputsOf(output), stdout: result.stdout };
 }
 
 test("a diff over the chunk ceiling is reviewed unsplit, with the count and the ceiling named", () => {
@@ -202,6 +206,27 @@ async function runScript(s, values) {
   }
   return outputs;
 }
+
+// The compose step over `n` one-file chunks.
+const runCompose = (compose, n, env) =>
+  runScript(compose, {
+    LANE: "code",
+    MODEL: "sonnet",
+    EFFORT: "high",
+    MAX_TURNS: "30",
+    MODEL_ARGS: "",
+    LEVELS_DIR: path.join(__dirname, "..", "actions", "review-levels"),
+    CLI_VERSION: "latest",
+    REPOSITORY: "o/r",
+    PR_NUMBER: "7",
+    HEAD_SHA: "a".repeat(40),
+    HOLD_PATHS: "",
+    RUNNER_TEMP: makeTemporaryDirectory("pr-review-cli-chunks-compose-"),
+    CHUNKS: String(n),
+    CHUNK_FILES: Array(n).fill("1").join(","),
+    MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    ...env,
+  });
 
 const LOG_RECORD = JSON.stringify({
   num_turns: 3,
@@ -444,9 +469,8 @@ test("a handoff stops the loop and hands its reason on", () => {
 });
 
 test("the loop gives every leg run-claude-cli's launcher environment and preamble", () => {
-  const { parseWorkflow: parseYaml } = require("./workflow-yaml.cjs");
   const load = (name) =>
-    parseYaml(
+    parseWorkflow(
       fs.readFileSync(
         path.join(__dirname, "..", "actions", name, "action.yml"),
         "utf8",
@@ -617,24 +641,8 @@ test("a 1-chunk review keeps today's step limits, and the loop's limit grows wit
       ["5", "11", 51],
       ["20", "13", 269],
     ]) {
-      const dir = makeTemporaryDirectory("pr-review-cli-chunks-compose-");
-      const outputs = await runScript(compose, {
-        LANE: "code",
-        MODEL: "sonnet",
-        EFFORT: "high",
-        MAX_TURNS: "30",
-        MODEL_ARGS: "",
-        LEVELS_DIR: path.join(__dirname, "..", "actions", "review-levels"),
-        CLI_VERSION: "latest",
-        REPOSITORY: "o/r",
-        PR_NUMBER: "7",
-        HEAD_SHA: "a".repeat(40),
-        HOLD_PATHS: "",
-        RUNNER_TEMP: dir,
-        CHUNKS: n,
-        CHUNK_FILES: Array(Number(n)).fill("1").join(","),
+      const outputs = await runCompose(compose, Number(n), {
         LEG_MINUTES: leg,
-        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
       });
       assert.equal(outputs["loop-minutes"], String(expected), n);
       assert.equal(
@@ -691,6 +699,34 @@ const chunkReview = (comments, extra = {}) => ({
   comments,
   ...extra,
 });
+// Three chunk reviews: comments 0-11, 12-23 and the rest.
+const thirds = (comments) => ({
+  1: chunkReview(comments.slice(0, 12)),
+  2: chunkReview(comments.slice(12, 24)),
+  3: chunkReview(comments.slice(24)),
+});
+// 20 chunk reviews each at its comment and summary caps, comment i of chunk k
+// on the file fileOf(k, i).
+const cappedReviews = (fileOf) => {
+  const comments = Number(workflow.env.CHUNK_COMMENTS);
+  const chars = Number(workflow.env.CHUNK_SUMMARY_CHARS);
+  const reviews = {};
+  for (let k = 1; k <= 20; k++) {
+    reviews[k] = chunkReview(
+      Array.from({ length: comments }, (_, i) =>
+        finding(
+          fileOf(k, i),
+          i + 1,
+          "IMPORTANT",
+          `Chunk ${k} finding ${i}: `,
+          2950,
+        ),
+      ),
+      { summary: `critical-findings: 0\n${"s".repeat(chars - 21)}` },
+    );
+  }
+  return reviews;
+};
 const listedLines = (summary) =>
   summary
     .split("\n")
@@ -762,13 +798,7 @@ test("30 findings keep 25 inline, most severe first, and list the other 5 with t
     finding(`f${i}.js`, i + 1, level, `Finding ${i}.`),
   );
   for (const job of LEGS) {
-    const outputs = await extractChunked(job, 3, {
-      reviews: {
-        1: chunkReview(all.slice(0, 12)),
-        2: chunkReview(all.slice(12, 24)),
-        3: chunkReview(all.slice(24)),
-      },
-    });
+    const outputs = await extractChunked(job, 3, { reviews: thirds(all) });
     assert.equal(outputs.verdict, "complete", job.name);
     const review = JSON.parse(outputs.review);
     assert.equal(review.comments.length, 25);
@@ -799,13 +829,7 @@ test("30 findings keep 25 inline, most severe first, and list the other 5 with t
     const severe = Array.from({ length: 27 }, (_, i) =>
       finding(`c${i}.js`, 1, "CRITICAL", `Severe ${i}.`),
     );
-    const critical = await extractChunked(job, 3, {
-      reviews: {
-        1: chunkReview(severe.slice(0, 12)),
-        2: chunkReview(severe.slice(12, 24)),
-        3: chunkReview(severe.slice(24)),
-      },
-    });
+    const critical = await extractChunked(job, 3, { reviews: thirds(severe) });
     const merged = JSON.parse(critical.review);
     assert.equal(merged.comments.length, 25);
     assert.deepEqual(
@@ -841,24 +865,10 @@ test("summary-only findings with no critical-findings line stay counted as CRITI
 
 test("20 chunks every one at its caps merge into a review under 100 KB that lists every finding", async () => {
   const comments = Number(workflow.env.CHUNK_COMMENTS);
-  const chars = Number(workflow.env.CHUNK_SUMMARY_CHARS);
   for (const job of LEGS) {
-    const reviews = {};
-    for (let k = 1; k <= 20; k++) {
-      reviews[k] = chunkReview(
-        Array.from({ length: comments }, (_, i) =>
-          finding(
-            `src/module-${k}/file-${i}.ts`,
-            i + 1,
-            "IMPORTANT",
-            `Chunk ${k} finding ${i}: `,
-            2950,
-          ),
-        ),
-        { summary: `critical-findings: 0\n${"s".repeat(chars - 21)}` },
-      );
-    }
-    const outputs = await extractChunked(job, 20, { reviews });
+    const outputs = await extractChunked(job, 20, {
+      reviews: cappedReviews((k, i) => `src/module-${k}/file-${i}.ts`),
+    });
     assert.equal(outputs.verdict, "complete", job.name);
     assert.ok(Buffer.byteLength(outputs.review, "utf8") <= 100000);
     const review = JSON.parse(outputs.review);
@@ -918,11 +928,20 @@ test("a listed comment's path cannot add a line to the summary", async () => {
   }
 });
 
+const PUBLISH = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "publish-review",
+  "publish.cjs",
+);
+const publishReview = require(PUBLISH);
+const PUBLISH_MAX = Number(
+  /^const MAX_SUMMARY = ([0-9]+);$/mu.exec(fs.readFileSync(PUBLISH, "utf8"))[1],
+);
+
 test("the merge reads a comment's severity as publish-review does", () => {
-  const publish = fs.readFileSync(
-    path.join(__dirname, "..", "actions", "publish-review", "publish.cjs"),
-    "utf8",
-  );
+  const publish = fs.readFileSync(PUBLISH, "utf8");
   const source = (re, text, name) => {
     const found = re.exec(text);
     assert.ok(found, name);
@@ -951,19 +970,6 @@ test("the merge reads a comment's severity as publish-review does", () => {
     );
   }
 });
-
-// The step's output file as the runner reads it: the last value of each key.
-const outputsOf = (file) =>
-  Object.fromEntries(
-    fs
-      .readFileSync(file, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => [
-        line.slice(0, line.indexOf("=")),
-        line.slice(line.indexOf("=") + 1),
-      ]),
-  );
 
 test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it finished", () => {
   let killed;
@@ -1003,13 +1009,7 @@ test("comment 26 keeps its full text in the list while the budget allows", async
     finding(`f${i}.js`, 1, "SUGGESTION", `Finding ${i}: `, 900),
   );
   for (const job of LEGS) {
-    const outputs = await extractChunked(job, 3, {
-      reviews: {
-        1: chunkReview(all.slice(0, 12)),
-        2: chunkReview(all.slice(12, 24)),
-        3: chunkReview(all.slice(24)),
-      },
-    });
+    const outputs = await extractChunked(job, 3, { reviews: thirds(all) });
     const review = JSON.parse(outputs.review);
     assert.equal(review.comments.length, 25);
     assert.deepEqual(listedLines(review.summary), [
@@ -1017,18 +1017,6 @@ test("comment 26 keeps its full text in the list while the budget allows", async
     ]);
   }
 });
-
-const PUBLISH = path.join(
-  __dirname,
-  "..",
-  "actions",
-  "publish-review",
-  "publish.cjs",
-);
-const publishReview = require(PUBLISH);
-const PUBLISH_MAX = Number(
-  /^const MAX_SUMMARY = ([0-9]+);$/mu.exec(fs.readFileSync(PUBLISH, "utf8"))[1],
-);
 
 // The summary publish-review posts when one bad anchor moves every inline
 // comment to it; it slices at its MAX_SUMMARY, so a shorter text lost nothing.
@@ -1089,24 +1077,8 @@ test("each chunk's summary cap is the larger of the fixed cap and its share of o
       [14, 1500],
       [20, 1500],
     ]) {
-      const dir = makeTemporaryDirectory("pr-review-cli-chunks-caps-");
-      const outputs = await runScript(compose, {
-        LANE: "code",
-        MODEL: "sonnet",
-        EFFORT: "high",
-        MAX_TURNS: "30",
-        MODEL_ARGS: "",
-        LEVELS_DIR: path.join(__dirname, "..", "actions", "review-levels"),
-        CLI_VERSION: "latest",
-        REPOSITORY: "o/r",
-        PR_NUMBER: "7",
-        HEAD_SHA: "a".repeat(40),
-        HOLD_PATHS: "",
-        RUNNER_TEMP: dir,
-        CHUNKS: String(n),
-        CHUNK_FILES: Array(n).fill("1").join(","),
+      const outputs = await runCompose(compose, n, {
         LEG_MINUTES: "11",
-        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
         CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
         CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
       });
@@ -1144,30 +1116,13 @@ test("the chunks' critical-findings lines merge into one line a merge gate reads
 
 test("20 chunks at their caps with 120-character paths fit once the list groups by path, and never drop a finding", async () => {
   const comments = Number(workflow.env.CHUNK_COMMENTS);
-  const chars = Number(workflow.env.CHUNK_SUMMARY_CHARS);
   const long = (k, f) =>
     `src/${"d".repeat(100)}/m${String(k).padStart(2, "0")}/f${f}.ts`.padEnd(
       120,
       "x",
     );
-  const run = (job, fileOf) => {
-    const reviews = {};
-    for (let k = 1; k <= 20; k++) {
-      reviews[k] = chunkReview(
-        Array.from({ length: comments }, (_, i) =>
-          finding(
-            fileOf(k, i),
-            i + 1,
-            "IMPORTANT",
-            `Chunk ${k} finding ${i}: `,
-            2950,
-          ),
-        ),
-        { summary: `critical-findings: 0\n${"s".repeat(chars - 21)}` },
-      );
-    }
-    return extractChunked(job, 20, { reviews });
-  };
+  const run = (job, fileOf) =>
+    extractChunked(job, 20, { reviews: cappedReviews(fileOf) });
   for (const job of LEGS) {
     // Three files a chunk: the grouped list fits.
     const grouped = await run(job, (k, i) => long(k, i % 3));

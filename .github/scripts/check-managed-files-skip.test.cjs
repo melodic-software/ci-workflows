@@ -7,6 +7,8 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
 const action = fs.readFileSync(
   path.join(__dirname, "..", "actions", "check-managed-files", "action.yml"),
   "utf8",
@@ -131,15 +133,9 @@ test("a merge_group run hands the group to the merge-group step", () => {
 
 // merge-group.cjs applies the mode step's rules to each queued pull request.
 test("merge-group.cjs selects the same mode as the mode step", () => {
-  const { selectMode } = require(
-    path.join(
-      __dirname,
-      "..",
-      "actions",
-      "check-managed-files",
-      "merge-group.cjs",
-    ),
-  );
+  const {
+    selectMode,
+  } = require("../actions/check-managed-files/merge-group.cjs");
   const cases = [
     {},
     { PR_HEAD_REF: "chore/other" },
@@ -222,7 +218,6 @@ test("verification steps run only in sync mode and no step skips it", () => {
 // merge-group step diffs there and before the standards tree is checked out
 // beneath it.
 test("the action checks out the repository under check, in full, before the merge-group diff and the standards source", () => {
-  const { parseWorkflow } = require("./workflow-yaml.cjs");
   const { steps } = parseWorkflow(action).runs;
   const at = (name) => steps.findIndex((s) => s.name === name);
   const consumer = at("Check out the repository under check");

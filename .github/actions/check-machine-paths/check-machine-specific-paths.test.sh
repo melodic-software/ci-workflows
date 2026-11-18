@@ -172,10 +172,8 @@ fi
 buried="$temporary_directory/buried"
 init_repo "$buried"
 {
-  buried_index=0
-  while [[ "$buried_index" -lt 25 ]]; do
+  for ((buried_index = 0; buried_index < 25; buried_index++)); do
     printf '%s\n' 'C:/Users/...'
-    buried_index=$((buried_index + 1))
   done
   printf '%s\n' 'C:/Users/alice/project'
 } >"$buried/notes.md"

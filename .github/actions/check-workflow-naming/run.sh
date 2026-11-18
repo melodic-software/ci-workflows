@@ -50,11 +50,9 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 fi
 cat "$report"
 
-if ((status != 0)); then
-  if ((status == 1)); then
-    echo "::error::naming-lint found blocking naming findings in $ROOT; see the log or step summary. Rename per melodic-software/standards components/github-actions-conventions, or add the word to its vocabulary."
-  else
-    echo "::error::naming-lint could not run (exit $status); see the log."
-  fi
+if ((status == 1)); then
+  echo "::error::naming-lint found blocking naming findings in $ROOT; see the log or step summary. Rename per melodic-software/standards components/github-actions-conventions, or add the word to its vocabulary."
+elif ((status != 0)); then
+  echo "::error::naming-lint could not run (exit $status); see the log."
 fi
 exit "$status"

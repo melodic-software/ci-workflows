@@ -125,6 +125,15 @@ const jobBlocks = ciWorkflow
   .slice(1);
 const jobName = (block) => /^([a-z0-9-]+):$/mu.exec(block)?.[1];
 const jobCondition = (block) => /^ {4}if: (.*)$/mu.exec(block)?.[1] ?? "";
+const jobBlock = (name) => {
+  const block = jobBlocks.find((candidate) => jobName(candidate) === name);
+  assert.ok(block !== undefined, `no job named ${name}`);
+  return block;
+};
+const ciStatusNeeds =
+  /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu
+    .exec(ciWorkflow)
+    ?.groups?.list?.split(/,\s*/u);
 
 // The issue labeler is the only job an `issues` event may start. Any other job
 // that ran there would have no pull request to check, and `ci-status` would
@@ -181,10 +190,7 @@ test("pr-require-checks.yml runs on merge_group checks_requested only", () => {
 });
 
 test("on merge_group every aggregated lane and ci-status run in full", () => {
-  const needs =
-    /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu
-      .exec(ciWorkflow)
-      ?.groups?.list?.split(/,\s*/u) ?? [];
+  const needs = ciStatusNeeds ?? [];
   assert.ok(needs.length > 0, "ci-status has no needs list");
   // detect-changes falls open off a pull request: every group is relevant.
   const relevant = JSON.stringify(
@@ -200,9 +206,7 @@ test("on merge_group every aggregated lane and ci-status run in full", () => {
   };
   const gated = [];
   for (const name of [...needs, "ci-status"]) {
-    const block = jobBlocks.find((candidate) => jobName(candidate) === name);
-    assert.ok(block !== undefined, `no job named ${name}`);
-    if (evaluate(jobCondition(block), contexts) !== true) {
+    if (evaluate(jobCondition(jobBlock(name)), contexts) !== true) {
       gated.push(name);
     }
   }
@@ -211,9 +215,10 @@ test("on merge_group every aggregated lane and ci-status run in full", () => {
 
 test("on merge_group the advisory lanes stay off and no run shares a group", () => {
   for (const name of ["pr-review", "pr-review-security", ISSUE_JOB]) {
-    const block = jobBlocks.find((candidate) => jobName(candidate) === name);
-    assert.ok(block !== undefined, `no job named ${name}`);
-    assert.equal(evaluate(jobCondition(block), mergeGroupContext), false);
+    assert.equal(
+      evaluate(jobCondition(jobBlock(name)), mergeGroupContext),
+      false,
+    );
   }
   const group = /^concurrency:\n {2}group: >-\n(?<value>(?: {4}.*\n)+)/mu.exec(
     ciWorkflow,
@@ -223,14 +228,10 @@ test("on merge_group the advisory lanes stay off and no run shares a group", () 
 
 test("the advisory lanes and issue labeler stay out of ci-status", () => {
   // Claude lane checks are advisory: a model outage must never block a merge.
-  const needs =
-    /^ {2}ci-status:\n(?:.*\n)*? {4}needs: \[(?<list>[^\]]*)\]$/mu.exec(
-      ciWorkflow,
-    )?.groups?.list;
-  assert.ok(needs !== undefined, "ci-status has no needs list");
+  assert.ok(ciStatusNeeds !== undefined, "ci-status has no needs list");
   for (const job of ["pr-review", "pr-review-security", ISSUE_JOB]) {
     assert.match(ciWorkflow, new RegExp(`^ {2}${job}:$`, "mu"));
-    assert.ok(!needs.split(/,\s*/u).includes(job), `ci-status waits on ${job}`);
+    assert.ok(!ciStatusNeeds.includes(job), `ci-status waits on ${job}`);
     assert.doesNotMatch(ciWorkflow, new RegExp(`needs\\.${job}\\.result`, "u"));
   }
 });

@@ -238,8 +238,8 @@ missing_count="$(jq -r 'length' "$missing_json")"
 {
   printf 'existing-count=%s\n' "$existing_count"
   printf 'missing-count=%s\n' "$missing_count"
-  printf 'existing-urns-json=%s\n' "$(cat "$existing_json")"
-  printf 'missing-urns-json=%s\n' "$(cat "$missing_json")"
+  printf 'existing-urns-json=%s\n' "$(<"$existing_json")"
+  printf 'missing-urns-json=%s\n' "$(<"$missing_json")"
 } >>"$GITHUB_OUTPUT"
 write_multiline_output "existing-targets" "$existing_targets"
 

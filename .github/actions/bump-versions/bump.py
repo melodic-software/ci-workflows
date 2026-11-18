@@ -45,7 +45,10 @@ VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 HEX = {"sha256": 64, "sha512": 128}
 TARGETS_MARKER = re.compile(r"<!-- version-bump-targets: (.*?) -->")
 NPM_REGISTRY = "https://registry.npmjs.org"
-CURL_LIMITS = ["--connect-timeout", "10", "--max-time", "300"]
+CURL_OPTIONS = [
+    *["--connect-timeout", "10", "--max-time", "300"],
+    *["--proto", "=https", "--retry", "3"],
+]
 OCI_ACCEPT = (
     "application/vnd.oci.image.index.v1+json, "
     "application/vnd.docker.distribution.manifest.list.v2+json, "
@@ -59,6 +62,8 @@ NUGET_REGISTRATION = "https://api.nuget.org/v3/registration5-semver1"
 # Sources dated by a commit, whose date its author sets: a bump's auto-merge also waits the
 # cooldown from the bot's own GitHub-dated commit (arm_auto_merge).
 AUTHOR_DATED = {"github-tag", "goproxy"}
+# Placeholder date for a release whose source lists none until date_tags reads it.
+UNDATED = dt.datetime.max.replace(tzinfo=dt.UTC)
 ATOM = "{http://www.w3.org/2005/Atom}"
 ODATA_D = "{http://schemas.microsoft.com/ado/2007/08/dataservices}"
 ODATA_M = "{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}"
@@ -194,8 +199,7 @@ def parse_sums(text: str) -> dict[str, list[str]]:
         parts = line.split()
         if len(parts) != 2 or not re.fullmatch(r"[0-9a-fA-F]{32,128}", parts[0]):
             continue
-        name = parts[1].lstrip("*")
-        name = name.removeprefix("./")
+        name = parts[1].lstrip("*").removeprefix("./")
         sums.setdefault(name, []).append(parts[0].lower())
     return sums
 
@@ -357,7 +361,7 @@ def goproxy_versions(listing: str) -> list[Release]:
     for tag in listing.split():
         version = tag.removeprefix("v")
         if tag.startswith("v") and parse_version(version) is not None:
-            out.append(Release(version, tag, dt.datetime.max.replace(tzinfo=dt.UTC)))
+            out.append(Release(version, tag, UNDATED))
     return out
 
 
@@ -452,8 +456,7 @@ def yq_line(path: str, file: Path) -> int:
 
 
 def fetch(url: str, dest: Path, cacert: Path | None = None) -> Path:
-    args = ["curl", "-fsSL", *CURL_LIMITS, "--proto", "=https", "--retry", "3"]
-    args += ["-o", str(dest)]
+    args = ["curl", "-fsSL", *CURL_OPTIONS, "-o", str(dest)]
     if cacert:
         args += ["--cacert", str(cacert)]
     run([*args, url])
@@ -461,7 +464,7 @@ def fetch(url: str, dest: Path, cacert: Path | None = None) -> Path:
 
 
 def http_text(url: str, accept: str | None = None) -> str:
-    args = ["curl", "-fsSL", *CURL_LIMITS, "--proto", "=https", "--retry", "3"]
+    args = ["curl", "-fsSL", *CURL_OPTIONS]
     if accept:
         args += ["-H", f"Accept: {accept}"]
     return run([*args, url])
@@ -473,8 +476,7 @@ def http_json(url: str, accept: str | None = None) -> Any:
 
 def oci_head(url: str, token: str | None = None) -> tuple[int, dict[str, str]]:
     """HEAD an OCI registry URL: status and lower-cased headers of the final response."""
-    args = ["curl", "-sSI", *CURL_LIMITS, "--proto", "=https", "--retry", "3"]
-    args += ["-H", f"Accept: {OCI_ACCEPT}"]
+    args = ["curl", "-sSI", *CURL_OPTIONS, "-H", f"Accept: {OCI_ACCEPT}"]
     if token:
         args += ["-H", f"Authorization: Bearer {token}"]
     blocks = run([*args, url]).strip().split("\r\n\r\n")
@@ -555,9 +557,7 @@ def list_releases(
             name = tag["name"]
             version = name[len(prefix) :] if name.startswith(prefix) else ""
             if parse_version(version) is not None:
-                out.append(
-                    Release(version, name, dt.datetime.max.replace(tzinfo=dt.UTC))
-                )
+                out.append(Release(version, name, UNDATED))
         return out
     if kind == "pypi":
         return pypi_releases(
@@ -643,7 +643,7 @@ def date_tags(
 ) -> list[Release]:
     """github-tag and goproxy list no date; read it for versions above the pin only (the
     tagged commit's date, or the module proxy's `.info` Time)."""
-    if source["type"] not in {"github-tag", "goproxy"}:
+    if source["type"] not in AUTHOR_DATED:
         return releases
     cur = parse_version(current) or ()
     dated: list[Release] = []
@@ -701,15 +701,9 @@ def release_url(source: dict[str, Any], release: Release) -> str:
 
 class Verifier:
     def __init__(
-        self,
-        name: str,
-        tool: dict[str, Any],
-        release: Release,
-        work: Path,
-        policy: dict[str, Any],
+        self, tool: dict[str, Any], release: Release, work: Path, policy: dict[str, Any]
     ) -> None:
-        self.name, self.tool, self.release, self.work = name, tool, release, work
-        self.policy = policy
+        self.tool, self.release, self.work, self.policy = tool, release, work, policy
         self.verify = tool.get("verify", {})
         self.sums: dict[str, list[str]] | None = None
         self.cacert: Path | None = None
@@ -938,16 +932,15 @@ class Verifier:
         """Check and record the registry's own integrity data for the chosen version."""
         source, rel = self.tool["source"], self.release
         kind = source["type"]
-        if kind == "pypi":
-            self.notes.append(self.pypi_note(source["package"], rel))
-        elif kind == "npm":
-            self.notes.append(self.npm_note(source["package"], rel))
-        elif kind == "psgallery":
-            self.notes.append(self.psgallery_note(source["package"], rel))
-        elif kind == "goproxy":
-            self.notes.append(self.gosum_note(source["package"], rel))
-        elif kind == "nuget":
-            self.notes.append(self.nuget_note(source["package"], rel))
+        package_notes = {
+            "pypi": self.pypi_note,
+            "npm": self.npm_note,
+            "psgallery": self.psgallery_note,
+            "goproxy": self.gosum_note,
+            "nuget": self.nuget_note,
+        }
+        if kind in package_notes:
+            self.notes.append(package_notes[kind](source["package"], rel))
         elif kind == "python-org":
             self.notes.append(
                 f"python.org stable release; uv {rel.meta['uv']}'s download metadata"
@@ -1094,16 +1087,12 @@ def zip_member_digest(archive: Path, member: str, algo: str) -> str:
 
 
 def planned_edits(
-    name: str,
-    tool: dict[str, Any],
-    release: Release,
-    work: Path,
-    policy: dict[str, Any],
+    tool: dict[str, Any], release: Release, work: Path, policy: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], str]:
     """[{path, old, new, line}] for every scalar the bump rewrites, and the verification note."""
     file = Path(tool["file"])
     version = release.version
-    verifier = Verifier(name, tool, release, work, policy)
+    verifier = Verifier(tool, release, work, policy)
     verifier.registry()
     edits = [
         {
@@ -1283,7 +1272,6 @@ def resolve_tool(
     work: Path,
 ) -> list[dict[str, Any]] | None:
     """Fill row in place, so a failure part way keeps what was measured; the edits, if any."""
-    name = row["tool"]
     scalar = read_pin(tool["version"], Path(tool["file"]))
     row["current"] = pinned_version(tool, str(scalar))
     releases = with_image(
@@ -1315,7 +1303,7 @@ def resolve_tool(
         policy, tool, row["current"], sel.chosen.version
     )
     work.mkdir(parents=True, exist_ok=True)
-    edits, verification = planned_edits(name, tool, sel.chosen, work, policy)
+    edits, verification = planned_edits(tool, sel.chosen, work, policy)
     row["verification"] = verification
     row["edits"] = [
         {"path": pin_label(e["path"]), "old": e["old"], "new": e["new"]} for e in edits
@@ -1398,9 +1386,7 @@ def prepare_bump(
                 except Exception as exc:  # noqa: BLE001  # recorded as this bump's failure
                     bump["outcome"], bump["detail"] = "failed", failure_text(exc)
             for row, _, _ in ready:
-                row["outcome"] = (
-                    "failed" if bump["outcome"] == "failed" else bump["outcome"]
-                )
+                row["outcome"] = bump["outcome"]
                 if bump.get("detail"):
                     row["detail"] = bump["detail"]
         elif all(r["outcome"] in {"current", "held-by-cooldown"} for r in rows):
@@ -1443,10 +1429,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         "tools": rows,
         "bumps": bumps,
     }
+    write_results(out, results)
+    return 0
+
+
+def write_results(out: Path, results: dict[str, Any]) -> None:
     (out / "results.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
-    return 0
 
 
 # ---------------------------------------------------------------- publish
@@ -1822,9 +1812,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             ),
             flush=True,
         )
-    (out / "results.json").write_text(
-        json.dumps(results, indent=2) + "\n", encoding="utf-8"
-    )
+    write_results(out, results)
     return 0
 
 
@@ -1856,8 +1844,6 @@ def cmd_summary(args: argparse.Namespace) -> int:
             latest,
             (r.get("latestDate") or "")[:10],
             r.get("target") or "",
-        ]
-        cells += [
             str(r.get("daysBehind", "")),
             cooldown,
             r.get("exception") or "",

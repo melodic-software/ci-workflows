@@ -42,14 +42,16 @@ test("both review lanes run the same subprocess isolation step", () => {
 
 // Each lane job that runs Claude under the scrub installs through the composite,
 // and the lanes that remove sudo in the same step still do.
+// Per lane workflow: its isolation steps and their remove-sudo input.
+const LANES = {
+  "pr-review.yml": [1, undefined],
+  "pr-review-security.yml": [1, undefined],
+  "intake-triage.yml": [3, "true"],
+  "pr-review-cli.yml": [3, "true"],
+};
+
 test("every lane job installs through the composite", () => {
-  const expected = {
-    "pr-review.yml": [1, undefined],
-    "pr-review-security.yml": [1, undefined],
-    "intake-triage.yml": [3, "true"],
-    "pr-review-cli.yml": [3, "true"],
-  };
-  for (const [file, [count, removeSudo]] of Object.entries(expected)) {
+  for (const [file, [count, removeSudo]] of Object.entries(LANES)) {
     const found = isolationSteps(file);
     assert.equal(found.length, count, file);
     for (const step of found)
@@ -89,12 +91,7 @@ test("every isolation step's limit holds the whole apt budget", () => {
     /budget-seconds:[\s\S]*?default: "(\d+)"/.exec(action)?.[1],
   );
   assert.ok(budget > 0, "action.yml declares a budget");
-  for (const file of [
-    "pr-review.yml",
-    "pr-review-security.yml",
-    "intake-triage.yml",
-    "pr-review-cli.yml",
-  ]) {
+  for (const file of Object.keys(LANES)) {
     for (const step of isolationSteps(file)) {
       const budgetUsed = Number(step.with?.["budget-seconds"] ?? budget);
       assert.ok(

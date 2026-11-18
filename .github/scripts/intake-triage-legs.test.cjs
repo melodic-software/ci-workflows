@@ -36,7 +36,23 @@ const {
   "report-triage-status": status,
   apply,
 } = workflow.jobs;
-const launcher = (job) => job.steps.find((step) => step.id === "claude");
+const stepById = (job, id) => job.steps.find((step) => step.id === id);
+const launcher = (job) => stepById(job, "claude");
+const credentialInputs = (job) =>
+  Object.keys(launcher(job).with).filter((k) => /key|token/u.test(k));
+
+// A later leg takes nothing from an earlier job but its compared outputs.
+function assertTakesNothingFromNeeds(job) {
+  for (const step of job.steps) {
+    assert.doesNotMatch(
+      step.uses ?? "",
+      /actions\/(download-artifact|cache)/u,
+      step.name,
+    );
+    assert.doesNotMatch(step.run ?? "", /needs\./u, step.name);
+    assert.doesNotMatch(step.with?.script ?? "", /needs\./u, step.name);
+  }
+}
 
 // The shared credential step (select-model-credential), called as the leg
 // jobs call it: `decide` is a leg job's first call, `handedOn` the job
@@ -75,20 +91,9 @@ test("only the triage-subscription job references the OAuth token, and only the 
       name,
     );
   }
-  assert.deepEqual(
-    Object.keys(launcher(claude).with).filter((k) => /key|token/u.test(k)),
-    ["api-key"],
-  );
-  assert.deepEqual(
-    Object.keys(launcher(subscription).with).filter((k) =>
-      /key|token/u.test(k),
-    ),
-    ["subscription-token"],
-  );
-  assert.deepEqual(
-    Object.keys(launcher(fallback).with).filter((k) => /key|token/u.test(k)),
-    ["fallback-token"],
-  );
+  assert.deepEqual(credentialInputs(claude), ["api-key"]);
+  assert.deepEqual(credentialInputs(subscription), ["subscription-token"]);
+  assert.deepEqual(credentialInputs(fallback), ["fallback-token"]);
   assert.equal(
     workflow.on.workflow_call.secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN.required,
     false,
@@ -97,7 +102,7 @@ test("only the triage-subscription job references the OAuth token, and only the 
 
 test("every model job tells its launcher whether the fallback token is set, never its value", () => {
   for (const job of [claude, subscription, fallback]) {
-    const credential = job.steps.find((step) => step.id === "credential");
+    const credential = stepById(job, "credential");
     assert.equal(credential.uses, "$/.github/actions/select-model-credential");
     assert.equal(
       credential.with["fallback-set"],
@@ -164,15 +169,7 @@ test("the triage-fallback job runs on a fixed GitHub-hosted label only after the
   for (const result of ["failure", "cancelled", "skipped"]) {
     assert.equal(starts(handed, result), false, result);
   }
-  for (const step of fallback.steps) {
-    assert.doesNotMatch(
-      step.uses ?? "",
-      /actions\/(download-artifact|cache)/u,
-      step.name,
-    );
-    assert.doesNotMatch(step.run ?? "", /needs\./u, step.name);
-    assert.doesNotMatch(step.with?.script ?? "", /needs\./u, step.name);
-  }
+  assertTakesNothingFromNeeds(fallback);
 });
 
 test("the triage-fallback job repeats the triage-subscription job's steps but for the credential and the fallback reason", () => {
@@ -220,8 +217,7 @@ test("the triage-fallback job repeats the triage-subscription job's steps but fo
   ]) {
     assert.deepEqual(fallback[key], subscription[key], key);
   }
-  const value = fallback.steps.find((step) => step.id === "review-outcome")
-    .with["fallback-reason"];
+  const value = stepById(fallback, "review-outcome").with["fallback-reason"];
   assert.equal(value, LEG_REASON);
   const reason = (handoffReason) =>
     decide("fallback", {
@@ -354,15 +350,7 @@ test("the triage-subscription job starts only on an exact handoff or an empty ke
 });
 
 test("the triage-subscription job downloads nothing from the claude job and never writes its outputs into a script", () => {
-  for (const step of subscription.steps) {
-    assert.doesNotMatch(
-      step.uses ?? "",
-      /actions\/(download-artifact|cache)/u,
-      step.name,
-    );
-    assert.doesNotMatch(step.run ?? "", /needs\./u, step.name);
-    assert.doesNotMatch(step.with?.script ?? "", /needs\./u, step.name);
-  }
+  assertTakesNothingFromNeeds(subscription);
 });
 
 test("the triage-subscription job repeats the claude job's steps but for the credential and the fallback reason", () => {
@@ -451,9 +439,7 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
 
 test("the triage-subscription job's lane record names the credit stop, the rejected key or the empty key it ran for", () => {
   assert.equal(
-    subscription.steps.find((step) => step.id === "review-outcome").with[
-      "fallback-reason"
-    ],
+    stepById(subscription, "review-outcome").with["fallback-reason"],
     LEG_REASON,
   );
   // The claude job's next-reason, as the subscription leg checks it.
@@ -475,7 +461,7 @@ test("the triage-subscription job's lane record names the credit stop, the rejec
 });
 
 test("a handoff skips the claude job's extract step", () => {
-  const extract = claude.steps.find((step) => step.id === "extract");
+  const extract = stepById(claude, "extract");
   const steps = (handoff, present = "true") => ({
     compose: { outcome: "success" },
     credential: { outputs: { present } },
@@ -502,7 +488,7 @@ test("a handoff skips the claude job's extract step", () => {
 });
 
 test("the key leg's outcome step writes its record on a handoff too, flagged by the launcher's own handoff", () => {
-  const outcome = claude.steps.find((step) => step.id === "review-outcome");
+  const outcome = stepById(claude, "review-outcome");
   const steps = (handoff, present = "true") => ({
     credential: { outputs: { present } },
     claude: { outputs: { handoff } },
@@ -535,7 +521,7 @@ test("the key leg's outcome step writes its record on a handoff too, flagged by 
     `\${{ steps.claude.outputs.lane-class }}`,
   );
   // The subscription leg reports from its own step, with its fallback reason.
-  const sub = subscription.steps.find((step) => step.id === "review-outcome");
+  const sub = stepById(subscription, "review-outcome");
   assert.equal(sub.with["fallback-reason"], LEG_REASON);
   assert.equal(sub.with["lane-id"], "intake-triage");
 });
@@ -912,7 +898,7 @@ test("exactly one job, with no model, writes the triage", () => {
 test("a credit-stopped key hands the triage to the triage-subscription job before any key call", () => {
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  const read = gate.steps.find((step) => step.id === "gate");
+  const read = stepById(gate, "gate");
   assert.equal(read.uses, "$/.github/actions/select-model-credential");
   assert.equal(read.with.leg, "start");
   assert.equal(read.with["key-job"], "claude-intake-triage");
@@ -977,7 +963,7 @@ test("a credit-stopped key hands the triage to the triage-subscription job befor
     assert.equal(runs("skipped", "skipped"), false, name);
   }
   // The claude job still reads the gate's choice in its credential step.
-  const credential = claude.steps.find((step) => step.id === "credential");
+  const credential = stepById(claude, "credential");
   assert.equal(
     credential.with.selected,
     `\${{ needs.check-key-credit.outputs.next-leg }}`,
@@ -1002,7 +988,7 @@ test("a credit-stopped key hands the triage to the triage-subscription job befor
     "${{ needs.check-key-credit.outputs.marker }}",
   );
   assert.match(
-    claude.steps.find((step) => step.id === "credit-marker").if,
+    stepById(claude, "credit-marker").if,
     /steps\.claude\.outputs\.lane-class == 'credit-stop'/u,
   );
 });

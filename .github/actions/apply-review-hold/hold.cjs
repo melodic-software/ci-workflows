@@ -233,8 +233,9 @@ function costNotices(annotations, lane, head, at) {
   });
 }
 
-// The sha of the newest of `notices` before `cutoff`, or null, null too when
-// two heads share that time (merge-holds.mjs decidedHead).
+// The sha of the newest of `notices` before `cutoff`, null when there is
+// none, or undefined when two heads share that time (merge-holds.mjs
+// decidedHead).
 function decidedHead(notices, cutoff) {
   const before = notices.filter((n) => Date.parse(n.at) < cutoff);
   const newest = Math.max(...before.map((n) => Date.parse(n.at)));
@@ -466,7 +467,7 @@ async function run({ github, context, core, env = process.env }) {
   }
   if (!/^[^,\n]{1,50}$/u.test(label))
     throw new Error("hold-label must be one label name of 1 to 50 characters");
-  if (!/^[0-9a-f]{40}$/u.test(env.HEAD_SHA ?? ""))
+  if (!SHA.test(env.HEAD_SHA ?? ""))
     throw new Error("HEAD_SHA is not a commit");
   if (!/^[a-z-]+$/u.test(env.LANE_ID ?? ""))
     throw new Error("LANE_ID is not a lane id");
@@ -474,8 +475,6 @@ async function run({ github, context, core, env = process.env }) {
   const number = Number(env.PR_NUMBER);
   const lane = env.LANE_ID;
 
-  const found = new Set();
-  const reasons = [];
   const model = modelHold(env, core);
   // The pull request's comments, read once: for the cost decision and for
   // the marker this step posts.
@@ -511,20 +510,12 @@ async function run({ github, context, core, env = process.env }) {
       core.info(`${lane}: no recorded cost decision carries (${result.why}); the cost hold stays.`);
     }
   }
-  if (model && model.criteria.length > 0) {
-    for (const c of model.criteria) found.add(c);
-    reasons.push(model.reason);
-  }
-  const errors = [];
-  const criteria = CRITERIA.filter((c) => found.has(c));
+  const criteria = CRITERIA.filter((c) => model?.criteria.includes(c));
   core.setOutput("hold", criteria.length > 0 ? "true" : "false");
   core.setOutput("criteria", criteria.join(","));
   if (criteria.length === 0) return { hold: false, criteria };
 
-  let reason = stripHtml(reasons.filter(Boolean).join("\n\n")).slice(
-    0,
-    2 * MAX_REASON,
-  );
+  let reason = stripHtml(model.reason).slice(0, 2 * MAX_REASON);
   const findSecret = await loadGate(env);
   const scanned = findSecret
     ? scan(findSecret, [["the hold reason", reason]])
@@ -538,6 +529,7 @@ async function run({ github, context, core, env = process.env }) {
   }
 
   // Both writes are tried; either failing fails the step afterwards.
+  const errors = [];
   try {
     await github.rest.issues.addLabels({
       owner,
@@ -597,10 +589,6 @@ async function run({ github, context, core, env = process.env }) {
 }
 
 module.exports = {
-  CRITERIA,
-  linkedIssue,
-  modelHold,
   namesPull,
-  refsIssue,
   run,
 };

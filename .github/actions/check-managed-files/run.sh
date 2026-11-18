@@ -27,12 +27,10 @@ if [[ -z "${dest_paths//[$'\t\r\n ']/}" ]]; then
   exit 0
 fi
 
-mapfile -t managed <<<"$dest_paths"
 declare -A managed_set=()
-for path in "${managed[@]}"; do
-  [[ -n "$path" ]] || continue
-  managed_set["$path"]=1
-done
+while IFS= read -r path; do
+  [[ -n "$path" ]] && managed_set["$path"]=1
+done <<<"$dest_paths"
 
 subject="${SUBJECT:-This PR}"
 
@@ -59,21 +57,13 @@ else
     echo "::error::failed to diff $diff_range — cannot verify managed-file edits"
     exit 1
   fi
-
-  # `mapfile <<<""` yields one empty element, so an empty diff must
-  # short-circuit rather than produce a phantom path.
-  if [[ -z "$changed_paths" ]]; then
-    changed=()
-  else
-    mapfile -t changed <<<"$changed_paths"
-  fi
+  # An empty diff yields one empty element, which the loop below skips.
+  mapfile -t changed <<<"$changed_paths"
 fi
 
 hits=()
 for path in "${changed[@]}"; do
-  [[ -n "$path" ]] || continue
-  [[ -n "${managed_set[$path]+x}" ]] || continue
-  hits+=("$path")
+  [[ -n "$path" && -n "${managed_set[$path]+x}" ]] && hits+=("$path")
 done
 
 if ((${#hits[@]} == 0)); then

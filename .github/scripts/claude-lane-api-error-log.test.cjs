@@ -17,6 +17,9 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const workflowsDir = path.join(__dirname, "..", "workflows");
+const claudeJob = (file) =>
+  parseWorkflow(fs.readFileSync(path.join(workflowsDir, file), "utf8")).jobs
+    .claude;
 const STEPS = [
   "Scope the review",
   "Verify the review completed",
@@ -62,9 +65,7 @@ async function captureHook(script) {
 }
 
 for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
-  const job = parseWorkflow(
-    fs.readFileSync(path.join(workflowsDir, file), "utf8"),
-  ).jobs.claude;
+  const job = claudeJob(file);
   for (const name of STEPS) {
     test(`${file}: "${name}" logs a failed call's rate-limit headers and rethrows it`, async () => {
       const step = job.steps.find((candidate) => candidate.name === name);
@@ -114,9 +115,7 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
 }
 
 // The shell API steps of pr-review.yml read headers through `gh api -i`.
-const codeJob = parseWorkflow(
-  fs.readFileSync(path.join(workflowsDir, "pr-review.yml"), "utf8"),
-).jobs.claude;
+const codeJob = claudeJob("pr-review.yml");
 
 for (const [name, expected] of [
   ["Write the full diff", "::warning::The compare call failed: "],

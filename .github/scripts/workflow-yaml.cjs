@@ -390,11 +390,11 @@ function parseSequence(reader, indent) {
       // rather than text absorbed into its predecessor.
       reader.take();
       const next = reader.peek();
-      if (next === null || next.indent <= indent) {
-        items.push(null);
-        continue;
-      }
-      items.push(parseNode(reader, next.indent));
+      items.push(
+        next === null || next.indent <= indent
+          ? null
+          : parseNode(reader, next.indent),
+      );
       continue;
     }
     // The item's content column is where its first character sits, so blanking
@@ -411,8 +411,13 @@ function parseMapping(reader, indent) {
   const mapping = {};
   for (;;) {
     const line = reader.peek();
-    if (line === null || line.indent !== indent) break;
-    if (SEQUENCE_ITEM.test(line.text)) break;
+    if (
+      line === null ||
+      line.indent !== indent ||
+      SEQUENCE_ITEM.test(line.text)
+    ) {
+      break;
+    }
     if (MERGE_KEY.test(line.text)) {
       throw new WorkflowYamlError("merge keys are not supported", line.number);
     }
@@ -427,52 +432,44 @@ function parseMapping(reader, indent) {
     if (Object.hasOwn(mapping, key)) {
       throw new WorkflowYamlError(`duplicate key '${key}'`, line.number);
     }
-    const inline = stripComment(classified.inline).trim();
-    const header = BLOCK_SCALAR_HEADER.exec(inline);
     reader.take();
-    if (header) {
-      const indicators = header[2];
-      const explicitIndent = /[1-9]/u.exec(indicators);
-      setKey(
-        mapping,
-        key,
-        reader.takeBlockScalar(
-          {
-            style: header[1],
-            chomp: indicators.includes("+")
-              ? "keep"
-              : indicators.includes("-")
-                ? "strip"
-                : "clip",
-            indent: explicitIndent === null ? null : Number(explicitIndent[0]),
-          },
-          indent,
-        ),
-      );
-      continue;
-    }
-    if (inline !== "") {
-      setKey(mapping, key, parseInline(classified.inline, line.number));
-      continue;
-    }
-    const next = reader.peek();
-    if (next === null || next.indent < indent) {
-      setKey(mapping, key, null);
-      continue;
-    }
-    // A sequence may sit at its parent key's own column; anything else must be
-    // indented past it or it belongs to an enclosing node.
-    if (next.indent === indent) {
-      setKey(
-        mapping,
-        key,
-        SEQUENCE_ITEM.test(next.text) ? parseSequence(reader, indent) : null,
-      );
-      continue;
-    }
-    setKey(mapping, key, parseNode(reader, next.indent));
+    setKey(
+      mapping,
+      key,
+      parseEntryValue(reader, classified.inline, line, indent),
+    );
   }
   return mapping;
+}
+
+function parseEntryValue(reader, rawInline, line, indent) {
+  const inline = stripComment(rawInline).trim();
+  const header = BLOCK_SCALAR_HEADER.exec(inline);
+  if (header) {
+    const indicators = header[2];
+    const explicitIndent = /[1-9]/u.exec(indicators);
+    return reader.takeBlockScalar(
+      {
+        style: header[1],
+        chomp: indicators.includes("+")
+          ? "keep"
+          : indicators.includes("-")
+            ? "strip"
+            : "clip",
+        indent: explicitIndent === null ? null : Number(explicitIndent[0]),
+      },
+      indent,
+    );
+  }
+  if (inline !== "") return parseInline(rawInline, line.number);
+  const next = reader.peek();
+  if (next === null || next.indent < indent) return null;
+  // A sequence may sit at its parent key's own column; anything else must be
+  // indented past it or it belongs to an enclosing node.
+  if (next.indent === indent) {
+    return SEQUENCE_ITEM.test(next.text) ? parseSequence(reader, indent) : null;
+  }
+  return parseNode(reader, next.indent);
 }
 
 /**

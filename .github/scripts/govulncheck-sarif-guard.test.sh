@@ -14,14 +14,12 @@ base_sarif() {
 run_case() {
   local name="$1" scanner_exit="$2" sarif="$3" expected="$4" pattern="$5"
   local input="$temporary_directory/$name.sarif" output="$temporary_directory/$name.out"
+  local status=0
   printf '%s\n' "$sarif" >"$input"
-  set +e
   GOVULNCHECK_EXIT_CODE="$scanner_exit" \
     GOVULNCHECK_SARIF="$input" \
     GOVULNCHECK_VERSION=1.6.0 \
-    bash "$guard" >"$output" 2>&1
-  status=$?
-  set -e
+    bash "$guard" >"$output" 2>&1 || status=$?
   if [[ "$status" != "$expected" ]] || ! grep -Fq -- "$pattern" "$output"; then
     printf 'FAIL: %s (status %s, expected %s)\n' "$name" "$status" "$expected" >&2
     cat "$output" >&2

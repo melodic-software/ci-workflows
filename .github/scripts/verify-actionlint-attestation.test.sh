@@ -15,10 +15,11 @@ if ! grep -qx "    default: $tampered" "$work/action.yml"; then
   echo '::error::Could not tamper the attestation-source-digest default.'
   exit 1
 fi
-if bash "$here/verify-actionlint-attestation.sh" "$work/action.yml" >"$work/out.txt" 2>&1; then
-  cat "$work/out.txt"
+status=0
+bash "$here/verify-actionlint-attestation.sh" "$work/action.yml" >"$work/out.txt" 2>&1 || status=$?
+cat "$work/out.txt"
+if ((status == 0)); then
   echo '::error::A tampered source digest unexpectedly passed attestation verification.'
   exit 1
 fi
-cat "$work/out.txt"
 grep -F "expected SourceRepositoryDigest to be $tampered" "$work/out.txt"
