@@ -489,6 +489,85 @@ test("summary mode never fails or writes to the pull request, whatever happened"
   }
 });
 
+// claude-code-plugins' babysit_review_evidence.py recognises a rate-limited
+// publish by this pattern; only the named group's syntax differs from Python's.
+const MERGE_GATE_RATE_LIMITED =
+  /(?<lane>[\w-]+): failure-class=publish-failed: [^(\n]*\((?:API rate limit exceeded|You have exceeded a secondary rate limit)\b/u;
+const PRIMARY_LIMIT = "API rate limit exceeded for installation ID 1234567.";
+const SECONDARY_LIMIT =
+  "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.";
+
+const NOT_NEEDED = {
+  SCOPE_REVIEW: "false",
+  SKIP: "no-change",
+  SINCE: "c".repeat(40),
+  SKIP_REASON: "nothing changed",
+};
+// Each API call outside the posting try, with the env that reaches it.
+const GUARDED_CALLS = [
+  ["pulls.get", {}],
+  ["pulls.listFiles", {}],
+  ["issues.updateComment", { ...NOT_NEEDED, MARKER_ID: "5" }],
+  ["issues.createComment", NOT_NEEDED],
+];
+
+// publish with one API call refused the way Octokit reports a refusal.
+async function publishRefused(call, message, overrides = {}) {
+  const { github, writes } = fakeGithub();
+  const [group, method] = call.split(".");
+  github.rest[group][method] = async () => {
+    throw Object.assign(new Error(message), { name: "HttpError" });
+  };
+  const { core, log } = fakeCore();
+  await run({
+    github,
+    context: { repo: { owner: "o", repo: "r" } },
+    core,
+    env: env(overrides),
+  });
+  return { writes, log };
+}
+
+for (const [call, overrides] of GUARDED_CALLS) {
+  for (const message of [PRIMARY_LIMIT, SECONDARY_LIMIT]) {
+    test(`comments mode fails as publish-failed when ${call} answers: ${message}`, async () => {
+      const { writes, log } = await publishRefused(call, message, overrides);
+      assert.deepEqual(log.failed, [
+        `claude-review: failure-class=publish-failed: posting the review failed (${message})`,
+      ]);
+      assert.equal(
+        MERGE_GATE_RATE_LIMITED.exec(log.failed[0])?.groups.lane,
+        "claude-review",
+      );
+      assert.deepEqual(writes, []);
+      assert.deepEqual(log.notices, []);
+    });
+  }
+
+  test(`comments mode names any other ${call} error without reading as rate-limited`, async () => {
+    const { writes, log } = await publishRefused(call, "Not Found", overrides);
+    assert.deepEqual(log.failed, [
+      "claude-review: failure-class=publish-failed: posting the review failed (Not Found)",
+    ]);
+    assert.equal(MERGE_GATE_RATE_LIMITED.exec(log.failed[0]), null);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(log.notices, []);
+  });
+}
+
+for (const call of ["pulls.get", "pulls.listFiles"]) {
+  test(`summary mode reports a rate-limited ${call} as a notice and never fails`, async () => {
+    const { writes, log } = await publishRefused(call, PRIMARY_LIMIT, {
+      PUBLISH: "summary",
+    });
+    assert.deepEqual(log.failed, []);
+    assert.deepEqual(log.notices, [
+      `shadow claude-review: publish step error: ${PRIMARY_LIMIT}`,
+    ]);
+    assert.deepEqual(writes, []);
+  });
+}
+
 test("summary mode writes a scanned shadow report with the review and the leg's facts", async () => {
   const dir = path.join(root, "shadow");
   const { log } = await publish({

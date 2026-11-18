@@ -616,14 +616,18 @@ async function publish({ github, context, core, env }) {
         .write();
       return { skipped: true };
     }
-    await writeMarker(
-      github,
-      owner,
-      repo,
-      env,
-      `**${lane}** needs no new review of \`${head}\`: ${env.SKIP_REASON}.`,
-      stripHtml(env.LAST_SUMMARY).slice(0, MAX_SUMMARY),
-    );
+    try {
+      await writeMarker(
+        github,
+        owner,
+        repo,
+        env,
+        `**${lane}** needs no new review of \`${head}\`: ${env.SKIP_REASON}.`,
+        stripHtml(env.LAST_SUMMARY).slice(0, MAX_SUMMARY),
+      );
+    } catch (error) {
+      return fail("publish-failed", error.message);
+    }
     if (env.SKIP === "no-change")
       core.notice(`${record} skip=no-change through=${env.SINCE}`, RECORD);
     else if (env.SKIP === "docs-only")
@@ -654,14 +658,21 @@ async function publish({ github, context, core, env }) {
   }
 
   const { review } = verdict;
-  const live = (
-    await github.rest.pulls.get({ owner, repo, pull_number: number })
-  ).data.head.sha;
-  // The scope step's list holds while the head has not moved.
-  const files =
-    live === head
-      ? (scopedLines(env) ?? (await diffLines(github, owner, repo, number)))
-      : new Map();
+  let live;
+  let files;
+  try {
+    live = (await github.rest.pulls.get({ owner, repo, pull_number: number }))
+      .data.head.sha;
+    // The scope step's list holds while the head has not moved.
+    files =
+      live === head
+        ? (scopedLines(env) ?? (await diffLines(github, owner, repo, number)))
+        : new Map();
+  } catch (error) {
+    // run() turns a summary-mode error into a notice.
+    if (!comments) throw error;
+    return fail("publish-failed", error.message);
+  }
   const binding = bindingLine(env);
   const placed = placeComments(review, files, lane, binding);
   if (live !== head)
