@@ -1,4 +1,4 @@
-# ci-status
+# report-ci-status
 
 The shared steps of a consumer's `ci-status` job in one step:
 
@@ -32,7 +32,7 @@ is a job name, and a job inside a reusable workflow would report as
     timeout-minutes: 3
     steps:
       - name: Aggregate lane results
-        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/ci-status@<sha> # vX.Y.Z
+        uses: melodic-software/ci-workflows/.github/actions/pr-require-checks/report-ci-status@<sha> # vX.Y.Z
         with:
           step-name: Aggregate lane results
           results: ${{ join(needs.*.result, ' ') }}

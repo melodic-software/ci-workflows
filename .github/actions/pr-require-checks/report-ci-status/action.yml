@@ -1,4 +1,4 @@
-name: CI Status
+name: Report CI Status
 description: >-
   The shared steps of a caller's `ci-status` job in one step: the pull-request
   contract, the draft policy, and the lane aggregation with its `ci-lanes`

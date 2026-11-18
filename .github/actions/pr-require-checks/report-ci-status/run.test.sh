@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Fixture harness for the ci-status composite's draft policy (draft.sh). The
+# Fixture harness for the report-ci-status composite's draft policy (draft.sh). The
 # step order, the aggregation's `!cancelled()` and the hold drop are checked
 # against action.yml by .github/scripts/ci-fanout-consolidation.test.cjs.
 #

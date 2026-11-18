@@ -303,7 +303,7 @@ const ciStatusCompositePath = path.join(
   repositoryRoot,
   ".github",
   "actions",
-  "pr-require-checks/ci-status",
+  "pr-require-checks/report-ci-status",
   "action.yml",
 );
 const ciStatusComposite = fs.readFileSync(ciStatusCompositePath, "utf8");
@@ -315,7 +315,7 @@ const compositeStep = (uses) => {
   const step = compositeSteps.find((candidate) =>
     candidate.includes(`uses: $/.github/actions/pr-require-checks/${uses}\n`),
   );
-  assert.ok(step !== undefined, `the ci-status composite has no ${uses} step`);
+  assert.ok(step !== undefined, `the report-ci-status composite has no ${uses} step`);
   return step;
 };
 const foldedValue = (block, key) => {
@@ -327,7 +327,7 @@ const foldedValue = (block, key) => {
   return match.groups.value;
 };
 
-test("the ci-status job runs the ci-status composite from this commit", () => {
+test("the ci-status job runs the report-ci-status composite from this commit", () => {
   const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
   assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
   assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);
@@ -339,7 +339,7 @@ test("the ci-status job runs the ci-status composite from this commit", () => {
   // at the commit under test.
   assert.match(
     ciStatusJob,
-    /^ {8}uses: \$\/\.github\/actions\/pr-require-checks\/ci-status$/mu,
+    /^ {8}uses: \$\/\.github\/actions\/pr-require-checks\/report-ci-status$/mu,
   );
   assert.doesNotMatch(
     ciStatusJob,
@@ -351,7 +351,7 @@ test("the ci-status job runs the ci-status composite from this commit", () => {
   // The step-name lookup matches the full run's writer step by name, so the
   // step keeps the name its full runs wrote under.
   const stepName =
-    /^ {6}- name: (?<name>.+)\n {8}uses: \$\/\.github\/actions\/pr-require-checks\/ci-status$/mu.exec(
+    /^ {6}- name: (?<name>.+)\n {8}uses: \$\/\.github\/actions\/pr-require-checks\/report-ci-status$/mu.exec(
       ciStatusJob,
     )?.groups?.name;
   assert.equal(stepName, "Aggregate lane results");
@@ -383,7 +383,7 @@ test("the ci-status job runs the ci-status composite from this commit", () => {
   );
 });
 
-test("the ci-status composite runs the contract, then the draft policy, then the aggregation", () => {
+test("the report-ci-status composite runs the contract, then the draft policy, then the aggregation", () => {
   const contract = ciStatusComposite.indexOf(
     "uses: $/.github/actions/pr-require-checks/check-contract\n",
   );
@@ -420,7 +420,7 @@ test("the ci-status composite runs the contract, then the draft policy, then the
   );
 });
 
-test("the ci-status composite's contract-only copies match the aggregation default", () => {
+test("the report-ci-status composite's contract-only copies match the aggregation default", () => {
   // The draft step's live read and the hold drop both key on the predicate the
   // lanes gate on; a drifted copy would read the live draft state on a full
   // run, or hold a contract-only run that cannot pass.
@@ -439,7 +439,7 @@ test("the ci-status composite's contract-only copies match the aggregation defau
   );
 });
 
-test("the ci-status composite drops the hold only on a failed contract-only run", () => {
+test("the report-ci-status composite drops the hold only on a failed contract-only run", () => {
   const hold = foldedValue(
     compositeStep("aggregate-results"),
     "yield-wait-seconds",

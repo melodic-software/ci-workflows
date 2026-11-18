@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Draft policy for the ci-status composite. `refuse` fails a draft pull request;
+# Draft policy for the report-ci-status composite. `refuse` fails a draft pull request;
 # `allow` passes it. A re-run keeps the payload of the event that started the
 # run, so a contract-only run from the draft era that a full run re-runs after
 # `ready_for_review` still carries `draft: true`: only a contract-only run,
