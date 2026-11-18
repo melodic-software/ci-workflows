@@ -1,0 +1,47 @@
+name: Check Kill Switch
+description: >
+  Gate a CI lane on the org and repository kill switches. Each switch
+  proceeds only on exactly `false`; unset, empty and every other value stop,
+  as proceed=false reason=kill-switch cause=switch. Always exits 0: the
+  gated job's `if:` reads the output, so a missing output also keeps the lane
+  stopped. Nothing writes the switches automatically: they are manual brakes.
+  The repository switch has its own name because a repository variable named
+  CLAUDE_LANES_DISABLED replaces the org value in `vars`, so it could
+  re-enable lanes under an org-wide stop.
+
+inputs:
+  value:
+    description: >
+      The org kill-switch value, normally `vars.CLAUDE_LANES_DISABLED`. Only
+      the exact string `false` lets the lane proceed.
+    required: false
+    default: ""
+  repo-value:
+    description: >
+      The repository kill-switch value, normally
+      `vars.CLAUDE_LANES_REPO_DISABLED`. Only the exact string `false` lets
+      the lane proceed.
+    required: false
+    default: ""
+
+outputs:
+  proceed:
+    description: "`true` when the lane may proceed, otherwise `false`."
+    value: ${{ steps.check.outputs.proceed }}
+  reason:
+    description: "`ok` or `kill-switch`."
+    value: ${{ steps.check.outputs.reason }}
+  cause:
+    description: "`ok`, or `switch` when a switch stops the lane."
+    value: ${{ steps.check.outputs.cause }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the kill switch
+      id: check
+      shell: bash
+      env:
+        KILL_SWITCH_VALUE: ${{ inputs.value }}
+        REPO_KILL_SWITCH_VALUE: ${{ inputs.repo-value }}
+      run: node "$GITHUB_ACTION_PATH/check.cjs"

@@ -1,0 +1,20 @@
+name: Review Levels
+description: >
+  Names the directory holding the review levels for a model job that has no
+  checkout of this repository: levels.json, the built-in quick, standard and
+  deep levels, and levels.cjs, which merges a caller's CLAUDE_REVIEW_LEVELS
+  over them, checks every value and picks the run's model, effort and turn
+  budget. pr-review-cli.yml's compose step reads both from the `dir` output.
+
+outputs:
+  dir:
+    description: The directory holding levels.json and levels.cjs.
+    value: ${{ steps.locate.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Locate the review levels
+      id: locate
+      shell: bash
+      run: echo "dir=$GITHUB_ACTION_PATH" >>"$GITHUB_OUTPUT"

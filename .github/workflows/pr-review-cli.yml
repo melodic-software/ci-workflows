@@ -31,10 +31,29 @@ name: PR Review CLI
 #           lane: code            # or security
 #           publish: comments     # or summary
 #           lane-transcript-public-key: ${{ vars.LANE_TRANSCRIPT_PUBLIC_KEY }}
+#           kill-switch: true     # optional, default false (below)
+#           review-level: deep    # optional (below)
 #         secrets:
 #           CLAUDE_API_KEY: ${{ secrets.REVIEWS_CLAUDE_API_KEY }}
 #           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.REVIEWS_CLAUDE_CODE_OAUTH_TOKEN }}
 #           FALLBACK_CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# kill-switch: true runs the check-kill-switch job first. It reads the
+# caller's variables: CLAUDE_LANES_DISABLED (org) and
+# CLAUDE_LANES_REPO_DISABLED (repository) each stop the lane unless exactly
+# `false`, unset included, and CLAUDE_REVIEW_DISABLED stops it at `true`. A
+# stop logs a notice and skips check-key-credit and every model job. The
+# default, false, reads no switch.
+#
+# Review level: model, effort and max-turns left empty come from a level in
+# .github/actions/review-levels/levels.json (quick, standard, deep). The level
+# is review-level, else the caller's CLAUDE_REVIEW_LEVEL variable, else
+# standard. The caller's CLAUDE_REVIEW_LEVELS variable, a JSON object such as
+# {"deep":{"max-turns":120},"wide":{"model":"opus","effort":"max","max-turns":150}},
+# replaces a level's fields or adds a level; a new level names all three. An
+# unknown level, an unknown field, or a model, effort or turn budget the
+# compose step does not accept fails the compose step, model-args or not.
+# model-args wins over the explicit inputs, which win over the level.
 #
 # A workflow_run caller (review after another workflow finishes on the pull
 # request) names the pull request and head itself, since its event carries
@@ -95,7 +114,11 @@ name: PR Review CLI
 #     a 401 or 402), which it sets only when that secret is set. The other
 #     model jobs read only whether it is set. It may be empty; then the lane
 #     runs as with two legs.
-#   - The check-key-credit job runs first (select-model-credential's start
+#   - The check-kill-switch job, only with kill-switch set, holds no secret
+#     and contents: read, and reads only the caller's switch variables.
+#     check-key-credit and every model job run only on its proceed output
+#     exactly `true`, so a failed job stops them too.
+#   - The check-key-credit job runs next (select-model-credential's start
 #     call), holds no secret and no write
 #     token, and reads artifacts by exact name with the job token (actions:
 #     read, so the caller grants it): the marker the key job uploads after a
@@ -265,17 +288,39 @@ on:
         type: string
         default: reviews
       model:
-        description: Claude model alias or ID; model-args wins when it sets --model.
+        description: >-
+          Claude model alias or ID; empty takes the review level's. model-args
+          wins when it sets --model.
         type: string
-        default: sonnet
+        default: ""
       effort:
-        description: Effort level (low, medium, high, xhigh or max); model-args wins when it sets --effort.
+        description: >-
+          Effort level (low, medium, high, xhigh or max); empty takes the
+          review level's. model-args wins when it sets --effort.
         type: string
-        default: high
+        default: ""
       max-turns:
-        description: Turn budget; model-args wins when it sets --max-turns.
+        description: >-
+          Turn budget; empty takes the review level's. model-args wins when it
+          sets --max-turns.
         type: string
-        default: "75"
+        default: ""
+      review-level:
+        description: >-
+          The review level that fills any of model, effort and max-turns left
+          empty: quick, standard, deep, or a level the CLAUDE_REVIEW_LEVELS
+          variable adds. Empty falls back to the CLAUDE_REVIEW_LEVEL variable,
+          then standard. An unknown level fails the compose step.
+        type: string
+        default: ""
+      kill-switch:
+        description: >-
+          `true` runs the check-kill-switch job first: the CLAUDE_LANES_DISABLED
+          and CLAUDE_LANES_REPO_DISABLED variables each stop the lane unless
+          exactly `false`, and CLAUDE_REVIEW_DISABLED stops it at `true`.
+          `false` reads no switch.
+        type: boolean
+        default: false
       model-args:
         description: >-
           Resolved model arguments from the caller's resolve-config, in the
@@ -571,6 +616,43 @@ env:
     ttf
 
 jobs:
+  # Only with kill-switch set: the caller's org and repository switches fail
+  # closed (check-kill-switch), and CLAUDE_REVIEW_DISABLED stops the lane only
+  # at `true`. check-key-credit and every model job need proceed exactly
+  # `true`, so a failed job, which leaves it empty, also stops them. With
+  # kill-switch unset this job is skipped and their gates read as before:
+  # each opens with a status function.
+  check-kill-switch:
+    name: Check Kill Switch
+    if: inputs.kill-switch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    cache-mode: none
+    outputs:
+      proceed: ${{ steps.kill.outputs.proceed == 'true' && vars.CLAUDE_REVIEW_DISABLED != 'true' && 'true' || 'false' }}
+    steps:
+      - name: Check the kill switch
+        id: kill
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/check-kill-switch
+        with:
+          value: ${{ vars.CLAUDE_LANES_DISABLED }}
+          repo-value: ${{ vars.CLAUDE_LANES_REPO_DISABLED }}
+
+      - name: Report the kill switch
+        if: steps.kill.outputs.proceed != 'true' || vars.CLAUDE_REVIEW_DISABLED == 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          REASON: ${{ steps.kill.outputs.reason }}
+          CAUSE: ${{ steps.kill.outputs.cause }}
+          LANE_SWITCH: ${{ vars.CLAUDE_REVIEW_DISABLED }}
+        run: |
+          echo "::notice::a kill switch stops this review (lanes: ${REASON:-unreadable} cause ${CAUSE:-unreadable}, CLAUDE_REVIEW_DISABLED: ${LANE_SWITCH:-unset})"
+
   # A workflow_run or workflow_dispatch caller's pull request (pr-number
   # set): one pulls.get with
   # pull-requests: read and no secret. Its outputs are the facts every
@@ -633,11 +715,12 @@ jobs:
   # job: its `if` starts with !cancelled().
   check-key-credit:
     name: Check Key Credit
-    needs: resolve-pull-request
+    needs: [check-kill-switch, resolve-pull-request]
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     if: >-
       !cancelled()
+      && (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')
       && (!inputs.pr-number
        && github.event_name == 'pull_request'
        && github.event.pull_request.state == 'open'
@@ -738,12 +821,13 @@ jobs:
 
   review-key:
     name: Review Key
-    needs: [resolve-pull-request, check-key-credit]
+    needs: [check-kill-switch, resolve-pull-request, check-key-credit]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-
       needs.check-key-credit.outputs.next-leg != 'subscription'
       && !cancelled()
+      && (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')
       &&
       (!inputs.pr-number
        && github.event_name == 'pull_request'
@@ -2200,9 +2284,22 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # The review levels from this repository, which the job does not check
+      # out; a failed step leaves the directory empty and the compose step
+      # fails.
+      - name: Locate the review levels
+        id: levels
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/review-levels
+
       # The prompt and the output schema go to files run-claude-cli reads.
-      # model-args, when set, replaces the flags it carries. started-at lets
-      # the outcome step tell a step timeout from other failures.
+      # The model, effort and turn budget: model-args, when set, replaces the
+      # flags it carries; else an explicit input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
+      # override it cannot read fails the step. started-at lets the outcome
+      # step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -2215,6 +2312,9 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
+          LEVELS_DIR: ${{ steps.levels.outputs.dir }}
+          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
@@ -2245,7 +2345,25 @@ jobs:
               core.setFailed(`lane must be code or security, not '${env.LANE}'.`);
               return;
             }
-            const run = { model: env.MODEL, effort: env.EFFORT, "max-turns": env.MAX_TURNS };
+            if (!env.LEVELS_DIR) {
+              core.setFailed("The review levels were not found.");
+              return;
+            }
+            const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
+            let run;
+            try {
+              run = levels.resolveRun({
+                level: env.REVIEW_LEVEL,
+                levels: env.REVIEW_LEVELS,
+                model: env.MODEL,
+                effort: env.EFFORT,
+                maxTurns: env.MAX_TURNS,
+              });
+            } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+            delete run.level;
             if (env.MODEL_ARGS) {
               // resolve-config's claude-args shape (claude-code-plugins
               // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
@@ -2258,16 +2376,9 @@ jobs:
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
             }
-            if (!/^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$/u.test(run.model)) {
-              core.setFailed("The model must be a model alias or ID.");
-              return;
-            }
-            if (!["low", "medium", "high", "xhigh", "max"].includes(run.effort)) {
-              core.setFailed("The effort must be low, medium, high, xhigh or max.");
-              return;
-            }
-            if (!/^[1-9][0-9]{0,5}$/u.test(run["max-turns"])) {
-              core.setFailed("max-turns must be a positive whole number.");
+            const problem = levels.runProblem(run);
+            if (problem) {
+              core.setFailed(problem);
               return;
             }
             let cliVersion = env.CLI_VERSION;
@@ -3430,12 +3541,13 @@ jobs:
   # writes them into a script.
   review-subscription:
     name: Review Subscription
-    needs: [resolve-pull-request, check-key-credit, review-key]
+    needs: [check-kill-switch, resolve-pull-request, check-key-credit, review-key]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-
       (needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription')
       && !cancelled()
+      && (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')
       &&
       (!inputs.pr-number
        && github.event_name == 'pull_request'
@@ -4892,9 +5004,22 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # The review levels from this repository, which the job does not check
+      # out; a failed step leaves the directory empty and the compose step
+      # fails.
+      - name: Locate the review levels
+        id: levels
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/review-levels
+
       # The prompt and the output schema go to files run-claude-cli reads.
-      # model-args, when set, replaces the flags it carries. started-at lets
-      # the outcome step tell a step timeout from other failures.
+      # The model, effort and turn budget: model-args, when set, replaces the
+      # flags it carries; else an explicit input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
+      # override it cannot read fails the step. started-at lets the outcome
+      # step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -4907,6 +5032,9 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
+          LEVELS_DIR: ${{ steps.levels.outputs.dir }}
+          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
@@ -4937,7 +5065,25 @@ jobs:
               core.setFailed(`lane must be code or security, not '${env.LANE}'.`);
               return;
             }
-            const run = { model: env.MODEL, effort: env.EFFORT, "max-turns": env.MAX_TURNS };
+            if (!env.LEVELS_DIR) {
+              core.setFailed("The review levels were not found.");
+              return;
+            }
+            const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
+            let run;
+            try {
+              run = levels.resolveRun({
+                level: env.REVIEW_LEVEL,
+                levels: env.REVIEW_LEVELS,
+                model: env.MODEL,
+                effort: env.EFFORT,
+                maxTurns: env.MAX_TURNS,
+              });
+            } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+            delete run.level;
             if (env.MODEL_ARGS) {
               // resolve-config's claude-args shape (claude-code-plugins
               // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
@@ -4950,16 +5096,9 @@ jobs:
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
             }
-            if (!/^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$/u.test(run.model)) {
-              core.setFailed("The model must be a model alias or ID.");
-              return;
-            }
-            if (!["low", "medium", "high", "xhigh", "max"].includes(run.effort)) {
-              core.setFailed("The effort must be low, medium, high, xhigh or max.");
-              return;
-            }
-            if (!/^[1-9][0-9]{0,5}$/u.test(run["max-turns"])) {
-              core.setFailed("max-turns must be a positive whole number.");
+            const problem = levels.runProblem(run);
+            if (problem) {
+              core.setFailed(problem);
               return;
             }
             let cliVersion = env.CLI_VERSION;
@@ -6095,12 +6234,13 @@ jobs:
   # leg and never hands off.
   review-fallback:
     name: Review Fallback
-    needs: [resolve-pull-request, check-key-credit, review-key, review-subscription]
+    needs: [check-kill-switch, resolve-pull-request, check-key-credit, review-key, review-subscription]
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 345 || 305 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-
       needs.review-subscription.outputs.next-leg == 'fallback'
       && !cancelled()
+      && (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')
       &&
       (!inputs.pr-number
        && github.event_name == 'pull_request'
@@ -7557,9 +7697,22 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # The review levels from this repository, which the job does not check
+      # out; a failed step leaves the directory empty and the compose step
+      # fails.
+      - name: Locate the review levels
+        id: levels
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/review-levels
+
       # The prompt and the output schema go to files run-claude-cli reads.
-      # model-args, when set, replaces the flags it carries. started-at lets
-      # the outcome step tell a step timeout from other failures.
+      # The model, effort and turn budget: model-args, when set, replaces the
+      # flags it carries; else an explicit input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
+      # override it cannot read fails the step. started-at lets the outcome
+      # step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -7572,6 +7725,9 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
+          LEVELS_DIR: ${{ steps.levels.outputs.dir }}
+          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
@@ -7602,7 +7758,25 @@ jobs:
               core.setFailed(`lane must be code or security, not '${env.LANE}'.`);
               return;
             }
-            const run = { model: env.MODEL, effort: env.EFFORT, "max-turns": env.MAX_TURNS };
+            if (!env.LEVELS_DIR) {
+              core.setFailed("The review levels were not found.");
+              return;
+            }
+            const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
+            let run;
+            try {
+              run = levels.resolveRun({
+                level: env.REVIEW_LEVEL,
+                levels: env.REVIEW_LEVELS,
+                model: env.MODEL,
+                effort: env.EFFORT,
+                maxTurns: env.MAX_TURNS,
+              });
+            } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+            delete run.level;
             if (env.MODEL_ARGS) {
               // resolve-config's claude-args shape (claude-code-plugins
               // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
@@ -7615,16 +7789,9 @@ jobs:
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
             }
-            if (!/^[A-Za-z0-9][A-Za-z0-9._-]*(\[1m\])?$/u.test(run.model)) {
-              core.setFailed("The model must be a model alias or ID.");
-              return;
-            }
-            if (!["low", "medium", "high", "xhigh", "max"].includes(run.effort)) {
-              core.setFailed("The effort must be low, medium, high, xhigh or max.");
-              return;
-            }
-            if (!/^[1-9][0-9]{0,5}$/u.test(run["max-turns"])) {
-              core.setFailed("max-turns must be a positive whole number.");
+            const problem = levels.runProblem(run);
+            if (problem) {
+              core.setFailed(problem);
               return;
             }
             let cliVersion = env.CLI_VERSION;

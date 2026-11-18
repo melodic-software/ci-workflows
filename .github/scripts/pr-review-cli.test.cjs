@@ -30,6 +30,7 @@ const {
   "publish-review": status,
 } = workflow.jobs;
 const step = (job, id) => job.steps.find((s) => s.id === id);
+const LEVELS_DIR = path.join(__dirname, "..", "actions", "review-levels");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // The shared credential step (select-model-credential), called as the leg
@@ -146,6 +147,7 @@ test("every job carries a literal name, the same in both lanes", () => {
   );
   assert.deepEqual(names, {
     ...names,
+    "check-kill-switch": "Check Kill Switch",
     "resolve-pull-request": "Resolve Pull Request",
     "check-key-credit": "Check Key Credit",
     "review-key": "Review Key",
@@ -165,6 +167,7 @@ test("every job carries a literal name, the same in both lanes", () => {
 
 test("the fallback job starts only after the subscription job succeeded and handed off exactly", () => {
   assert.deepEqual(fallback.needs, [
+    "check-kill-switch",
     "resolve-pull-request",
     "check-key-credit",
     "review-key",
@@ -1069,6 +1072,7 @@ test("the subscription job starts only on an exact handoff, a key job with no ke
     assert.equal(starts({}, result), false, result);
   }
   assert.deepEqual(subscription.needs, [
+    "check-kill-switch",
     "resolve-pull-request",
     "check-key-credit",
     "review-key",
@@ -1109,7 +1113,11 @@ test("the key job runs unless the start call names the subscription leg, a faile
   // A failed or skipped start call leaves next-leg empty: the key runs.
   assert.equal(runs({}, "failure"), true);
   assert.equal(runs({}, "skipped"), true);
-  assert.deepEqual(key.needs, ["resolve-pull-request", "check-key-credit"]);
+  assert.deepEqual(key.needs, [
+    "check-kill-switch",
+    "resolve-pull-request",
+    "check-key-credit",
+  ]);
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
   assert.equal(gate.steps[0].uses, "$/.github/actions/select-model-credential");
@@ -2204,6 +2212,9 @@ async function composeOutputs(env, job = key) {
     EFFORT: "high",
     MAX_TURNS: "30",
     MODEL_ARGS: "",
+    LEVELS_DIR,
+    REVIEW_LEVEL: "standard",
+    REVIEW_LEVELS: "",
     CLI_VERSION: "latest",
     REPOSITORY: "o/r",
     PR_NUMBER: "7",
@@ -7090,4 +7101,465 @@ test("the compose step reads the full-diff step's to-read count, in every leg", 
       `\${{ steps.full-diff.outputs.to-read }}`,
       job.name,
     );
+});
+
+// --- the kill switch (kill-switch input) ---
+
+const KILL_GATE =
+  "&& (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')";
+const KILLED_JOBS = () => [
+  workflow.jobs["check-key-credit"],
+  key,
+  subscription,
+  fallback,
+];
+// Every gate fixture the lane's other tests use: a pull_request run, a
+// workflow_run run on the read's facts, and the runs each turns away.
+const GATE_RUNS = [
+  [PR, {}, {}],
+  [
+    withPr((g) => {
+      g.event.pull_request.draft = true;
+    }),
+    {},
+    {},
+  ],
+  [
+    withPr((g) => {
+      g.event.pull_request.head.repo.full_name = "fork/r";
+    }),
+    {},
+    {},
+  ],
+  [
+    withPr((g) => {
+      g.actor = "dependabot[bot]";
+    }),
+    {},
+    {},
+  ],
+  [WR, WR_INPUTS, READ],
+  [WR, WR_INPUTS, { ...READ, proceed: "false" }],
+];
+const gateNeeds = (read, kill) => ({
+  "check-kill-switch": kill,
+  "resolve-pull-request": { result: "success", outputs: read },
+  "check-key-credit": { result: "success", outputs: {} },
+  "review-key": {
+    result: "success",
+    outputs: { handoff: "true", "next-leg": "subscription" },
+  },
+  "review-subscription": {
+    result: "success",
+    outputs: { handoff: "true", "next-leg": "fallback" },
+  },
+});
+const gate = (expression, github, inputs, read, kill) =>
+  Boolean(
+    evaluate(expression, {
+      github,
+      inputs: {
+        "allowed-bot-sender-ids": "",
+        "dispatcher-actor-ids": "",
+        ...inputs,
+      },
+      needs: gateNeeds(read, kill),
+    }),
+  );
+
+test("the kill-switch job runs only when the caller sets kill-switch, holds no secret and reads the caller's switches", () => {
+  const job = workflow.jobs["check-kill-switch"];
+  assert.equal(Boolean(evaluate(job.if, { inputs: {} })), false);
+  assert.equal(
+    Boolean(evaluate(job.if, { inputs: { "kill-switch": false } })),
+    false,
+  );
+  assert.equal(
+    Boolean(evaluate(job.if, { inputs: { "kill-switch": true } })),
+    true,
+  );
+  assert.equal(job.needs, undefined);
+  assert.deepEqual(job.permissions, { contents: "read" });
+  assert.doesNotMatch(JSON.stringify(job), /secrets\./u);
+  const kill = step(job, "kill");
+  assert.equal(kill.uses, "$/.github/actions/check-kill-switch");
+  assert.equal(kill.with.value, `\${{ vars.CLAUDE_LANES_DISABLED }}`);
+  assert.equal(
+    kill.with["repo-value"],
+    `\${{ vars.CLAUDE_LANES_REPO_DISABLED }}`,
+  );
+  const input = workflow.on.workflow_call.inputs["kill-switch"];
+  assert.equal(input.type, "boolean");
+  assert.equal(input.default, false);
+});
+
+test("the kill-switch job proceeds only when both switches proceed and CLAUDE_REVIEW_DISABLED is not true", () => {
+  const proceed = workflow.jobs["check-kill-switch"].outputs.proceed;
+  const at = (switches, lane) =>
+    evaluate(proceed, {
+      steps: { kill: { outputs: switches } },
+      vars: lane === undefined ? {} : { CLAUDE_REVIEW_DISABLED: lane },
+    });
+  assert.equal(at({ proceed: "true" }), "true");
+  assert.equal(at({ proceed: "true" }, "false"), "true");
+  assert.equal(at({ proceed: "true" }, ""), "true");
+  assert.equal(at({ proceed: "true" }, "true"), "false");
+  // A switch that stops, or a failed step that left no output.
+  assert.equal(at({ proceed: "false" }), "false");
+  assert.equal(at({}), "false");
+  assert.equal(at({ proceed: "false" }, "false"), "false");
+  // The notice names every stop, and only a stop.
+  const report = workflow.jobs["check-kill-switch"].steps.find(
+    (s) => s.name === "Report the kill switch",
+  );
+  const reports = (switches, lane) =>
+    Boolean(
+      evaluate(report.if, {
+        steps: { kill: { outputs: switches } },
+        vars: { CLAUDE_REVIEW_DISABLED: lane },
+      }),
+    );
+  assert.equal(reports({ proceed: "true" }, ""), false);
+  assert.equal(reports({ proceed: "false" }, ""), true);
+  assert.equal(reports({}, ""), true);
+  assert.equal(reports({ proceed: "true" }, "true"), true);
+  assert.match(
+    report.run,
+    /^echo "::notice::a kill switch stops this review/mu,
+  );
+});
+
+test("with kill-switch unset or false every gate reads as it did without the switch", () => {
+  const skipped = { result: "skipped", outputs: {} };
+  for (const job of KILLED_JOBS()) {
+    const parts = job.if.split(KILL_GATE);
+    assert.equal(parts.length, 2, `${job.name} carries the kill gate once`);
+    const without = parts.join("");
+    for (const [github, inputs, read] of GATE_RUNS) {
+      for (const killSwitch of [undefined, false]) {
+        const withInputs =
+          killSwitch === undefined
+            ? inputs
+            : { ...inputs, "kill-switch": killSwitch };
+        assert.equal(
+          gate(job.if, github, withInputs, read, skipped),
+          gate(without, github, inputs, read, skipped),
+          `${job.name}: ${JSON.stringify(withInputs)}`,
+        );
+      }
+    }
+    // The fixtures include runs that pass, so the comparison is not all false.
+    assert.equal(
+      gate(job.if, PR, {}, {}, skipped) ||
+        gate(job.if, WR, WR_INPUTS, READ, skipped),
+      true,
+      job.name,
+    );
+  }
+});
+
+test("every job that needs the kill-switch job opens its gate with a status function, so its skip skips nothing", () => {
+  const dependents = Object.entries(workflow.jobs).filter(([, job]) =>
+    [job.needs].flat().includes("check-kill-switch"),
+  );
+  assert.deepEqual(dependents.map(([name]) => name).sort(), [
+    "check-key-credit",
+    "review-fallback",
+    "review-key",
+    "review-subscription",
+  ]);
+  for (const [name, job] of dependents) {
+    assert.match(String(job.if), /!cancelled\(\)|always\(\)/u, name);
+  }
+});
+
+test("with kill-switch set, each switch stops check-key-credit and every model job, and only proceed=true lets them run", () => {
+  for (const job of KILLED_JOBS()) {
+    for (const [github, inputs, read] of [
+      [PR, {}, {}],
+      [WR, WR_INPUTS, READ],
+    ]) {
+      const on = { ...inputs, "kill-switch": true };
+      assert.equal(
+        gate(job.if, github, on, read, {
+          result: "success",
+          outputs: { proceed: "true" },
+        }),
+        true,
+        job.name,
+      );
+      for (const kill of [
+        { result: "success", outputs: { proceed: "false" } },
+        { result: "failure", outputs: {} },
+        { result: "success", outputs: { proceed: "" } },
+        { result: "success", outputs: { proceed: "True" } },
+      ]) {
+        assert.equal(
+          gate(job.if, github, on, read, kill),
+          false,
+          `${job.name}: ${JSON.stringify(kill)}`,
+        );
+      }
+    }
+  }
+  // Each switch, through the action and the job's output, to the key job.
+  const { checkKillSwitch } = require("../actions/check-kill-switch/check.cjs");
+  const proceed = workflow.jobs["check-kill-switch"].outputs.proceed;
+  for (const [org, repo, lane, runs] of [
+    ["false", "false", "", true],
+    ["true", "false", "", false],
+    ["false", "true", "", false],
+    ["", "", "", false],
+    ["false", "false", "true", false],
+  ]) {
+    const output = evaluate(proceed, {
+      steps: { kill: { outputs: checkKillSwitch(org, repo) } },
+      vars: { CLAUDE_REVIEW_DISABLED: lane },
+    });
+    assert.equal(
+      gate(
+        key.if,
+        PR,
+        { "kill-switch": true },
+        {},
+        { result: "success", outputs: { proceed: output } },
+      ),
+      runs,
+      JSON.stringify({ org, repo, lane }),
+    );
+  }
+});
+
+// --- review levels (review-level input, CLAUDE_REVIEW_LEVEL(S) variables) ---
+
+const NO_EXPLICIT = { MODEL: "", EFFORT: "", MAX_TURNS: "" };
+const ran = (outputs) => [outputs.model, outputs.effort, outputs["max-turns"]];
+const composeFails = async (env, pattern) => {
+  await assert.rejects(
+    composeOutputs({ ...NO_EXPLICIT, ...env }),
+    pattern,
+    JSON.stringify(env),
+  );
+};
+
+test("model, effort and max-turns default to empty, so the review level fills them", () => {
+  for (const name of ["model", "effort", "max-turns", "review-level"]) {
+    assert.equal(workflow.on.workflow_call.inputs[name].default, "", name);
+  }
+});
+
+test("each built-in level runs its model, effort and turn budget", async () => {
+  for (const [level, expected] of [
+    ["quick", ["sonnet", "high", "75"]],
+    ["standard", ["opus", "high", "75"]],
+    ["deep", ["opus", "xhigh", "75"]],
+  ]) {
+    assert.deepEqual(
+      ran(await composeOutputs({ ...NO_EXPLICIT, REVIEW_LEVEL: level })),
+      expected,
+      level,
+    );
+  }
+});
+
+test("the level comes from review-level, else CLAUDE_REVIEW_LEVEL, else standard, in every leg", () => {
+  for (const job of [key, subscription, fallback]) {
+    const compose = step(job, "compose");
+    const level = (inputs, vars) =>
+      evaluate(compose.env.REVIEW_LEVEL, { inputs, vars });
+    assert.equal(
+      level({ "review-level": "deep" }, { CLAUDE_REVIEW_LEVEL: "quick" }),
+      "deep",
+      job.name,
+    );
+    assert.equal(
+      level({ "review-level": "" }, { CLAUDE_REVIEW_LEVEL: "quick" }),
+      "quick",
+      job.name,
+    );
+    assert.equal(level({}, {}), "standard", job.name);
+    assert.equal(
+      compose.env.REVIEW_LEVELS,
+      `\${{ vars.CLAUDE_REVIEW_LEVELS }}`,
+      job.name,
+    );
+    assert.equal(
+      compose.env.LEVELS_DIR,
+      `\${{ steps.levels.outputs.dir }}`,
+      job.name,
+    );
+    const ids = job.steps.map((s) => s.id);
+    assert.equal(ids.indexOf("levels") + 1, ids.indexOf("compose"), job.name);
+    assert.equal(
+      step(job, "levels").uses,
+      "$/.github/actions/review-levels",
+      job.name,
+    );
+    assert.equal(step(job, "levels").if, step(job, "compose").if, job.name);
+  }
+});
+
+test("an explicit model, effort or max-turns wins over the level, and model-args wins over both", async () => {
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "deep",
+        MODEL: "sonnet",
+      }),
+    ),
+    ["sonnet", "xhigh", "75"],
+  );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        REVIEW_LEVEL: "quick",
+        MODEL: "opus",
+        EFFORT: "max",
+        MAX_TURNS: "40",
+      }),
+    ),
+    ["opus", "max", "40"],
+  );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "standard",
+        MAX_TURNS: "12",
+      }),
+    ),
+    ["opus", "high", "12"],
+  );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        REVIEW_LEVEL: "deep",
+        MODEL: "haiku",
+        EFFORT: "low",
+        MAX_TURNS: "9",
+        MODEL_ARGS: "--model sonnet --max-turns 30 --effort medium",
+      }),
+    ),
+    ["sonnet", "medium", "30"],
+  );
+  // model-args without --model or --effort leaves those to the input, else the level.
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "deep",
+        MODEL_ARGS: "--max-turns 20",
+      }),
+    ),
+    ["opus", "xhigh", "20"],
+  );
+});
+
+test("CLAUDE_REVIEW_LEVELS replaces a level's fields or adds a level", async () => {
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "standard",
+        REVIEW_LEVELS: '{"standard":{"model":"sonnet"}}',
+      }),
+    ),
+    ["sonnet", "high", "75"],
+  );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "deep",
+        REVIEW_LEVELS: '{"deep":{"max-turns":120}}',
+      }),
+    ),
+    ["opus", "xhigh", "120"],
+  );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "thorough",
+        REVIEW_LEVELS:
+          '{"thorough":{"model":"opus","effort":"max","max-turns":"150"}}',
+      }),
+    ),
+    ["opus", "max", "150"],
+  );
+  // An override of another level leaves the chosen one as built in.
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL: "quick",
+        REVIEW_LEVELS: '{"deep":{"effort":"max"}}',
+      }),
+    ),
+    ["sonnet", "high", "75"],
+  );
+});
+
+test("an unknown level or a CLAUDE_REVIEW_LEVELS value outside what the compose step accepts fails the compose step", async () => {
+  await composeFails(
+    { REVIEW_LEVEL: "thorough" },
+    /review level 'thorough' is not one of quick, standard, deep\./u,
+  );
+  for (const [levels, pattern] of [
+    ["{not json", /CLAUDE_REVIEW_LEVELS is not JSON/u],
+    ["[]", /must be a JSON object of levels/u],
+    ["null", /must be a JSON object of levels/u],
+    ['"deep"', /must be a JSON object of levels/u],
+    ['{"deep":"opus"}', /level 'deep' must be an object/u],
+    ['{"Deep":{"model":"opus"}}', /level 'Deep' must be lower-case kebab/u],
+    [
+      '{"deep":{"temperature":"1"}}',
+      /level 'deep' has unknown fields: temperature/u,
+    ],
+    [
+      '{"deep":{"model":"opus --dangerously-skip-permissions"}}',
+      /level 'deep': The model must be a model alias or ID/u,
+    ],
+    ['{"deep":{"model":""}}', /level 'deep': The model must be/u],
+    [
+      '{"deep":{"effort":"extreme"}}',
+      /level 'deep': The effort must be low, medium, high, xhigh or max/u,
+    ],
+    [
+      '{"deep":{"max-turns":"abc"}}',
+      /level 'deep': max-turns must be a whole number from 1 to 999999/u,
+    ],
+    ['{"deep":{"max-turns":0}}', /max-turns must be a whole number/u],
+    ['{"deep":{"max-turns":-5}}', /max-turns must be a whole number/u],
+    ['{"deep":{"max-turns":7.5}}', /max-turns must be a whole number/u],
+    ['{"deep":{"max-turns":1000000}}', /max-turns must be a whole number/u],
+    ['{"deep":{"max-turns":true}}', /max-turns must be a whole number/u],
+    [
+      '{"thorough":{"model":"opus","effort":"max"}}',
+      /level 'thorough' is new, so it needs max-turns/u,
+    ],
+  ]) {
+    // A bad override fails even when the chosen level is untouched by it.
+    await composeFails(
+      { REVIEW_LEVEL: "standard", REVIEW_LEVELS: levels },
+      pattern,
+    );
+  }
+  // An override that fails stops model-args callers too: never a silent fallback.
+  await composeFails(
+    {
+      REVIEW_LEVELS: "[]",
+      MODEL_ARGS: "--model sonnet --max-turns 30 --effort high",
+    },
+    /must be a JSON object/u,
+  );
+  // No levels directory, or an explicit input outside what the launcher takes.
+  await composeFails({ LEVELS_DIR: "" }, /The review levels were not found/u);
+  await composeFails(
+    { MODEL: "sonnet;id" },
+    /The model must be a model alias or ID/u,
+  );
+  await composeFails({ EFFORT: "extreme" }, /The effort must be/u);
+  await composeFails({ MAX_TURNS: "0" }, /max-turns must be/u);
 });

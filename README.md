@@ -946,6 +946,17 @@ consumer to audit it.
   reset. An empty `window-hours` or `probe-minutes` is the default, so
   callers pass an unset `vars.KEY_CREDIT_WINDOW_HOURS` as it is. Lanes call
   it through `select-model-credential` (below), not directly.
+- `.github/actions/check-kill-switch` — `pr-review-cli.yml`'s
+  `check-kill-switch` job, run only when the caller sets `kill-switch`: the
+  org switch (`vars.CLAUDE_LANES_DISABLED`) and the repository switch
+  (`vars.CLAUDE_LANES_REPO_DISABLED`) each let the lane proceed only on
+  exactly `false`, so unset stops it. Always exits 0; its `proceed` output
+  gates the lane (its `action.yml` describes the inputs).
+- `.github/actions/review-levels` — the review levels `pr-review-cli.yml`'s
+  compose step reads: `levels.json`, the one built-in table (quick, standard,
+  deep), and `levels.cjs`, which merges the caller's `CLAUDE_REVIEW_LEVELS`
+  over it, rejects any unknown level, field or value, and fills the run's
+  model, effort and turn budget the inputs leave empty.
 - `.github/actions/select-model-credential` — the one place every Claude
   model lane picks its credential: the role's API key, then its subscription
   token, then the central fallback token, each leg its own job. A `start`
@@ -1457,7 +1468,15 @@ GitHub continues the normal weekly patching of each hosted image generation.
   credit stop, and `actions: read` with `checks: read` for the status job,
   which reads its earlier runs' cost hold notices. GitHub fails the run at
   startup when the caller does not grant both. The workflow header carries the canonical caller and
-  the security model. A `workflow_run` caller, such as review after another
+  the security model. `kill-switch: true` (default `false`) runs the
+  `check-kill-switch` job first, which stops the lane with a notice on the
+  caller's `CLAUDE_LANES_DISABLED` or `CLAUDE_LANES_REPO_DISABLED` variable
+  unless exactly `false`, or on `CLAUDE_REVIEW_DISABLED` set to `true`. The
+  `model`, `effort` and `max-turns` inputs default to empty, which takes them
+  from a review level: `review-level`, else the caller's `CLAUDE_REVIEW_LEVEL`
+  variable, else `standard`, with the caller's `CLAUDE_REVIEW_LEVELS` JSON
+  merged over the built-in levels (`.github/actions/review-levels`).
+  `model-args` wins over both. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head

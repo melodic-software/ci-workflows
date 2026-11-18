@@ -1,0 +1,5 @@
+{
+  "quick": { "model": "sonnet", "effort": "high", "max-turns": 75 },
+  "standard": { "model": "opus", "effort": "high", "max-turns": 75 },
+  "deep": { "model": "opus", "effort": "xhigh", "max-turns": 75 }
+}
