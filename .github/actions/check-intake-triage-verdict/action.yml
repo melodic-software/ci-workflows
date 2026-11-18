@@ -9,8 +9,10 @@ description: >-
   the leg's structured output and `check` reads a verdict another job passed;
   both check every type and bound again and output the verdict as JSON, or
   empty when a field fails, the verdict is over 16384 bytes (a schema whose
-  worst case exceeds that fails schema mode), or verdict-schema is empty. No model value reaches
-  the log. Needs node on PATH.
+  worst case exceeds that fails schema mode), or verdict-schema is empty. The
+  action logs field names only, but the runner's step echo shows the checked
+  values, so a verdict field must hold nothing the run log may not show. Needs
+  node on PATH.
 
 inputs:
   mode:

@@ -23,11 +23,12 @@ const MODULE = path.join(
 const {
   VerdictSchemaError,
   baseSchema,
-  checkVerdict,
-  extractVerdict,
+  carryVerdict,
+  fitVerdict,
   main,
   mergeSchema,
   parseExtension,
+  pickVerdict,
   worstBytes,
 } = require(MODULE);
 
@@ -486,7 +487,9 @@ test("a schema whose largest verdict would exceed 16384 bytes fails, counting 6 
     }),
     68,
   );
-  // {"b":false} is 11; {"n":[i,i,i]} is 2 + 3 + 1 + (2 + 3 * 24 + 2) = 82.
+  // The longest a finite number serializes to.
+  assert.equal(JSON.stringify(-1.2345678901234567e-6).length, 25);
+  // {"b":false} is 11; {"n":[i,i,i]} is 2 + 3 + 1 + (2 + 3 * 25 + 2) = 85.
   assert.equal(
     worstBytes({ type: "object", properties: { b: { type: "boolean" } } }),
     11,
@@ -502,7 +505,7 @@ test("a schema whose largest verdict would exceed 16384 bytes fails, counting 6 
         },
       },
     }),
-    82,
+    85,
   );
   // An array of 20 strings of maxLength m: 2 + 3 + 1 + 2 + 20 * (2 + 6m) + 19
   // = 67 + 120m, so 135 gives 16267 and 136 gives 16387.
@@ -538,21 +541,17 @@ test("a schema whose largest verdict would exceed 16384 bytes fails, counting 6 
   );
 });
 
-test("a verdict over 16384 bytes is dropped by extract and check", () => {
-  // Built directly, past parseExtension's worst-case check, to reach the value cap.
-  const wide = {
-    properties: { a: { type: "string", maxLength: 20000 } },
-    required: ["a"],
-  };
+test("a verdict over 16384 bytes is not carried, and the warning names only its fields", () => {
   // {"a":"<n x's>"} is n + 8 bytes.
-  assert.deepEqual(extractVerdict({ a: "x".repeat(16376) }, wide), {
-    a: "x".repeat(16376),
+  const fits = { a: "x".repeat(16376) };
+  assert.deepEqual(carryVerdict(fits), {
+    verdict: fits,
+    line: "check-intake-triage-verdict: verdict carries a",
   });
-  assert.equal(extractVerdict({ a: "x".repeat(16377) }, wide), null);
-  assert.deepEqual(checkVerdict({ a: "x".repeat(16376) }, wide), {
-    a: "x".repeat(16376),
+  assert.deepEqual(carryVerdict({ a: "x".repeat(16377) }), {
+    verdict: null,
+    line: "::warning title=check-intake-triage-verdict::The verdict (a) is over 16384 bytes; none is carried.",
   });
-  assert.equal(checkVerdict({ a: "x".repeat(16377) }, wide), null);
 });
 
 test("uniqueItems compares objects whatever their key order", () => {
@@ -576,7 +575,7 @@ test("uniqueItems compares objects whatever their key order", () => {
     }),
   );
   assert.equal(
-    extractVerdict(
+    pickVerdict(
       {
         pairs: [
           { a: 1, b: 2 },
@@ -588,7 +587,7 @@ test("uniqueItems compares objects whatever their key order", () => {
     null,
   );
   assert.deepEqual(
-    extractVerdict(
+    pickVerdict(
       {
         pairs: [
           { a: 1, b: 2 },
@@ -740,8 +739,8 @@ test("extract drops the whole verdict when any field is missing, unknown or out 
     );
     assert.doesNotMatch(lines[0], /XL|ghp_|urgent|#12/u, name);
   }
-  assert.equal(extractVerdict(undefined, extension), null);
-  assert.equal(extractVerdict("not an object", extension), null);
+  assert.equal(pickVerdict(undefined, extension), null);
+  assert.equal(pickVerdict("not an object", extension), null);
 });
 
 test("an unset verdict-schema extracts nothing and logs nothing", () => {
@@ -769,7 +768,7 @@ test("check mode passes a verdict that fits and empties one that does not", () =
   assert.equal(check(JSON.stringify({ size: "L", complexity: 9 })), "");
   assert.equal(check("{not json"), "");
   assert.equal(check(JSON.stringify({ size: "L", complexity: 5 }), ""), "");
-  assert.equal(checkVerdict(["L"], extension), null);
+  assert.equal(fitVerdict(["L"], extension), null);
 });
 
 test("an unknown mode fails", () => {

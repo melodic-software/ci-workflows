@@ -32,8 +32,9 @@ const LIMITS = Object.freeze({
 });
 
 // Worst-case JSON bytes per value: a code point escapes to at most 6 bytes
-// (\u001f), and a finite number serializes to at most 24 characters.
-const NUMBER_BYTES = 24;
+// (\u001f), and a finite number serializes to at most 25 characters
+// (-0.0000012345678901234567).
+const NUMBER_BYTES = 25;
 const CHAR_BYTES = 6;
 
 const NAME = /^[a-z][a-z0-9_]{0,63}$/u;
@@ -349,16 +350,23 @@ function fitVerdict(verdict, extension) {
   return fitsFields(verdict, extension.properties, extension.required);
 }
 
-// Both drop a verdict over LIMITS.verdictBytes as well.
-function extractVerdict(structured, extension) {
-  const verdict = pickVerdict(structured, extension);
-  return verdict && !overCap(verdict) ? verdict : null;
-}
-
-// A verdict object passed between jobs, checked again; null when it fails.
-function checkVerdict(verdict, extension) {
-  const checked = fitVerdict(verdict, extension);
-  return checked && !overCap(checked) ? checked : null;
+// The verdict to carry, or null, and the line to log. The line names fields
+// only; the runner's own step echo shows the checked values.
+function carryVerdict(verdict) {
+  if (!verdict) {
+    return {
+      verdict: null,
+      line: "::warning title=check-intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
+    };
+  }
+  const names = Object.keys(verdict).join(", ");
+  if (overCap(verdict)) {
+    return {
+      verdict: null,
+      line: `::warning title=check-intake-triage-verdict::The verdict (${names}) is over ${LIMITS.verdictBytes} bytes; none is carried.`,
+    };
+  }
+  return { verdict, line: `check-intake-triage-verdict: verdict carries ${names || "no fields"}` };
 }
 
 function writeOutputs(env, outputs) {
@@ -402,8 +410,9 @@ function main(env = process.env) {
     outputs = { "schema-file": schemaFile };
   } else if (mode === "extract" || mode === "check") {
     const extension = parseExtension(env.INPUT_VERDICT_SCHEMA);
-    let verdict = null;
+    let carried = null;
     if (extension) {
+      let verdict = null;
       if (mode === "extract") {
         verdict = pickVerdict(readStructured(env.INPUT_EXECUTION_FILE ?? ""), extension);
       } else {
@@ -413,21 +422,11 @@ function main(env = process.env) {
           verdict = null;
         }
       }
-      // Names only: the model's values never reach the log.
-      if (verdict && overCap(verdict)) {
-        lines.push(
-          `::warning title=check-intake-triage-verdict::The verdict (${Object.keys(verdict).join(", ")}) is over ${LIMITS.verdictBytes} bytes; none is carried.`,
-        );
-        verdict = null;
-      } else {
-        lines.push(
-          verdict
-            ? `check-intake-triage-verdict: verdict carries ${Object.keys(verdict).join(", ") || "no fields"}`
-            : "::warning title=check-intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
-        );
-      }
+      const result = carryVerdict(verdict);
+      carried = result.verdict;
+      lines.push(result.line);
     }
-    outputs = { verdict: verdict ? JSON.stringify(verdict) : "" };
+    outputs = { verdict: carried ? JSON.stringify(carried) : "" };
   } else {
     throw new Error(`mode ${JSON.stringify(mode)} is not schema, extract or check`);
   }
@@ -450,11 +449,12 @@ module.exports = {
   LIMITS,
   VerdictSchemaError,
   baseSchema,
-  checkVerdict,
-  extractVerdict,
+  carryVerdict,
+  fitVerdict,
   instructions,
   main,
   mergeSchema,
   parseExtension,
+  pickVerdict,
   worstBytes,
 };

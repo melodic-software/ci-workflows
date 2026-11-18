@@ -243,7 +243,7 @@ on:
           in the verdict output. Any other keyword, an unbounded field, more
           than 16 fields per object, nesting past 3 levels, more than 8192
           bytes, or a schema whose largest possible verdict serializes to
-          more than 16384 bytes (6 bytes per string character, 24 per
+          more than 16384 bytes (6 bytes per string character, 25 per
           number) fails the run (.github/actions/check-intake-triage-verdict).
           Empty adds nothing.
         type: string
@@ -3178,6 +3178,7 @@ jobs:
             let floorCleared = false;
             // A failed type write still lets the floor be added below.
             let typeFailure;
+            let typeDropped = false;
             if (!failure && usable && !existingType) {
               try {
                 const updated = await github.graphql(
@@ -3185,7 +3186,10 @@ jobs:
                   { id: issue.node_id, type: types[wanted] },
                 );
                 if (updated?.updateIssue?.issue?.issueType?.name === wanted) typeSet = wanted;
-                else core.warning(`GitHub did not keep Issue Type '${wanted}'; the token may not be allowed to set types.`);
+                else {
+                  typeDropped = true;
+                  core.warning(`GitHub did not keep Issue Type '${wanted}'; the token may not be allowed to set types.`);
+                }
               } catch (error) {
                 typeFailure = error;
               }
@@ -3247,7 +3251,8 @@ jobs:
             // The caller's verdict fields leave only a run that was not
             // escalated and whose writes all landed; the next step checks
             // them against verdict-schema.
-            if (!escalated && !failure && output?.verdict !== undefined) core.setOutput("verdict", JSON.stringify(output.verdict));
+            const landed = !failure && !priorityLost && !typeDropped;
+            if (!escalated && landed && output?.verdict !== undefined) core.setOutput("verdict", JSON.stringify(output.verdict));
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
       # The leg's verdict, checked against verdict-schema again before it

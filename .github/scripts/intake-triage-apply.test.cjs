@@ -1852,3 +1852,25 @@ test("a failed write hands on no verdict", async () => {
   assert.equal(failedType.failed.length, 1);
   assert.equal(failedType.outputs.verdict, undefined);
 });
+
+test("a priority nothing could carry or a type GitHub dropped hands on no verdict", async () => {
+  const output = triaged({ size: "M" });
+  const verdict = verdictFor(output);
+  assert.notEqual(verdict, "");
+  const lostPriority = await apply(SUCCESS, {
+    output,
+    verdict,
+    priorityField: FIELD,
+    fieldWriteFails: true,
+    liveLabels: [ESCALATION_LABEL, FLOOR_LABEL],
+  });
+  assert.ok(
+    lostPriority.warnings.some((w) => /Neither the Priority field/u.test(w)),
+  );
+  assert.equal(lostPriority.outputs.verdict, undefined);
+  const droppedType = await apply(SUCCESS, { output, verdict, keptType: null });
+  assert.ok(
+    droppedType.warnings.some((w) => /did not keep Issue Type/u.test(w)),
+  );
+  assert.equal(droppedType.outputs.verdict, undefined);
+});
