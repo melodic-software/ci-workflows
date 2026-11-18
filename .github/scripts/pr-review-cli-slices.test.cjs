@@ -746,6 +746,7 @@ async function compose(job, cut, chunkDir) {
     EFFORT: "high",
     MAX_TURNS: "30",
     MODEL_ARGS: "",
+    LEVELS_DIR: path.join(__dirname, "..", "actions", "review-levels"),
     CLI_VERSION: "latest",
     REPOSITORY: "o/r",
     PR_NUMBER: "7",

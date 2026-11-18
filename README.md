@@ -946,6 +946,19 @@ consumer to audit it.
   reset. An empty `window-hours` or `probe-minutes` is the default, so
   callers pass an unset `vars.KEY_CREDIT_WINDOW_HOURS` as it is. Lanes call
   it through `select-model-credential` (below), not directly.
+- `.github/actions/check-kill-switch` — `pr-review-cli.yml`'s
+  `check-kill-switch` job, run only when the caller sets `kill-switch`: the
+  org switch (`vars.CLAUDE_LANES_DISABLED`) and the repository switch
+  (`vars.CLAUDE_LANES_REPO_DISABLED`) each let the lane proceed only on
+  exactly `false`, so unset stops it. Always exits 0; its `proceed` output
+  gates the lane (its `action.yml` describes the inputs).
+- `.github/actions/review-levels` — the review levels `pr-review-cli.yml`'s
+  compose step reads: `levels.json`, the one built-in table (quick, standard,
+  deep), and `levels.cjs`, which merges the caller's `CLAUDE_REVIEW_LEVELS`
+  over it, falls back to the built-in default with an `::error::` annotation
+  when a level variable is unusable, refuses a `review-level` input that
+  names no level, and fills the run's model, effort and turn budget the
+  inputs leave empty.
 - `.github/actions/select-model-credential` — the one place every Claude
   model lane picks its credential: the role's API key, then its subscription
   token, then the central fallback token, each leg its own job. A `start`
@@ -1463,7 +1476,27 @@ GitHub continues the normal weekly patching of each hosted image generation.
   credit stop, and `actions: read` with `checks: read` for the status job,
   which reads its earlier runs' cost hold notices. GitHub fails the run at
   startup when the caller does not grant both. The workflow header carries the canonical caller and
-  the security model. A `workflow_run` caller, such as review after another
+  the security model. `kill-switch: true` (default `false`) runs the
+  `check-kill-switch` job first, which stops the lane with a notice on the
+  caller's `CLAUDE_LANES_DISABLED` or `CLAUDE_LANES_REPO_DISABLED` variable
+  unless exactly `false`, or on the lane's own switch set to `true`:
+  `CLAUDE_REVIEW_DISABLED` for `lane: code`, `CLAUDE_SECURITY_REVIEW_DISABLED`
+  for `lane: security`, neither stopping the other lane. The switches are
+  read once, when the run starts, so a run already past that job keeps going
+  until it is cancelled, and the org and repository switches stop only
+  callers that pass `kill-switch: true`. The `model`, `effort` and
+  `max-turns` inputs default to empty, and an empty value, passed or not,
+  takes them from a review level: `review-level`, else the caller's
+  `CLAUDE_REVIEW_LEVEL` variable, else `standard` (opus), with the caller's
+  `CLAUDE_REVIEW_LEVELS` JSON merged over the built-in levels
+  (`.github/actions/review-levels`). A `review-level` input that names no
+  level fails the compose step, which turns the run red under
+  `publish: comments`; a `CLAUDE_REVIEW_LEVEL` or `CLAUDE_REVIEW_LEVELS` the
+  lane cannot use logs an `::error::` annotation naming the field and runs
+  the built-in default. `model-args` wins over both; one without `--model`
+  or `--effort` takes that value from the input, else the level, and one
+  with all three flags reads neither the `review-level` input nor a level
+  variable. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head
@@ -1847,7 +1880,7 @@ chunk for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
-for the ceiling (305 or 345 minutes, under the 6-hour job limit) and every
+for the ceiling (306 or 346 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one
