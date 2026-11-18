@@ -194,6 +194,14 @@ of one run attempt shares it and a reader can compute it from the run alone.
 job with the same lane and credential share it. Each is left out when an
 input it needs is absent or out of shape.
 
+run-claude-cli passes the CLI `TRACEPARENT=00-<traceId>-<parent id>-01`, so any
+span or event the CLI exports for the leg joins the run attempt's trace. The
+parent id is the leg's own, the first 16 hex digits of SHA-256 over
+`run-claude-cli:<traceId>:<github.job>:<lane>:<credential.secret>` with
+run-claude-cli's `lane` input, and is not the record's `spanId`. With no valid
+`traceId` the leg gets no `TRACEPARENT`; an inherited one is always replaced.
+The action exports telemetry only when its `otel-receiver` input is `true`.
+
 `githubCalls` counts the job's own GitHub API requests made before the
 report step, from the readings
 [`report-api-budget`](../.github/actions/report-api-budget/action.yml) and its

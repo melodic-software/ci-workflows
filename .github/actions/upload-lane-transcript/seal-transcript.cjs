@@ -17,6 +17,11 @@ const zlib = require("node:zlib");
 
 const VERSION = 1;
 const PAYLOAD = "transcript.json.gz";
+const TELEMETRY_PAYLOAD = "otel.jsonl.gz";
+// The transcript puller skips a whole artifact over 64 MiB, transcript
+// included (claude-code-plugins scripts/lane-transcripts/pull.mjs MAX_SEALED);
+// 1 MiB stays free for the zip's own framing.
+const MAX_ARTIFACT_BYTES = 63 * 1024 * 1024;
 const JOB_ID = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u;
 const RUN_ID = /^[1-9][0-9]{0,19}$/u;
 const KEY_LINE = /^x25519 ([0-9a-f]{16}) ([A-Za-z0-9+/]{43}=)$/u;
@@ -88,6 +93,54 @@ function sealRecord(recipient, name, data, runId, jobId) {
   ]);
 }
 
+/** True for a regular, non-empty file; a link or a missing path is not one. */
+function hasContent(file) {
+  try {
+    const stat = file === "" ? undefined : fs.lstatSync(file);
+    return stat?.isFile() === true && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Seal the leg's telemetry beside its sealed transcript, under its own payload
+ * name and the same run and job binding. Runs after the transcript is on disk
+ * and never touches it.
+ */
+function sealTelemetry(
+  env = process.env,
+  maxArtifactBytes = MAX_ARTIFACT_BYTES,
+) {
+  const file = env.OTEL_FILE ?? "";
+  if (!hasContent(file)) return;
+  const recipient = parsePublicKey(env.PUBLIC_KEY);
+  const jobId = env.JOB_ID ?? "";
+  if (!JOB_ID.test(jobId)) {
+    throw new SealError("the job-id input is not a job key");
+  }
+  const directory = path.join(env.RUNNER_TEMP, "lane-transcript", jobId);
+  const transcriptBytes = fs.statSync(
+    path.join(directory, `${PAYLOAD}.sealed`),
+  ).size;
+  const record = sealRecord(
+    recipient,
+    TELEMETRY_PAYLOAD,
+    zlib.gzipSync(fs.readFileSync(file)),
+    env.GITHUB_RUN_ID,
+    jobId,
+  );
+  if (transcriptBytes + record.length > maxArtifactBytes) {
+    process.stdout.write(
+      "::warning::upload-lane-transcript: the telemetry is left out: with it the artifact would pass the transcript puller's size limit\n",
+    );
+    return;
+  }
+  const sealed = path.join(directory, `${TELEMETRY_PAYLOAD}.sealed`);
+  fs.writeFileSync(sealed, record, { flag: "wx" });
+  fs.appendFileSync(env.GITHUB_OUTPUT, `file=${sealed}\n`);
+}
+
 function main(env = process.env) {
   if (String(env.PUBLIC_KEY ?? "").trim() === "") {
     process.stdout.write(
@@ -102,14 +155,8 @@ function main(env = process.env) {
     throw new SealError("the job-id input is not a job key");
   }
   const file = env.EXECUTION_FILE ?? "";
-  let stat;
-  try {
-    stat = file === "" ? undefined : fs.lstatSync(file);
-  } catch {
-    stat = undefined;
-  }
   // No regular, non-empty file: no leg ran, so there is nothing to keep.
-  if (!stat?.isFile() || stat.size === 0) return;
+  if (!hasContent(file)) return;
   const record = sealRecord(
     recipient,
     PAYLOAD,
@@ -125,9 +172,19 @@ function main(env = process.env) {
   fs.appendFileSync(env.GITHUB_OUTPUT, `file=${sealed}\n`);
 }
 
-module.exports = { main };
+module.exports = { main, sealTelemetry };
 
-if (require.main === module) {
+if (require.main === module && process.argv[2] === "telemetry") {
+  // Telemetry is optional: a failure here warns and leaves the transcript's
+  // upload to go ahead.
+  try {
+    sealTelemetry();
+  } catch (error) {
+    process.stdout.write(
+      `::warning::upload-lane-transcript: the telemetry is left out: ${error instanceof SealError ? error.message : `it could not be sealed (${error.name})`}\n`,
+    );
+  }
+} else if (require.main === module) {
   try {
     main();
   } catch (error) {

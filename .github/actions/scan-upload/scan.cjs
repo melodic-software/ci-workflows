@@ -9,6 +9,8 @@
 // assignment label only warns. A link, a non-regular file, a compressed file,
 // a glob or `!` entry, a gate that cannot be fetched, or any other fault
 // withholds it too. Nothing printed carries a matched value or a file name.
+// SCAN_WITHHOLDS, a fixed text from a caller whose hit keeps part of its upload,
+// replaces "nothing is uploaded" in the error line.
 // Writes clean=true to GITHUB_OUTPUT only when every file was judged clean.
 // Exit 0 clean, 1 withheld.
 "use strict";
@@ -124,7 +126,7 @@ async function main(env = process.env, gatePath = null) {
   }
   const { withheld, warned, files } = result;
   if (withheld) {
-    process.stdout.write(`::error::scan-upload: ${withheld.label}; nothing is uploaded${withheld.credential ? ". Rotate this credential" : ""}\n`);
+    process.stdout.write(`::error::scan-upload: ${withheld.label}; ${env.SCAN_WITHHOLDS || "nothing is uploaded"}${withheld.credential ? ". Rotate this credential" : ""}\n`);
     return 1;
   }
   if (warned) process.stdout.write("::warning::scan-upload: a password or secret assignment in an upload file; not blocking, check it is no real credential\n");

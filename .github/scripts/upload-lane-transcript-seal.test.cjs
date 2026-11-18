@@ -43,12 +43,16 @@ function generate() {
   };
 }
 
-function open(recipient, record, runId = "42", jobId = JOB) {
+function open(
+  recipient,
+  record,
+  runId = "42",
+  jobId = JOB,
+  payload = "transcript.json.gz",
+) {
   const header = record.subarray(0, 53);
   const epk = header.subarray(9, 41);
-  const bound = Buffer.from(
-    `lane-output/v1\0transcript.json.gz\0${runId}\0${jobId}`,
-  );
+  const bound = Buffer.from(`lane-output/v1\0${payload}\0${runId}\0${jobId}`);
   const shared = crypto.diffieHellman({
     privateKey: recipient.privateKey,
     publicKey: crypto.createPublicKey({
@@ -210,7 +214,7 @@ test("the step conditions skip the scan on an empty key and seal only after a cl
   );
 });
 
-test("the upload keeps only the sealed file, for 7 days, named by job and attempt", () => {
+test("the upload keeps only the sealed files, for 7 days, named by job and attempt", () => {
   const upload = ACTION.runs.steps.at(-1);
   assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u);
   assert.equal(upload.if, "steps.seal.outputs.file != ''");
@@ -218,7 +222,254 @@ test("the upload keeps only the sealed file, for 7 days, named by job and attemp
     upload.with.name,
     `lane-transcript-\${{ inputs.job-id }}-\${{ github.run_attempt }}`,
   );
-  assert.equal(upload.with.path, `\${{ steps.seal.outputs.file }}`);
+  assert.deepEqual(upload.with.path.trim().split("\n"), [
+    `\${{ steps.seal.outputs.file }}`,
+    `\${{ steps.seal-otel.outputs.file }}`,
+  ]);
   assert.equal(upload.with["retention-days"], 7);
   assert.equal(upload.with.overwrite, false);
+});
+
+const OTEL_MARKER = "otel-plaintext-marker-91ab";
+const OTEL = `${JSON.stringify({ event: OTEL_MARKER })}\n`;
+const OTEL_ENTRY = "otel.jsonl.gz.sealed";
+
+function runTelemetry(dir, { key, file, jobId = JOB }) {
+  const output = path.join(dir, "github-output");
+  fs.writeFileSync(output, "");
+  const result = spawnSync(
+    process.execPath,
+    [
+      path.join(
+        __dirname,
+        "../actions/upload-lane-transcript/seal-transcript.cjs",
+      ),
+      "telemetry",
+    ],
+    {
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_OUTPUT: output,
+        RUNNER_TEMP: dir,
+        GITHUB_RUN_ID: "42",
+        PUBLIC_KEY: key,
+        OTEL_FILE: file,
+        JOB_ID: jobId,
+      },
+      encoding: "utf8",
+    },
+  );
+  return { ...result, output: fs.readFileSync(output, "utf8") };
+}
+
+function sealedLeg() {
+  const { dir, file } = workspace();
+  const recipient = generate();
+  const transcript = sealedPath(run(dir, { key: recipient.line, file }));
+  const otel = path.join(dir, "otel.jsonl");
+  fs.writeFileSync(otel, OTEL);
+  return { dir, recipient, transcript, otel };
+}
+
+test("telemetry seals beside the transcript and opens only under its own name, run and job", () => {
+  const { dir, recipient, transcript, otel } = sealedLeg();
+  const before = fs.readFileSync(transcript);
+  const result = runTelemetry(dir, { key: recipient.line, file: otel });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const sealedFile = sealedPath(result);
+  assert.equal(path.dirname(sealedFile), path.dirname(transcript));
+  assert.equal(path.basename(sealedFile), OTEL_ENTRY);
+  const sealed = fs.readFileSync(sealedFile);
+  assert.equal(sealed.includes(Buffer.from(OTEL_MARKER)), false);
+  assert.equal(open(recipient, sealed, "42", JOB, "otel.jsonl.gz"), OTEL);
+  assert.throws(
+    () => open(recipient, sealed),
+    "not under the transcript's name",
+  );
+  assert.throws(() => open(recipient, sealed, "43", JOB, "otel.jsonl.gz"));
+  assert.throws(() =>
+    open(recipient, sealed, "42", "code-review-key-3", "otel.jsonl.gz"),
+  );
+  assert.deepEqual(fs.readFileSync(transcript), before);
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    new RegExp(OTEL_MARKER, "u"),
+  );
+});
+
+test("a missing, empty or linked telemetry file seals nothing and passes", () => {
+  const { dir, recipient, transcript, otel } = sealedLeg();
+  const empty = path.join(dir, "empty.jsonl");
+  const linked = path.join(dir, "linked.jsonl");
+  fs.writeFileSync(empty, "");
+  fs.symlinkSync(otel, linked);
+  for (const file of ["", path.join(dir, "absent.jsonl"), empty, linked]) {
+    const result = runTelemetry(dir, { key: recipient.line, file });
+    assert.equal(result.status, 0, file);
+    assert.equal(result.output, "", file);
+  }
+  assert.deepEqual(fs.readdirSync(path.dirname(transcript)), [
+    "transcript.json.gz.sealed",
+  ]);
+});
+
+test("a telemetry seal that cannot finish warns, passes and leaves the transcript alone", () => {
+  const { dir, recipient, transcript, otel } = sealedLeg();
+  const before = fs.readFileSync(transcript);
+  for (const options of [
+    { key: "-----BEGIN PUBLIC KEY-----", file: otel },
+    { key: recipient.line, file: otel, jobId: "has space" },
+  ]) {
+    const result = runTelemetry(dir, options);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^::warning::upload-lane-transcript: /mu);
+    assert.equal(result.output, "");
+    assert.doesNotMatch(result.stdout, new RegExp(OTEL_MARKER, "u"));
+  }
+  assert.deepEqual(fs.readFileSync(transcript), before);
+  assert.equal(
+    fs.existsSync(path.join(path.dirname(transcript), OTEL_ENTRY)),
+    false,
+  );
+});
+
+test("telemetry that would push the artifact past the puller's size limit is left out", () => {
+  const {
+    sealTelemetry,
+  } = require("../actions/upload-lane-transcript/seal-transcript.cjs");
+  const { dir, recipient, transcript, otel } = sealedLeg();
+  const output = path.join(dir, "github-output");
+  fs.writeFileSync(output, "");
+  const env = {
+    GITHUB_OUTPUT: output,
+    RUNNER_TEMP: dir,
+    GITHUB_RUN_ID: "42",
+    PUBLIC_KEY: recipient.line,
+    OTEL_FILE: otel,
+    JOB_ID: JOB,
+  };
+  const entry = path.join(path.dirname(transcript), OTEL_ENTRY);
+  const transcriptBytes = fs.statSync(transcript).size;
+  sealTelemetry(env, transcriptBytes);
+  assert.equal(fs.existsSync(entry), false, "over the limit");
+  assert.equal(fs.readFileSync(output, "utf8"), "");
+  sealTelemetry(env, transcriptBytes + 1024);
+  assert.equal(fs.existsSync(entry), true, "under the limit");
+});
+
+test("telemetry steps run only after the transcript sealed, and neither can fail the action", () => {
+  const steps = Object.fromEntries(ACTION.runs.steps.map((s) => [s.id, s]));
+  const scan = steps["scan-otel"];
+  const seal = steps["seal-otel"];
+  assert.equal(
+    scan.if,
+    "inputs.otel-file != '' && steps.seal.outputs.file != ''",
+  );
+  assert.equal(scan.env.SCAN_PATHS, `\${{ inputs.otel-file }}`);
+  assert.match(scan.run, /\/\.\.\/scan-upload\/scan\.cjs"$/u);
+  assert.equal(seal.if, "steps.scan-otel.outputs.clean == 'true'");
+  assert.match(seal.run, /seal-transcript\.cjs" telemetry$/u);
+  assert.equal(scan["continue-on-error"], true);
+  assert.equal(seal["continue-on-error"], true);
+  const order = ACTION.runs.steps.map((s) => s.id);
+  assert.ok(order.indexOf("seal") < order.indexOf("scan-otel"));
+  assert.equal(ACTION.inputs["otel-file"].required, false);
+  assert.equal(ACTION.inputs["otel-file"].default, "");
+});
+
+// Built at run time: a GitHub token prefix and 36 letters spelling FAKE, never
+// a live token.
+const PLANTED = ["gh", "p_", "FAKE".repeat(9)].join("");
+const LEFT_OUT = "the telemetry is left out and the transcript still uploads";
+
+// Runs scan-upload over a file holding the planted credential, against a
+// stand-in gate with scanLeak's return shape, or `gate` when given.
+async function scanHit(extraEnv, gate) {
+  const { main } = require("../actions/scan-upload/scan.cjs");
+  const dir = makeTemporaryDirectory("scan-otel-");
+  const standIn = path.join(dir, "gate.mjs");
+  fs.writeFileSync(
+    standIn,
+    'export const scanLeak = (bytes) => (Buffer.from(bytes).includes("FAKE".repeat(9)) ? { block: "GitHub token", credential: true } : {});\n',
+  );
+  const file = path.join(dir, "otel.jsonl");
+  fs.writeFileSync(file, `${JSON.stringify({ note: PLANTED })}\n`);
+  const output = path.join(dir, "github-output");
+  fs.writeFileSync(output, "");
+  const write = process.stdout.write;
+  let printed = "";
+  process.stdout.write = (chunk) => {
+    printed += chunk;
+    return true;
+  };
+  try {
+    const code = await main(
+      { SCAN_PATHS: file, GITHUB_OUTPUT: output, ...extraEnv },
+      gate ?? standIn,
+    );
+    return { code, printed, outputs: fs.readFileSync(output, "utf8") };
+  } finally {
+    process.stdout.write = write;
+  }
+}
+
+const telemetryScanEnv = () => {
+  const { SCAN_PATHS: _paths, ...env } = ACTION.runs.steps.find(
+    (s) => s.id === "scan-otel",
+  ).env;
+  return env;
+};
+
+test("a telemetry scan hit says the transcript still uploads, and to rotate the credential", async () => {
+  const { code, printed, outputs } = await scanHit(telemetryScanEnv());
+  assert.equal(code, 1);
+  assert.equal(outputs, "", "no clean output, so the telemetry is not sealed");
+  assert.equal(
+    printed,
+    `::error::scan-upload: GitHub token; ${LEFT_OUT}. Rotate this credential\n`,
+  );
+  assert.equal(printed.includes("nothing is uploaded"), false);
+  assert.equal(printed.includes(PLANTED), false);
+});
+
+test("a telemetry scan that cannot finish says the transcript still uploads", async () => {
+  const { code, printed, outputs } = await scanHit(
+    telemetryScanEnv(),
+    path.join(makeTemporaryDirectory("scan-otel-absent-"), "absent.mjs"),
+  );
+  assert.equal(code, 1);
+  assert.equal(outputs, "");
+  assert.match(
+    printed,
+    new RegExp(
+      `^::error::scan-upload: no finished scan \\(\\w+\\); ${LEFT_OUT}\\n$`,
+      "u",
+    ),
+  );
+  assert.equal(printed.includes("nothing is uploaded"), false);
+});
+
+test("every other scan keeps the default message", async () => {
+  const hit = await scanHit({});
+  assert.equal(
+    hit.printed,
+    "::error::scan-upload: GitHub token; nothing is uploaded. Rotate this credential\n",
+  );
+  const unfinished = await scanHit(
+    {},
+    path.join(makeTemporaryDirectory("scan-default-absent-"), "absent.mjs"),
+  );
+  assert.match(
+    unfinished.printed,
+    /^::error::scan-upload: no finished scan \(\w+\); nothing is uploaded\n$/u,
+  );
+  const transcriptScan = ACTION.runs.steps.find((s) => s.id === "scan");
+  assert.deepEqual(Object.keys(transcriptScan.env), ["SCAN_PATHS"]);
+  const scanUpload = parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "../actions/scan-upload/action.yml"),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(Object.keys(scanUpload.runs.steps[0].env), ["SCAN_PATHS"]);
 });
