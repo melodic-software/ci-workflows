@@ -533,7 +533,7 @@ jobs:
         # boundary cannot bypass the required formatter.
         uses: $/.github/actions/shfmt
         with:
-          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
+          paths: fixtures/shell/good .github/scripts .github/actions/verify-pulumi-deploy-policy .github/actions/detect-changes .github/actions/pr-require-checks/check-contract .github/actions/pr-require-checks/aggregate-results .github/actions/pr-require-checks/report-ci-status .github/actions/pr-require-checks/gh-api.sh .github/actions/check-exec-bit .github/actions/check-workflow-naming .github/actions/shfmt
       - name: Test shfmt discovery and fan-out
         run: bash .github/actions/shfmt/run.test.sh
 
@@ -596,6 +596,8 @@ jobs:
         run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
       - name: Test the ci-status aggregation and carry-forward runner
         run: bash .github/actions/pr-require-checks/aggregate-results/run.test.sh
+      - name: Test the ci-status draft policy
+        run: bash .github/actions/pr-require-checks/report-ci-status/run.test.sh
       - name: Test Pulumi deployment guard
         run: bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh
       - name: Test govulncheck SARIF classification
@@ -755,33 +757,36 @@ jobs:
       # unlisted scope defaults to none; write covers the read.
       actions: write
     steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Check the pull-request contract
-        uses: $/.github/actions/pr-require-checks/check-contract
+      # The contract, the draft policy and the aggregation, from this commit, so
+      # a change to the composite is tested by the pull request that makes it.
+      # The step keeps the aggregation step's old name: a contract-only run
+      # finds the writer step of the full run it carries forward by this name,
+      # and an open pull request's full run may predate the composite.
+      - name: Aggregate lane results
+        id: report
+        uses: $/.github/actions/pr-require-checks/report-ci-status
         with:
           # Dependabot pull requests link no issue.
           exempt-authors: 'dependabot[bot]'
-      - name: Aggregate lane results
-        # `!cancelled()` so a failing check-contract step does not skip the
-        # `ci-lanes` status write the next contract-only run needs.
-        if: ${{ !cancelled() }}
-        uses: $/.github/actions/pr-require-checks/aggregate-results
-        with:
+          # Change-gated lanes skip on a full run when detection rules them out.
+          treat-skipped-as: pass
           # While a full run on the SHA is in flight a contract-only run holds,
           # up to `yield-wait-seconds`, with its check run in progress, then
           # passes only on a `success` recorded since it started. The ceiling is this
           # repository's full-run p95 (372 s, max 614 s of 18 runs, 2026-10-31)
           # plus a margin; past it the run fails with "superseded by full run
-          # <url>", and the full run re-runs it once it records `success`. A
-          # failed contract cannot pass, so that red lands at once.
-          yield-to-full-run: 'true'
-          yield-wait-seconds: ${{ job.status == 'failure' && (github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && '0' || '420' }}
-          rerun-contract-only-siblings: 'true'
-          carry-forward-wait-seconds: '0'
+          # <url>", and the full run re-runs it once it records `success`. The
+          # composite drops the hold when the contract failed.
+          yield-wait-seconds: '420'
           # This step's own name, so the own-step lookup never depends on
           # how many steps of the job are in progress.
           step-name: Aggregate lane results
           results: ${{ needs.detect-changes.result }} ${{ needs.pr-run-checks.result }} ${{ needs.psscriptanalyzer.result }} ${{ needs.check-markdown-references.result }} ${{ needs.ruff.result }} ${{ needs.pyright.result }} ${{ needs.biome.result }} ${{ needs.dotnet-build.result }} ${{ needs.dotnet-format.result }} ${{ needs.shellcheck.result }} ${{ needs.shfmt.result }} ${{ needs.test-contracts.result }} ${{ needs.actionlint.result }} ${{ needs.jsonschema.result }} ${{ needs.check-action-filename.result }} ${{ needs.check-workflow-naming.result }} ${{ needs.pr-run-checks-go.result }} ${{ needs.pr-audit-workflows.result }} ${{ needs.pr-scan-dependencies.result }}
+      # The composite's step concludes on the lanes alone, so a contract-only
+      # run can carry its `ci-lanes` success forward; the contract and draft
+      # results fail the job here instead.
+      - name: Fail on the contract or draft policy
+        if: ${{ !cancelled() && (steps.report.outputs.contract == 'failure' || steps.report.outputs.draft == 'failure') }}
+        run: |
+          echo "::error::ci-status: the pull-request contract or the draft policy failed; see the step above."
+          exit 1

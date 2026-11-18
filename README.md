@@ -615,6 +615,17 @@ consumer to audit it.
   for the comment and label; every write is best-effort and degrades to a
   `::notice::` on a read-only token. See
   [its README](.github/actions/pr-require-checks/check-contract/README.md) for the consumer wiring.
+- `.github/actions/pr-require-checks/report-ci-status` — the shared steps of a
+  consumer's `ci-status` job in one step: `check-contract`, the draft policy
+  (`draft: refuse | allow`), and `aggregate-results`. The first two never fail
+  the step, so its conclusion follows the lanes alone and a contract-only run
+  can carry the full run's `ci-lanes` success; they are the `contract` and
+  `draft` outputs, and the consumer adds one step that fails the job on
+  either. The `CI Status` job and its `needs`, `if`, permissions, runner and
+  timeout stay in the consumer, so the required check keeps its name. This
+  repository's own `ci-status` runs it through `$/`. See
+  [its README](.github/actions/pr-require-checks/report-ci-status/README.md) for the
+  consumer job and the reference trigger, concurrency and lane-gate copy.
 - `.github/actions/detect-changes` — decides which CI lanes a pull request's
   changed files make relevant, so a caller can skip lanes at JOB level and
   stop paying for runs a change cannot affect. Checkout-free: the PR file

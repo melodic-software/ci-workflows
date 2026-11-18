@@ -1,0 +1,140 @@
+name: Report CI Status
+description: >-
+  The shared steps of a caller's `ci-status` job in one step: the pull-request
+  contract, the draft policy, and the lane aggregation with its `ci-lanes`
+  carry-forward. The step's conclusion follows the lanes alone; the contract
+  and draft results are the `contract` and `draft` outputs, and the caller
+  fails its job on them in a step of its own.
+
+inputs:
+  results:
+    description: >-
+      Whitespace-separated job results, one per aggregated lane, built from
+      `needs.<lane>.result` (for example `join(needs.*.result, ' ')`). Passed to
+      `aggregate-results`; empty fails.
+    required: true
+  treat-skipped-as:
+    description: >-
+      Whether a `skipped` lane passes: `pass` or `fail`. Defaults to `fail`,
+      the setting most callers use: their lanes skip only on a contract-only
+      event, which is carried forward instead. A caller whose lanes skip on a
+      change-detection result passes `pass`.
+    default: fail
+  draft:
+    description: >-
+      `refuse` fails a draft pull request; `allow` passes it. A contract-only
+      run whose payload says draft but whose pull request is ready now (a
+      re-run started before `ready_for_review`) passes on the live state.
+      Any other value fails the step. A caller that refuses a draft lists
+      `ready_for_review` in its `pull_request` types, or a draft never gets a
+      passing run once it is marked ready.
+    default: allow
+  exempt-authors:
+    description: >-
+      Comma-separated exact pull-request author logins that skip the
+      issue-linkage check, passed to `check-contract`.
+    default: ''
+  enforce-hold-label:
+    description: >-
+      `true` fails the contract step while the pull request carries
+      `check-contract`'s hold label (`needs-human`). Passed to
+      `check-contract`.
+    default: 'false'
+  rerun-contract-only-siblings:
+    description: >-
+      `true` has a full run that records `success` re-run the red
+      contract-only runs of this workflow on the same head SHA. Passed to
+      `aggregate-results`; the calling job needs `actions: write`.
+    default: 'true'
+  yield-wait-seconds:
+    description: >-
+      Ceiling, in seconds, on how long a contract-only run holds, in progress,
+      while a full run on the SHA is in flight, instead of failing at once.
+      Passed to `aggregate-results`. The composite passes `0` instead on a
+      contract-only run whose job, contract step or draft step already
+      failed: that run cannot pass, so holding it only delays the red. Size
+      it from the repository's measured full run and keep it under the
+      calling job's `timeout-minutes`.
+    default: '0'
+  step-name:
+    description: >-
+      The caller's `name:` for the step that runs this action, which is how
+      the jobs API lists it: a composite shows as one step. Passed to
+      `aggregate-results`, which finds this run's own step by it. Set it on
+      every caller: the jobs API has listed a running job's steps as `[]` for
+      minutes, and without the name such a run fails closed.
+    default: ''
+  token:
+    description: >-
+      Token for every API call. The calling job needs `pull-requests: write`
+      (the linkage comment and label), `statuses: write` (the `ci-lanes`
+      status) and `actions: write` (the run listing and sibling re-runs).
+    default: ${{ github.token }}
+
+outputs:
+  contract:
+    description: >-
+      The contract step's outcome: `success` or `failure`. The caller fails
+      its job on `failure` in a step after this one.
+    value: ${{ steps.contract.outcome }}
+  draft:
+    description: >-
+      The draft step's outcome: `success` or `failure`. The caller fails its
+      job on `failure` in a step after this one.
+    value: ${{ steps.draft.outcome }}
+
+runs:
+  using: composite
+  steps:
+    # The contract and draft steps never fail this step: aggregate-results
+    # trusts a carried `ci-lanes` success only when the writer step, which is
+    # this whole composite, concluded `success`, so its conclusion must follow
+    # the lanes alone. Their results are outputs, and the caller fails the
+    # job on them in a step of its own.
+    - name: Check the pull-request contract
+      id: contract
+      continue-on-error: true
+      uses: $/.github/actions/pr-require-checks/check-contract
+      with:
+        token: ${{ inputs.token }}
+        exempt-authors: ${{ inputs.exempt-authors }}
+        enforce-hold-label: ${{ inputs.enforce-hold-label }}
+
+    - name: Apply the draft policy
+      id: draft
+      continue-on-error: true
+      shell: bash
+      env:
+        DRAFT_POLICY: ${{ inputs.draft }}
+        EVENT_DRAFT: ${{ github.event.pull_request.draft }}
+        PR_URL: ${{ github.event.pull_request.url }}
+        GH_TOKEN: ${{ inputs.token }}
+        # Identical to aggregate-results' `contract-only` default.
+        CONTRACT_ONLY: >-
+          ${{ github.event.pull_request.head.repo.full_name == github.repository &&
+          (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
+          (github.event.action == 'edited' && !github.event.changes.base)) }}
+      run: bash "$GITHUB_ACTION_PATH/draft.sh"
+
+    - name: Aggregate lane results
+      # `!cancelled()` so a failed contract or draft step does not skip the
+      # `ci-lanes` status write the next contract-only run reads back.
+      if: ${{ !cancelled() }}
+      uses: $/.github/actions/pr-require-checks/aggregate-results
+      with:
+        token: ${{ inputs.token }}
+        results: ${{ inputs.results }}
+        treat-skipped-as: ${{ inputs.treat-skipped-as }}
+        yield-to-full-run: 'true'
+        carry-forward-wait-seconds: '0'
+        rerun-contract-only-siblings: ${{ inputs.rerun-contract-only-siblings }}
+        step-name: ${{ inputs.step-name }}
+        # The contract-only predicate is identical to aggregate-results'
+        # `contract-only` default.
+        yield-wait-seconds: >-
+          ${{ (job.status == 'failure' || steps.contract.outcome == 'failure' ||
+          steps.draft.outcome == 'failure') &&
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+          (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) ||
+          (github.event.action == 'edited' && !github.event.changes.base))) &&
+          '0' || inputs.yield-wait-seconds }}
