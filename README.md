@@ -1484,11 +1484,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `CLAUDE_REVIEW_LEVEL` variable, else `standard` (opus), with the caller's
   `CLAUDE_REVIEW_LEVELS` JSON merged over the built-in levels
   (`.github/actions/review-levels`). A `review-level` input that names no
-  level fails the run; a `CLAUDE_REVIEW_LEVEL` or `CLAUDE_REVIEW_LEVELS` the
+  level fails the compose step, which turns the run red under
+  `publish: comments`; a `CLAUDE_REVIEW_LEVEL` or `CLAUDE_REVIEW_LEVELS` the
   lane cannot use logs an `::error::` annotation naming the field and runs
   the built-in default. `model-args` wins over both; one without `--model`
   or `--effort` takes that value from the input, else the level, and one
-  with all three flags reads no level variable. A `workflow_run` caller, such as review after another
+  with all three flags reads neither the `review-level` input nor a level
+  variable. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head

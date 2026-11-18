@@ -104,7 +104,9 @@ function resolveRun(
   let name = DEFAULT_LEVEL;
   if (levelInput !== "") {
     if (!Object.hasOwn(merged, levelInput)) {
-      throw new Error(`The review-level input names no level; the levels are ${Object.keys(merged).join(", ")}.`);
+      throw new Error(
+        [...errors, `The review-level input names no level; the levels are ${Object.keys(merged).join(", ")}.`].join(" "),
+      );
     }
     name = levelInput;
   } else if (levelVariable !== "") {

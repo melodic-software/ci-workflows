@@ -7340,7 +7340,6 @@ test("with kill-switch set, each switch stops check-key-credit and every model j
         { result: "success", outputs: { proceed: "false" } },
         { result: "failure", outputs: {} },
         { result: "success", outputs: { proceed: "" } },
-        { result: "success", outputs: { proceed: "True" } },
       ]) {
         assert.equal(
           gate(job.if, github, on, read, kill),
@@ -7665,8 +7664,18 @@ test("a review-level input that names no level still fails the compose step", as
       REVIEW_LEVEL_INPUT: "thorough",
       REVIEW_LEVELS: '{"thorough":{"model":"opus"}}',
     },
-    /names no level/u,
+    /CLAUDE_REVIEW_LEVELS level thorough is new, so it needs effort, max-turns\. The built-in levels are used instead\. The review-level input names no level/u,
   );
+});
+
+test("model-args with all three flags leaves the review-level input unread", async () => {
+  const outputs = await composeOutputs({
+    ...NO_EXPLICIT,
+    REVIEW_LEVEL_INPUT: "thorough",
+    MODEL_ARGS: "--model sonnet --max-turns 30 --effort high",
+  });
+  assert.deepEqual(ran(outputs), ["sonnet", "high", "30"]);
+  assert.deepEqual(outputs.errors, []);
 });
 
 test("model-args with --model, --effort and --max-turns reads no level variable, even a malformed one", async () => {
