@@ -15,7 +15,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const verdictModule = require("../actions/intake-triage-verdict/verdict.cjs");
+const verdictModule = require("../actions/check-intake-triage-verdict/verdict.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 

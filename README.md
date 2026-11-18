@@ -958,7 +958,7 @@ consumer to audit it.
   `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
   history cannot (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
-- `.github/actions/intake-triage-verdict` — `intake-triage.yml`'s output
+- `.github/actions/check-intake-triage-verdict` — `intake-triage.yml`'s output
   schema and its caller's `verdict-schema` fields, shared by the three leg
   jobs and the apply job: builds the schema file (failing the leg before any
   model call on a field that reuses a base name, is unbounded or leaves an
@@ -1555,7 +1555,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   can only add bounded fields, never loosen the base ones, and the
   `verdict` output, at most 16384 bytes, returns the checked values from a
   run that was not escalated and whose writes landed
-  (`.github/actions/intake-triage-verdict` states the rules).
+  (`.github/actions/check-intake-triage-verdict` states the rules).
   Its string values are untrusted model text: pass them to a step through
   `env:`, never into a `run:` script, and branch only on enum fields.
 

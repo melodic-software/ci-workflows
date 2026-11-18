@@ -100,7 +100,7 @@ name: Intake Triage
 #     needs_human) checked against the job's allowlist and enums.
 #   - A caller's verdict-schema only adds fields to the output schema: a
 #     field may not reuse a base name, every object stays closed, and every
-#     value is bounded (.github/actions/intake-triage-verdict). A schema that
+#     value is bounded (.github/actions/check-intake-triage-verdict). A schema that
 #     breaks those rules fails the leg before any model call. The added
 #     fields' values are checked against those bounds again in the leg and
 #     in the apply job, and a string that looks like a credential drops the
@@ -244,7 +244,7 @@ on:
           than 16 fields per object, nesting past 3 levels, more than 8192
           bytes, or a schema whose largest possible verdict serializes to
           more than 16384 bytes (6 bytes per string character, 24 per
-          number) fails the run (.github/actions/intake-triage-verdict).
+          number) fails the run (.github/actions/check-intake-triage-verdict).
           Empty adds nothing.
         type: string
         default: ""
@@ -997,7 +997,7 @@ jobs:
       # rules fails this step, so the leg stops before any model call.
       - name: Compose the output schema
         id: schema
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: schema
           allowed: ${{ steps.compose.outputs.allowed }}
@@ -1129,7 +1129,7 @@ jobs:
         id: verdict
         if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         continue-on-error: true
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: extract
           execution-file: ${{ steps.claude.outputs.execution-file }}
@@ -1788,7 +1788,7 @@ jobs:
       # rules fails this step, so the leg stops before any model call.
       - name: Compose the output schema
         id: schema
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: schema
           allowed: ${{ steps.compose.outputs.allowed }}
@@ -1888,7 +1888,7 @@ jobs:
         id: verdict
         if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         continue-on-error: true
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: extract
           execution-file: ${{ steps.claude.outputs.execution-file }}
@@ -2545,7 +2545,7 @@ jobs:
       # rules fails this step, so the leg stops before any model call.
       - name: Compose the output schema
         id: schema
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: schema
           allowed: ${{ steps.compose.outputs.allowed }}
@@ -2645,7 +2645,7 @@ jobs:
         id: verdict
         if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
         continue-on-error: true
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: extract
           execution-file: ${{ steps.claude.outputs.execution-file }}
@@ -3256,7 +3256,7 @@ jobs:
         id: verdict
         if: always() && steps.apply.outputs.verdict != ''
         continue-on-error: true
-        uses: $/.github/actions/intake-triage-verdict
+        uses: $/.github/actions/check-intake-triage-verdict
         with:
           mode: check
           verdict: ${{ steps.apply.outputs.verdict }}

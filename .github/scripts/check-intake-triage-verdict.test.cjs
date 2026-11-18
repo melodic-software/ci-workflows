@@ -1,7 +1,7 @@
 "use strict";
 
 // The intake-triage lane's output schema and the caller's verdict-schema
-// fields (.github/actions/intake-triage-verdict). An unset verdict-schema
+// fields (.github/actions/check-intake-triage-verdict). An unset verdict-schema
 // must leave the schema the model is held to byte for byte as it was; a set
 // one may only add bounded fields, and the values the model returns are
 // checked against those bounds again.
@@ -17,7 +17,7 @@ const MODULE = path.join(
   __dirname,
   "..",
   "actions",
-  "intake-triage-verdict",
+  "check-intake-triage-verdict",
   "verdict.cjs",
 );
 const {
@@ -624,7 +624,7 @@ test("schema mode fails the step with a one-line error and writes no schema file
   assert.equal(result.status, 1);
   assert.equal(
     result.stdout,
-    "::error title=intake-triage-verdict::verdict-schema: field comment is a base field and cannot be redefined\n",
+    "::error title=check-intake-triage-verdict::verdict-schema: field comment is a base field and cannot be redefined\n",
   );
   assert.equal(
     fs.existsSync(path.join(path.dirname(prompt), "schema.json")),
@@ -691,7 +691,7 @@ test("extract carries the added fields in schema order and leaves the base field
     /^verdict<<ghadelimiter_[0-9a-f-]+\n\{"size":"M",.*\}\nghadelimiter_[0-9a-f-]+\n$/u,
   );
   assert.deepEqual(lines, [
-    "intake-triage-verdict: verdict carries size, complexity, uncertainty, flags, blocked_by, summary, ready, owner",
+    "check-intake-triage-verdict: verdict carries size, complexity, uncertainty, flags, blocked_by, summary, ready, owner",
   ]);
   // An optional field the model left out is left out.
   assert.equal(
@@ -733,7 +733,7 @@ test("extract drops the whole verdict when any field is missing, unknown or out 
     const { outputs, lines } = extractRun({ ...GOOD, ...change });
     assert.equal(outputs.verdict, "", name);
     assert.equal(lines.length, 1, name);
-    assert.match(lines[0], /^::warning title=intake-triage-verdict::/u, name);
+    assert.match(lines[0], /^::warning title=check-intake-triage-verdict::/u, name);
     assert.doesNotMatch(lines[0], /XL|ghp_|urgent|#12/u, name);
   }
   assert.equal(extractVerdict(undefined, extension), null);

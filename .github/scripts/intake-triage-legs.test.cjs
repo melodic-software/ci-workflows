@@ -1025,7 +1025,7 @@ test("a credit-stopped key hands the triage to the triage-subscription job befor
 });
 
 test("every leg builds its schema and reads its verdict through the one shared action, from verdict-schema", () => {
-  const ACTION = "$/.github/actions/intake-triage-verdict";
+  const ACTION = "$/.github/actions/check-intake-triage-verdict";
   const VERDICT_SCHEMA = `\${{ inputs.verdict-schema }}`;
   for (const job of [claude, subscription, fallback]) {
     const ids = job.steps.map((step) => step.id);

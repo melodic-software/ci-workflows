@@ -397,7 +397,7 @@ function main(env = process.env) {
     fs.writeFileSync(schemaFile, JSON.stringify(mergeSchema(baseSchema(allowed, typeNames), extension)));
     if (extension) {
       fs.appendFileSync(promptFile, instructions(extension));
-      lines.push(`intake-triage-verdict: the output schema adds ${Object.keys(extension.properties).join(", ")}`);
+      lines.push(`check-intake-triage-verdict: the output schema adds ${Object.keys(extension.properties).join(", ")}`);
     }
     outputs = { "schema-file": schemaFile };
   } else if (mode === "extract" || mode === "check") {
@@ -416,14 +416,14 @@ function main(env = process.env) {
       // Names only: the model's values never reach the log.
       if (verdict && overCap(verdict)) {
         lines.push(
-          `::warning title=intake-triage-verdict::The verdict (${Object.keys(verdict).join(", ")}) is over ${LIMITS.verdictBytes} bytes; none is carried.`,
+          `::warning title=check-intake-triage-verdict::The verdict (${Object.keys(verdict).join(", ")}) is over ${LIMITS.verdictBytes} bytes; none is carried.`,
         );
         verdict = null;
       } else {
         lines.push(
           verdict
-            ? `intake-triage-verdict: verdict carries ${Object.keys(verdict).join(", ") || "no fields"}`
-            : "::warning title=intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
+            ? `check-intake-triage-verdict: verdict carries ${Object.keys(verdict).join(", ") || "no fields"}`
+            : "::warning title=check-intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
         );
       }
     }
@@ -440,7 +440,7 @@ if (require.main === module) {
     const { lines } = main();
     if (lines.length > 0) process.stdout.write(`${lines.join("\n")}\n`);
   } catch (error) {
-    process.stdout.write(`::error title=intake-triage-verdict::${String(error.message).replace(/[\r\n]+/gu, " ")}\n`);
+    process.stdout.write(`::error title=check-intake-triage-verdict::${String(error.message).replace(/[\r\n]+/gu, " ")}\n`);
     process.exitCode = 1;
   }
 }

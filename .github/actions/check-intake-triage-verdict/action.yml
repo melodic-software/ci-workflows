@@ -1,4 +1,4 @@
-name: Intake Triage Verdict
+name: Check Intake Triage Verdict
 description: >-
   The intake-triage lane's output schema and the caller's typed verdict
   fields, in one place for its three leg jobs and its apply job (verdict.cjs
