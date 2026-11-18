@@ -1078,3 +1078,16 @@ test("every leg builds its schema and reads its verdict through the one shared a
   assert.equal(inputs["verdict-schema"].type, "string");
   assert.equal(outputs.verdict.value, `\${{ jobs.apply.outputs.verdict }}`);
 });
+
+test("the subscription and fallback steps match those generated from the claude job", () => {
+  const { check } = require("./generate-model-legs.cjs");
+  const text = fs.readFileSync(
+    path.join(__dirname, "..", "workflows", "intake-triage.yml"),
+    "utf8",
+  );
+  assert.deepEqual(
+    check(text, require("./model-legs/intake-triage.cjs")),
+    [],
+    "Run: node .github/scripts/generate-model-legs.cjs",
+  );
+});

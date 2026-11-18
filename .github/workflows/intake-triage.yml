@@ -1077,6 +1077,7 @@ jobs:
           max-turns: ${{ steps.compose.outputs.max-turns }}
           known-failure-class: ${{ steps.claude.outputs.lane-class }}
           handoff: ${{ steps.claude.outputs.handoff }}
+      # BEGIN KEY-ONLY
 
       # Read by the next runs' check-key-credit job: the artifact it names
       # (gate.cjs markerName), uploaded only after the key leg's credit stop.
@@ -1109,6 +1110,7 @@ jobs:
           path: ${{ runner.temp }}/key-credit-stop/run-id
           if-no-files-found: error
           retention-days: 1
+      # END KEY-ONLY
 
       # After the outcome step: its timeout check reads the clock when it
       # runs, so time spent here must not count against a failed leg.
@@ -1299,6 +1301,7 @@ jobs:
       denials: ${{ steps.extract.outputs.denials }}
       triage: ${{ steps.extract.outputs.triage }}
     steps:
+      # BEGIN GENERATED: intake-triage triage-subscription
       - name: Reject events other than issues and workflow_dispatch
         if: github.event_name != 'issues' && github.event_name != 'workflow_dispatch'
         env:
@@ -2016,6 +2019,7 @@ jobs:
         uses: $/.github/actions/report-api-budget
         with:
           tokens: github-token
+      # END GENERATED: intake-triage triage-subscription
 
   # The fallback leg, the central fallback subscription, as its own job on
   # a fresh VM, only after the triage-subscription job handed off (a limit stop, a
@@ -2056,6 +2060,7 @@ jobs:
       denials: ${{ steps.extract.outputs.denials }}
       triage: ${{ steps.extract.outputs.triage }}
     steps:
+      # BEGIN GENERATED: intake-triage triage-fallback
       - name: Reject events other than issues and workflow_dispatch
         if: github.event_name != 'issues' && github.event_name != 'workflow_dispatch'
         env:
@@ -2773,6 +2778,7 @@ jobs:
         uses: $/.github/actions/report-api-budget
         with:
           tokens: github-token
+      # END GENERATED: intake-triage triage-fallback
 
   # The one job that writes to the issue. No model runs here and nothing is
   # checked out. It reads the triage-fallback job's outputs when that job ran, else
