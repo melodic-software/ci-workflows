@@ -1123,9 +1123,8 @@ test("lane record: past 1,024 characters models go first, then usage, and the re
   assert.equal(large.credential.secret, credential);
 });
 
-// python.md documents RateLimitInfo in snake_case (rate_limit_type,
-// resets_at); the TypeScript reference uses camelCase. No real CI stream has shown which one the CLI emits, so both
-// forms count, field by field.
+// python.md documents RateLimitInfo in snake_case, the TypeScript reference in camelCase;
+// no real CI stream shows which the CLI emits, so both count, field by field.
 test("rate-limit windows read the snake_case form as well as the camelCase one", () => {
   const snake = (status, rate_limit_type, utilization, resets_at = NEW_YEAR) => ({
     type: "rate_limit_event",
@@ -1158,10 +1157,8 @@ test("resets and its window come from a rejected event in either field form", ()
   assert.equal(camelStop.resetsWindow, "five_hour");
 });
 
-// Shapes CLI 2.1.305 writes in stream-json: a non-zero Bash exit
-// records `{"type":"tool_result","content":"Exit code 1","is_error":true}`; a
-// denied call records `is_error: true` too and its id is listed in the result
-// message's `permission_denials` (Agent SDK `SDKPermissionDenial`).
+// CLI 2.1.305 stream-json: a failed Bash call records tool_result `is_error: true`;
+// a denied one does too and its id is listed in the result's `permission_denials`.
 const shellUse = (id, name = "Bash") => ({
   type: "assistant",
   message: { content: [{ type: "tool_use", id, name, input: { command: "gh pr diff 7" } }] },
