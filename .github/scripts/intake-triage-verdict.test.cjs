@@ -28,6 +28,7 @@ const {
   main,
   mergeSchema,
   parseExtension,
+  worstBytes,
 } = require(MODULE);
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "intake-verdict-"));
@@ -466,10 +467,142 @@ test("a verdict-schema that breaks a rule fails closed, naming the rule", () => 
         one({
           type: "array",
           maxItems: 20,
-          items: { type: "string", maxLength: 1000 },
+          items: { type: "string", enum: ["a", "b"] },
         }),
       ),
     ),
+  );
+  assert.ok(
+    parseExtension(JSON.stringify(one({ type: "string", maxLength: 1000 }))),
+  );
+});
+
+test("a schema whose largest verdict would exceed 16384 bytes fails, counting 6 bytes a character", () => {
+  // Hand-counted: {"a":"<10 characters>"} is 2 + 3 + 1 + (2 + 6 * 10) = 68.
+  assert.equal(
+    worstBytes({
+      type: "object",
+      properties: { a: { type: "string", maxLength: 10 } },
+    }),
+    68,
+  );
+  // {"b":false} is 11; {"n":[i,i,i]} is 2 + 3 + 1 + (2 + 3 * 24 + 2) = 82.
+  assert.equal(
+    worstBytes({ type: "object", properties: { b: { type: "boolean" } } }),
+    11,
+  );
+  assert.equal(
+    worstBytes({
+      type: "object",
+      properties: {
+        n: {
+          type: "array",
+          maxItems: 3,
+          items: { type: "integer", minimum: 0, maximum: 9 },
+        },
+      },
+    }),
+    82,
+  );
+  // An array of 20 strings of maxLength m: 2 + 3 + 1 + 2 + 20 * (2 + 6m) + 19
+  // = 67 + 120m, so 135 gives 16267 and 136 gives 16387.
+  const strings = (m) =>
+    JSON.stringify({
+      properties: {
+        a: {
+          type: "array",
+          maxItems: 20,
+          items: { type: "string", maxLength: m },
+        },
+      },
+    });
+  assert.ok(parseExtension(strings(135)));
+  assert.throws(
+    () => parseExtension(strings(136)),
+    /up to 16387 bytes, over the 16384-byte cap/u,
+  );
+  // Seven arrays of 20 strings of 1000 characters.
+  const seven = Object.fromEntries(
+    Array.from({ length: 7 }, (_, i) => [
+      `f${i}`,
+      {
+        type: "array",
+        maxItems: 20,
+        items: { type: "string", maxLength: 1000 },
+      },
+    ]),
+  );
+  assert.throws(
+    () => parseExtension(JSON.stringify({ properties: seven })),
+    /over the 16384-byte cap/u,
+  );
+});
+
+test("a verdict over 16384 bytes is dropped by extract and check", () => {
+  // Built directly, past parseExtension's worst-case check, to reach the value cap.
+  const wide = {
+    properties: { a: { type: "string", maxLength: 20000 } },
+    required: ["a"],
+  };
+  // {"a":"<n x's>"} is n + 8 bytes.
+  assert.deepEqual(extractVerdict({ a: "x".repeat(16376) }, wide), {
+    a: "x".repeat(16376),
+  });
+  assert.equal(extractVerdict({ a: "x".repeat(16377) }, wide), null);
+  assert.deepEqual(checkVerdict({ a: "x".repeat(16376) }, wide), {
+    a: "x".repeat(16376),
+  });
+  assert.equal(checkVerdict({ a: "x".repeat(16377) }, wide), null);
+});
+
+test("uniqueItems compares objects whatever their key order", () => {
+  const pairs = parseExtension(
+    JSON.stringify({
+      properties: {
+        pairs: {
+          type: "array",
+          maxItems: 3,
+          uniqueItems: true,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              a: { type: "integer", minimum: 0, maximum: 9 },
+              b: { type: "integer", minimum: 0, maximum: 9 },
+            },
+          },
+        },
+      },
+    }),
+  );
+  assert.equal(
+    extractVerdict(
+      {
+        pairs: [
+          { a: 1, b: 2 },
+          { b: 2, a: 1 },
+        ],
+      },
+      pairs,
+    ),
+    null,
+  );
+  assert.deepEqual(
+    extractVerdict(
+      {
+        pairs: [
+          { a: 1, b: 2 },
+          { a: 2, b: 1 },
+        ],
+      },
+      pairs,
+    ),
+    {
+      pairs: [
+        { a: 1, b: 2 },
+        { a: 2, b: 1 },
+      ],
+    },
   );
 });
 

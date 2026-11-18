@@ -1553,8 +1553,11 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `verdict-schema` (default empty, which changes nothing) adds typed fields
   to the triage's output schema, such as a size enum or a bounded score; it
   can only add bounded fields, never loosen the base ones, and the
-  `verdict` output returns the checked values from a run that was not
-  escalated (`.github/actions/intake-triage-verdict` states the rules).
+  `verdict` output, at most 16384 bytes, returns the checked values from a
+  run that was not escalated and whose writes landed
+  (`.github/actions/intake-triage-verdict` states the rules).
+  Its string values are untrusted model text: pass them to a step through
+  `env:`, never into a `run:` script, and branch only on enum fields.
 
 ## Claude lanes — shared consumption contract
 

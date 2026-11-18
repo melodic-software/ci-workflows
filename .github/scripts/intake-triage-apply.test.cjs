@@ -1824,3 +1824,31 @@ test("with no verdict-schema the triage carries no verdict and the apply job out
   const { outputs } = await apply(SUCCESS, { output });
   assert.equal(outputs.verdict, undefined);
 });
+
+test("a verdict that is not JSON drops only the verdict; the triage still carries", async () => {
+  const output = triaged({ size: "M" });
+  const legOutputs = await extract(SUCCESS, {
+    output,
+    allowed: ["priority: high"],
+    verdict: "{not json",
+  });
+  const triage = JSON.parse(legOutputs.triage);
+  assert.deepEqual(triage.labels, ["priority: high"]);
+  assert.equal(Object.hasOwn(triage, "verdict"), false);
+});
+
+test("a failed write hands on no verdict", async () => {
+  const output = triaged({ size: "M" });
+  const verdict = verdictFor(output);
+  assert.notEqual(verdict, "");
+  const failedWrite = await apply(SUCCESS, {
+    output,
+    verdict,
+    labelsFail: true,
+  });
+  assert.equal(failedWrite.failed.length, 1);
+  assert.equal(failedWrite.outputs.verdict, undefined);
+  const failedType = await apply(SUCCESS, { output, verdict, typeFails: true });
+  assert.equal(failedType.failed.length, 1);
+  assert.equal(failedType.outputs.verdict, undefined);
+});

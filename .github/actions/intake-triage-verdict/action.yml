@@ -8,7 +8,8 @@ description: >-
   names the added fields in the prompt. `extract` reads the added fields from
   the leg's structured output and `check` reads a verdict another job passed;
   both check every type and bound again and output the verdict as JSON, or
-  empty when a field fails or verdict-schema is empty. No model value reaches
+  empty when a field fails, the verdict is over 16384 bytes (a schema whose
+  worst case exceeds that fails schema mode), or verdict-schema is empty. No model value reaches
   the log. Needs node on PATH.
 
 inputs:

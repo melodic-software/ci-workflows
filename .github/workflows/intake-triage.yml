@@ -104,7 +104,9 @@ name: Intake Triage
 #     breaks those rules fails the leg before any model call. The added
 #     fields' values are checked against those bounds again in the leg and
 #     in the apply job, and a string that looks like a credential drops the
-#     verdict. Only a run that was not escalated returns one.
+#     verdict. The whole verdict is capped at 16384 bytes, by the schema's
+#     worst case and again on the value. Only a run that was not escalated
+#     and whose writes all landed returns one.
 #   - Only the Apply job writes, and it runs no model.
 #     It takes the triage-fallback job's outputs when that job ran, else the
 #     triage-subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
@@ -239,9 +241,11 @@ on:
           or integer a minimum and maximum, and an object additionalProperties
           false. The prompt names the fields, and the checked values come back
           in the verdict output. Any other keyword, an unbounded field, more
-          than 16 fields per object, nesting past 3 levels or more than 8192
-          bytes fails the run (.github/actions/intake-triage-verdict). Empty
-          adds nothing.
+          than 16 fields per object, nesting past 3 levels, more than 8192
+          bytes, or a schema whose largest possible verdict serializes to
+          more than 16384 bytes (6 bytes per string character, 24 per
+          number) fails the run (.github/actions/intake-triage-verdict).
+          Empty adds nothing.
         type: string
         default: ""
       cli-version:
@@ -352,7 +356,10 @@ on:
           The verdict-schema fields the triage returned, as a JSON object,
           each checked against its type and bounds in the leg and again in the
           apply job. Empty when verdict-schema is empty, the run escalated or
-          was deferred, or any field failed a check.
+          was deferred, the apply job's writes failed, any field failed a
+          check, or the verdict is over 16384 bytes. String values are
+          untrusted model text: pass them to a step through env:, never
+          into a run: script, and branch only on enum fields.
         value: ${{ jobs.apply.outputs.verdict }}
     secrets:
       CLAUDE_API_KEY:
@@ -1184,7 +1191,12 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
-              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              // A verdict that does not parse is dropped; the triage stays.
+              try {
+                if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              } catch {
+                core.warning("The verdict step's output was not JSON; the triage carries no verdict.");
+              }
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -1938,7 +1950,12 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
-              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              // A verdict that does not parse is dropped; the triage stays.
+              try {
+                if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              } catch {
+                core.warning("The verdict step's output was not JSON; the triage carries no verdict.");
+              }
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -2690,7 +2707,12 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
-              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              // A verdict that does not parse is dropped; the triage stays.
+              try {
+                if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
+              } catch {
+                core.warning("The verdict step's output was not JSON; the triage carries no verdict.");
+              }
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -2977,9 +2999,6 @@ jobs:
             // is applied, only the escalation label and a fixed note. Its
             // enum-checked type survives when usable.
             const escalated = escalate.length > 0;
-            // The caller's verdict fields leave only a run that was not
-            // escalated; the next step checks them against verdict-schema.
-            if (!escalated && output?.verdict !== undefined) core.setOutput("verdict", JSON.stringify(output.verdict));
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
@@ -3225,6 +3244,10 @@ jobs:
               `- Write error: ${failure?.message ?? "none"}`,
             ];
             await core.summary.addRaw(summary.join("\n")).write();
+            // The caller's verdict fields leave only a run that was not
+            // escalated and whose writes all landed; the next step checks
+            // them against verdict-schema.
+            if (!escalated && !failure && output?.verdict !== undefined) core.setOutput("verdict", JSON.stringify(output.verdict));
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
 
       # The leg's verdict, checked against verdict-schema again before it

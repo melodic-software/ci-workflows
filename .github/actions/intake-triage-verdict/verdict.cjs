@@ -26,7 +26,15 @@ const LIMITS = Object.freeze({
   enumValues: 50,
   enumValueLength: 100,
   description: 300,
+  // The serialized verdict, in UTF-8 bytes. It travels in a step's env and
+  // the leg's triage output, so it must stay well under their size limits.
+  verdictBytes: 16384,
 });
+
+// Worst-case JSON bytes per value: a code point escapes to at most 6 bytes
+// (\u001f), and a finite number serializes to at most 24 characters.
+const NUMBER_BYTES = 24;
+const CHAR_BYTES = 6;
 
 const NAME = /^[a-z][a-z0-9_]{0,63}$/u;
 const TYPES = new Set(["string", "integer", "number", "boolean", "array", "object"]);
@@ -199,8 +207,55 @@ function parseExtension(text) {
     if (BASE_FIELDS.includes(name)) throw new VerdictSchemaError(`field ${name} is a base field and cannot be redefined`);
   }
   checkProperties(extension.properties, extension.required, "verdict", 1);
+  const worst = worstBytes({ type: "object", properties: extension.properties });
+  if (worst > LIMITS.verdictBytes) {
+    throw new VerdictSchemaError(
+      `allows a verdict of up to ${worst} bytes, over the ${LIMITS.verdictBytes}-byte cap; lower maxLength, maxItems or the field count`,
+    );
+  }
   return { properties: extension.properties, required: extension.required ?? [] };
 }
+
+// The largest JSON serialization, in bytes, a value fitting the schema can have.
+function worstBytes(schema) {
+  switch (schema.type) {
+    case "string":
+      return schema.enum
+        ? Math.max(...schema.enum.map((v) => Buffer.byteLength(JSON.stringify(v))))
+        : 2 + CHAR_BYTES * schema.maxLength;
+    case "integer":
+    case "number":
+      return NUMBER_BYTES;
+    case "boolean":
+      return 5;
+    case "array":
+      return 2 + schema.maxItems * worstBytes(schema.items) + Math.max(0, schema.maxItems - 1);
+    case "object": {
+      const entries = Object.entries(schema.properties);
+      return (
+        2 +
+        Math.max(0, entries.length - 1) +
+        entries.reduce((sum, [name, field]) => sum + Buffer.byteLength(JSON.stringify(name)) + 1 + worstBytes(field), 0)
+      );
+    }
+    default:
+      return Number.POSITIVE_INFINITY;
+  }
+}
+
+// JSON with object keys sorted, so two objects equal but for key order match.
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const overCap = (verdict) => Buffer.byteLength(JSON.stringify(verdict)) > LIMITS.verdictBytes;
 
 function mergeSchema(base, extension) {
   if (!extension) return base;
@@ -252,7 +307,7 @@ function fits(value, schema) {
         Array.isArray(value) &&
         value.length <= schema.maxItems &&
         value.length >= (schema.minItems ?? 0) &&
-        (schema.uniqueItems !== true || new Set(value.map((item) => JSON.stringify(item))).size === value.length) &&
+        (schema.uniqueItems !== true || new Set(value.map(canonical)).size === value.length) &&
         value.every((item) => fits(item, schema.items))
       );
     case "object":
@@ -280,7 +335,7 @@ function fitsFields(value, properties, required) {
 
 // The verdict fields from the model's structured output, or null. Base
 // fields in the output are ignored; only the caller's added fields are read.
-function extractVerdict(structured, extension) {
+function pickVerdict(structured, extension) {
   if (!extension || !isObject(structured)) return null;
   const picked = {};
   for (const name of Object.keys(extension.properties)) {
@@ -289,10 +344,21 @@ function extractVerdict(structured, extension) {
   return fitsFields(picked, extension.properties, extension.required);
 }
 
-// A verdict object passed between jobs, checked again; null when it fails.
-function checkVerdict(verdict, extension) {
+function fitVerdict(verdict, extension) {
   if (!extension || !isObject(verdict)) return null;
   return fitsFields(verdict, extension.properties, extension.required);
+}
+
+// Both drop a verdict over LIMITS.verdictBytes as well.
+function extractVerdict(structured, extension) {
+  const verdict = pickVerdict(structured, extension);
+  return verdict && !overCap(verdict) ? verdict : null;
+}
+
+// A verdict object passed between jobs, checked again; null when it fails.
+function checkVerdict(verdict, extension) {
+  const checked = fitVerdict(verdict, extension);
+  return checked && !overCap(checked) ? checked : null;
 }
 
 function writeOutputs(env, outputs) {
@@ -339,20 +405,27 @@ function main(env = process.env) {
     let verdict = null;
     if (extension) {
       if (mode === "extract") {
-        verdict = extractVerdict(readStructured(env.INPUT_EXECUTION_FILE ?? ""), extension);
+        verdict = pickVerdict(readStructured(env.INPUT_EXECUTION_FILE ?? ""), extension);
       } else {
         try {
-          verdict = checkVerdict(JSON.parse(env.INPUT_VERDICT ?? ""), extension);
+          verdict = fitVerdict(JSON.parse(env.INPUT_VERDICT ?? ""), extension);
         } catch {
           verdict = null;
         }
       }
       // Names only: the model's values never reach the log.
-      lines.push(
-        verdict
-          ? `intake-triage-verdict: verdict carries ${Object.keys(verdict).join(", ") || "no fields"}`
-          : "::warning title=intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
-      );
+      if (verdict && overCap(verdict)) {
+        lines.push(
+          `::warning title=intake-triage-verdict::The verdict (${Object.keys(verdict).join(", ")}) is over ${LIMITS.verdictBytes} bytes; none is carried.`,
+        );
+        verdict = null;
+      } else {
+        lines.push(
+          verdict
+            ? `intake-triage-verdict: verdict carries ${Object.keys(verdict).join(", ") || "no fields"}`
+            : "::warning title=intake-triage-verdict::The verdict was missing or broke verdict-schema's bounds; none is carried.",
+        );
+      }
     }
     outputs = { verdict: verdict ? JSON.stringify(verdict) : "" };
   } else {
@@ -383,4 +456,5 @@ module.exports = {
   main,
   mergeSchema,
   parseExtension,
+  worstBytes,
 };
