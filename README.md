@@ -195,7 +195,7 @@ consumer to audit it.
   resource URNs as existing or first-apply. The organization's Pulumi IaC
   repositories call this one implementation after OIDC authentication and
   before minting a broad deployment credential, against the org-wide
-  `kyle-sexton` contract. Contract v2 uses GitHub immutable owner/repo IDs and
+  `pulumi-oidc-policies` contract. Contract v2 uses GitHub immutable owner/repo IDs and
   rejects Pulumi's `*`, `?`, and `.` pattern operators from every rule value,
   except the `.` characters of a `sub` that exactly equals the composed
   `:job_workflow_ref:<repository>/.github/workflows/<name>.yml@<ref>` form.

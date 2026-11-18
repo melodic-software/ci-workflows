@@ -34,84 +34,35 @@ const contract = JSON.parse(
       "actions",
       "verify-pulumi-deploy-policy",
       "contracts",
-      "kyle-sexton-github-iac.json",
+      "pulumi-oidc-policies.json",
     ),
     "utf8",
   ),
 );
 
-const orgContract = JSON.parse(
-  fs.readFileSync(
-    path.join(
-      root,
-      ".github",
-      "actions",
-      "verify-pulumi-deploy-policy",
-      "contracts",
-      "kyle-sexton.json",
-    ),
-    "utf8",
-  ),
+const byRepository = Object.fromEntries(
+  contract.personalAllowPolicies.map((policy) => [
+    policy.rules.repository,
+    policy,
+  ]),
 );
 
-test("org-wide contract holds the unchanged github-iac policy and the azure-iac policy", () => {
-  assert.equal(orgContract.schemaVersion, 2);
-  assert.equal(orgContract.organization, contract.organization);
-  assert.equal(orgContract.issuerUrl, contract.issuerUrl);
-  const byRepository = Object.fromEntries(
-    orgContract.personalAllowPolicies.map((policy) => [
-      policy.rules.repository,
-      policy,
-    ]),
-  );
+test("contract holds the github-iac policy and an azure-iac policy that differs only in repository identity and sub", () => {
   assert.deepEqual(Object.keys(byRepository).sort(), [
     "melodic-software/azure-iac",
     "melodic-software/github-iac",
   ]);
-  assert.deepEqual(
-    byRepository["melodic-software/github-iac"],
-    contract.personalAllowPolicies[0],
-  );
   const azure = byRepository["melodic-software/azure-iac"];
   assert.deepEqual(azure.rules, {
-    ...contract.personalAllowPolicies[0].rules,
-    sub: "repo:melodic-software@58273638/azure-iac@1404939524:environment:azure-iac-production:job_workflow_ref:melodic-software/azure-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/main",
+    ...byRepository["melodic-software/github-iac"].rules,
+    sub: "repo:melodic-software@58273638/azure-iac@1404939524:environment:azure-iac-production:job_workflow_ref:melodic-software/azure-iac/.github/workflows/release-deploy.yml@refs/heads/main",
     repository: "melodic-software/azure-iac",
     repository_id: "1404939524",
     repository_owner_id: "58273638",
     environment: "azure-iac-production",
-    workflow: "azure-iac-production-deploy-v1",
+    workflow: "Release Deploy",
     actor_id: "153232337",
   });
-  for (const [name, ruleValue] of Object.entries(azure.rules)) {
-    if (name !== "sub") assert.doesNotMatch(ruleValue, /[*?.]/u);
-  }
-});
-
-test("pulumi-oidc-policies contract differs from the org-wide contract only in the deploy workflow names", () => {
-  const releaseDeployContract = JSON.parse(
-    fs.readFileSync(
-      path.join(
-        root,
-        ".github",
-        "actions",
-        "verify-pulumi-deploy-policy",
-        "contracts",
-        "pulumi-oidc-policies.json",
-      ),
-      "utf8",
-    ),
-  );
-  const expected = structuredClone(orgContract);
-  for (const policy of expected.personalAllowPolicies) {
-    policy.rules.workflow = "Release Deploy";
-    policy.rules.sub = policy.rules.sub.replace(
-      "/.github/workflows/azure-iac-production-deploy.yml@",
-      "/.github/workflows/release-deploy.yml@",
-    );
-  }
-  assert.deepEqual(releaseDeployContract, expected);
-  assert.notDeepEqual(releaseDeployContract, orgContract);
 });
 
 test("deployment guard exposes only reviewed state-adoption outputs", () => {
@@ -157,26 +108,33 @@ test("guard audits the complete personal allow set before exporting state", () =
   assert.doesNotMatch(guard, /set -x/u);
 });
 
-test("bundled OIDC contract is exact, wildcard-free, and covers the organization IaC repository", () => {
+test("bundled OIDC contract is exact, wildcard-free, and covers the organization IaC repositories", () => {
   assert.equal(contract.schemaVersion, 2);
   assert.equal(contract.organization, "kyle-sexton");
   assert.equal(
     contract.issuerUrl,
     "https://token.actions.githubusercontent.com",
   );
-  assert.equal(contract.personalAllowPolicies.length, 1);
-  assert.deepEqual(
-    contract.personalAllowPolicies
-      .map((policy) => policy.rules.repository)
-      .sort(),
-    ["melodic-software/github-iac"],
-  );
+  assert.equal(contract.personalAllowPolicies.length, 2);
   const identities = {
     "melodic-software/github-iac": {
       ownerId: "58273638",
       repositoryId: "1277417810",
+      jobWorkflowRef: "",
+    },
+    "melodic-software/azure-iac": {
+      ownerId: "58273638",
+      repositoryId: "1404939524",
+      jobWorkflowRef:
+        ":job_workflow_ref:melodic-software/azure-iac/.github/workflows/release-deploy.yml@refs/heads/main",
     },
   };
+  assert.deepEqual(
+    contract.personalAllowPolicies
+      .map((policy) => policy.rules.repository)
+      .sort(),
+    Object.keys(identities).sort(),
+  );
   for (const policy of contract.personalAllowPolicies) {
     const identity = identities[policy.rules.repository];
     const [owner, repository] = policy.rules.repository.split("/");
@@ -185,7 +143,7 @@ test("bundled OIDC contract is exact, wildcard-free, and covers the organization
     assert.deepEqual(policy.authorizedPermissions, []);
     assert.equal(policy.rules.ref, "refs/heads/main");
     assert.equal(policy.rules.ref_type, "branch");
-    assert.equal(policy.rules.environment, "github-iac-production");
+    assert.equal(policy.rules.environment, `${repository}-production`);
     assert.equal(policy.rules.event_name, "workflow_dispatch");
     assert.equal(policy.rules.runner_environment, "self-hosted");
     assert.equal(policy.rules.repository_visibility, "private");
@@ -196,22 +154,13 @@ test("bundled OIDC contract is exact, wildcard-free, and covers the organization
     assert.equal(policy.rules.aud, "urn:pulumi:org:kyle-sexton");
     assert.equal(
       policy.rules.sub,
-      `repo:${owner}@${identity.ownerId}/${repository}@${identity.repositoryId}:environment:github-iac-production`,
+      `repo:${owner}@${identity.ownerId}/${repository}@${identity.repositoryId}:environment:${repository}-production${identity.jobWorkflowRef}`,
     );
-    assert.equal(policy.rules.workflow, "release-deploy");
-    for (const ruleValue of Object.values(policy.rules)) {
-      assert.doesNotMatch(ruleValue, /[*?.]/u);
+    assert.equal(policy.rules.workflow, "Release Deploy");
+    for (const [name, ruleValue] of Object.entries(policy.rules)) {
+      if (name !== "sub" || identity.jobWorkflowRef === "") {
+        assert.doesNotMatch(ruleValue, /[*?.]/u);
+      }
     }
   }
-  assert.deepEqual(
-    Object.fromEntries(
-      contract.personalAllowPolicies.map((policy) => [
-        policy.rules.repository,
-        policy.rules.repository_id,
-      ]),
-    ),
-    {
-      "melodic-software/github-iac": "1277417810",
-    },
-  );
 });
