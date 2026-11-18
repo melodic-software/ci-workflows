@@ -47,14 +47,15 @@ is a job name, and a job inside a reusable workflow would report as
           exempt-authors: 'dependabot[bot]'
           draft: refuse
       - name: Fail on the contract or draft policy
-        if: ${{ !cancelled() && (steps.report.outputs.contract == 'failure' || steps.report.outputs.draft == 'failure') }}
+        if: ${{ !cancelled() && (steps.report.outputs.contract != 'success' || steps.report.outputs.draft != 'success') }}
         run: |
           echo "::error::ci-status: the pull-request contract or the draft policy failed; see the step above."
           exit 1
 ```
 
 - The last step is the one every consumer adds: without it a failed contract
-  or draft policy leaves `CI Status` green.
+  or draft policy leaves `CI Status` green. It fails on any value but `success`, so a
+  renamed or empty output fails closed.
 
 - `step-name` is the step's own `name:`. The jobs API lists the composite as
   that one step, and `aggregate-results` finds its own step, and the writer

@@ -371,7 +371,7 @@ test("the ci-status job runs the report-ci-status composite from this commit", (
   assert.match(
     afterReport,
     new RegExp(
-      String.raw`^ {8}if: \$\{\{ !cancelled\(\) && \(steps\.${reportStep.id}\.outputs\.contract == 'failure' \|\| steps\.${reportStep.id}\.outputs\.draft == 'failure'\) \}\}\n {8}run: \|\n(?: {10}.*\n)*? {10}exit 1$`,
+      String.raw`^ {8}if: \$\{\{ !cancelled\(\) && \(steps\.${reportStep.id}\.outputs\.contract != 'success' \|\| steps\.${reportStep.id}\.outputs\.draft != 'success'\) \}\}\n {8}run: \|\n(?: {10}.*\n)*? {10}exit 1$`,
       "mu",
     ),
   );
