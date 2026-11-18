@@ -955,8 +955,10 @@ consumer to audit it.
 - `.github/actions/review-levels` — the review levels `pr-review-cli.yml`'s
   compose step reads: `levels.json`, the one built-in table (quick, standard,
   deep), and `levels.cjs`, which merges the caller's `CLAUDE_REVIEW_LEVELS`
-  over it, rejects any unknown level, field or value, and fills the run's
-  model, effort and turn budget the inputs leave empty.
+  over it, falls back to the built-in default with an `::error::` annotation
+  when a level variable is unusable, refuses a `review-level` input that
+  names no level, and fills the run's model, effort and turn budget the
+  inputs leave empty.
 - `.github/actions/select-model-credential` — the one place every Claude
   model lane picks its credential: the role's API key, then its subscription
   token, then the central fallback token, each leg its own job. A `start`
@@ -1473,12 +1475,20 @@ GitHub continues the normal weekly patching of each hosted image generation.
   caller's `CLAUDE_LANES_DISABLED` or `CLAUDE_LANES_REPO_DISABLED` variable
   unless exactly `false`, or on the lane's own switch set to `true`:
   `CLAUDE_REVIEW_DISABLED` for `lane: code`, `CLAUDE_SECURITY_REVIEW_DISABLED`
-  for `lane: security`, neither stopping the other lane. The
-  `model`, `effort` and `max-turns` inputs default to empty, which takes them
-  from a review level: `review-level`, else the caller's `CLAUDE_REVIEW_LEVEL`
-  variable, else `standard`, with the caller's `CLAUDE_REVIEW_LEVELS` JSON
-  merged over the built-in levels (`.github/actions/review-levels`).
-  `model-args` wins over both. A `workflow_run` caller, such as review after another
+  for `lane: security`, neither stopping the other lane. The switches are
+  read once, when the run starts, so a run already past that job keeps going
+  until it is cancelled, and the org and repository switches stop only
+  callers that pass `kill-switch: true`. The `model`, `effort` and
+  `max-turns` inputs default to empty, and an empty value, passed or not,
+  takes them from a review level: `review-level`, else the caller's
+  `CLAUDE_REVIEW_LEVEL` variable, else `standard` (opus), with the caller's
+  `CLAUDE_REVIEW_LEVELS` JSON merged over the built-in levels
+  (`.github/actions/review-levels`). A `review-level` input that names no
+  level fails the run; a `CLAUDE_REVIEW_LEVEL` or `CLAUDE_REVIEW_LEVELS` the
+  lane cannot use logs an `::error::` annotation naming the field and runs
+  the built-in default. `model-args` wins over both; one without `--model`
+  or `--effort` takes that value from the input, else the level, and one
+  with all three flags reads no level variable. A `workflow_run` caller, such as review after another
   workflow finishes on the pull request, sets `pr-number` and `head-sha`
   (optionally `base-sha` and `event-action`): the `resolve-pull-request` job reads
   the pull request once, the gates check its state, draft flag, head
@@ -1854,7 +1864,7 @@ chunk for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
-for the ceiling (305 or 345 minutes, under the 6-hour job limit) and every
+for the ceiling (306 or 346 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one

@@ -2206,6 +2206,7 @@ async function compose(env) {
 async function composeOutputs(env, job = key) {
   const dir = makeTemporaryDirectory("pr-review-cli-compose-");
   const outputs = {};
+  const errors = [];
   const values = {
     LANE: "security",
     MODEL: "sonnet",
@@ -2213,7 +2214,8 @@ async function composeOutputs(env, job = key) {
     MAX_TURNS: "30",
     MODEL_ARGS: "",
     LEVELS_DIR,
-    REVIEW_LEVEL: "standard",
+    REVIEW_LEVEL_INPUT: "",
+    REVIEW_LEVEL_VARIABLE: "",
     REVIEW_LEVELS: "",
     CLI_VERSION: "latest",
     REPOSITORY: "o/r",
@@ -2246,6 +2248,9 @@ async function composeOutputs(env, job = key) {
       setFailed: (m) => {
         throw new Error(m);
       },
+      error: (m) => {
+        errors.push(m);
+      },
     });
   } finally {
     for (const [k, v] of Object.entries(saved)) {
@@ -2253,6 +2258,8 @@ async function composeOutputs(env, job = key) {
       else process.env[k] = v;
     }
   }
+  // The ::error:: annotations the step logged, kept off the outputs.
+  Object.defineProperty(outputs, "errors", { value: errors });
   return outputs;
 }
 
@@ -7399,30 +7406,34 @@ test("each built-in level runs its model, effort and turn budget", async () => {
     ["standard", ["opus", "high", "75"]],
     ["deep", ["opus", "xhigh", "75"]],
   ]) {
-    assert.deepEqual(
-      ran(await composeOutputs({ ...NO_EXPLICIT, REVIEW_LEVEL: level })),
-      expected,
-      level,
-    );
+    const outputs = await composeOutputs({
+      ...NO_EXPLICIT,
+      REVIEW_LEVEL_INPUT: level,
+    });
+    assert.deepEqual(ran(outputs), expected, level);
+    assert.deepEqual(outputs.errors, [], level);
   }
+  // A caller that passes nothing, or an explicitly empty value, runs standard.
+  assert.deepEqual(ran(await composeOutputs(NO_EXPLICIT)), [
+    "opus",
+    "high",
+    "75",
+  ]);
 });
 
-test("the level comes from review-level, else CLAUDE_REVIEW_LEVEL, else standard, in every leg", () => {
+test("the level comes from review-level, else CLAUDE_REVIEW_LEVEL, else standard, in every leg", async () => {
   for (const job of [key, subscription, fallback]) {
     const compose = step(job, "compose");
-    const level = (inputs, vars) =>
-      evaluate(compose.env.REVIEW_LEVEL, { inputs, vars });
     assert.equal(
-      level({ "review-level": "deep" }, { CLAUDE_REVIEW_LEVEL: "quick" }),
-      "deep",
+      compose.env.REVIEW_LEVEL_INPUT,
+      `\${{ inputs.review-level }}`,
       job.name,
     );
     assert.equal(
-      level({ "review-level": "" }, { CLAUDE_REVIEW_LEVEL: "quick" }),
-      "quick",
+      compose.env.REVIEW_LEVEL_VARIABLE,
+      `\${{ vars.CLAUDE_REVIEW_LEVEL }}`,
       job.name,
     );
-    assert.equal(level({}, {}), "standard", job.name);
     assert.equal(
       compose.env.REVIEW_LEVELS,
       `\${{ vars.CLAUDE_REVIEW_LEVELS }}`,
@@ -7441,6 +7452,20 @@ test("the level comes from review-level, else CLAUDE_REVIEW_LEVEL, else standard
       job.name,
     );
     assert.equal(step(job, "levels").if, step(job, "compose").if, job.name);
+    const level = async (input, variable) =>
+      ran(
+        await composeOutputs(
+          {
+            ...NO_EXPLICIT,
+            REVIEW_LEVEL_INPUT: input,
+            REVIEW_LEVEL_VARIABLE: variable,
+          },
+          job,
+        ),
+      );
+    assert.deepEqual(await level("deep", "quick"), ["opus", "xhigh", "75"]);
+    assert.deepEqual(await level("", "quick"), ["sonnet", "high", "75"]);
+    assert.deepEqual(await level("", ""), ["opus", "high", "75"]);
   }
 });
 
@@ -7449,7 +7474,7 @@ test("an explicit model, effort or max-turns wins over the level, and model-args
     ran(
       await composeOutputs({
         ...NO_EXPLICIT,
-        REVIEW_LEVEL: "deep",
+        REVIEW_LEVEL_INPUT: "deep",
         MODEL: "sonnet",
       }),
     ),
@@ -7458,7 +7483,7 @@ test("an explicit model, effort or max-turns wins over the level, and model-args
   assert.deepEqual(
     ran(
       await composeOutputs({
-        REVIEW_LEVEL: "quick",
+        REVIEW_LEVEL_INPUT: "quick",
         MODEL: "opus",
         EFFORT: "max",
         MAX_TURNS: "40",
@@ -7467,19 +7492,13 @@ test("an explicit model, effort or max-turns wins over the level, and model-args
     ["opus", "max", "40"],
   );
   assert.deepEqual(
-    ran(
-      await composeOutputs({
-        ...NO_EXPLICIT,
-        REVIEW_LEVEL: "standard",
-        MAX_TURNS: "12",
-      }),
-    ),
+    ran(await composeOutputs({ ...NO_EXPLICIT, MAX_TURNS: "12" })),
     ["opus", "high", "12"],
   );
   assert.deepEqual(
     ran(
       await composeOutputs({
-        REVIEW_LEVEL: "deep",
+        REVIEW_LEVEL_INPUT: "deep",
         MODEL: "haiku",
         EFFORT: "low",
         MAX_TURNS: "9",
@@ -7488,118 +7507,194 @@ test("an explicit model, effort or max-turns wins over the level, and model-args
     ),
     ["sonnet", "medium", "30"],
   );
-  // model-args without --model or --effort leaves those to the input, else the level.
+  // model-args without --model or --effort takes them from the level.
   assert.deepEqual(
     ran(
       await composeOutputs({
         ...NO_EXPLICIT,
-        REVIEW_LEVEL: "deep",
+        REVIEW_LEVEL_INPUT: "deep",
         MODEL_ARGS: "--max-turns 20",
       }),
     ),
     ["opus", "xhigh", "20"],
   );
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL_INPUT: "deep",
+        MODEL_ARGS: "--model sonnet --max-turns 20",
+      }),
+    ),
+    ["sonnet", "xhigh", "20"],
+  );
+  // ...unless an explicit input sets it.
+  assert.deepEqual(
+    ran(
+      await composeOutputs({
+        ...NO_EXPLICIT,
+        REVIEW_LEVEL_INPUT: "deep",
+        EFFORT: "low",
+        MODEL_ARGS: "--model sonnet --max-turns 20",
+      }),
+    ),
+    ["sonnet", "low", "20"],
+  );
 });
 
 test("CLAUDE_REVIEW_LEVELS replaces a level's fields or adds a level", async () => {
-  assert.deepEqual(
-    ran(
-      await composeOutputs({
-        ...NO_EXPLICIT,
-        REVIEW_LEVEL: "standard",
-        REVIEW_LEVELS: '{"standard":{"model":"sonnet"}}',
-      }),
-    ),
-    ["sonnet", "high", "75"],
+  for (const [input, variable, levels, expected] of [
+    ["", "", '{"standard":{"model":"sonnet"}}', ["sonnet", "high", "75"]],
+    ["deep", "", '{"deep":{"max-turns":120}}', ["opus", "xhigh", "120"]],
+    [
+      "thorough",
+      "",
+      '{"thorough":{"model":"opus","effort":"max","max-turns":"150"}}',
+      ["opus", "max", "150"],
+    ],
+    [
+      "",
+      "thorough",
+      '{"thorough":{"model":"opus","effort":"max","max-turns":150}}',
+      ["opus", "max", "150"],
+    ],
+    // An override of another level leaves the chosen one as built in.
+    ["quick", "", '{"deep":{"effort":"max"}}', ["sonnet", "high", "75"]],
+  ]) {
+    const outputs = await composeOutputs({
+      ...NO_EXPLICIT,
+      REVIEW_LEVEL_INPUT: input,
+      REVIEW_LEVEL_VARIABLE: variable,
+      REVIEW_LEVELS: levels,
+    });
+    assert.deepEqual(ran(outputs), expected, levels);
+    assert.deepEqual(outputs.errors, [], levels);
+  }
+});
+
+// A malformed variable runs the built-in default and names the field in an
+// ::error:: annotation; the variable's own text never reaches the log.
+const MALFORMED_LEVELS = [
+  ["{not json", "CLAUDE_REVIEW_LEVELS is not JSON."],
+  ["[]", "CLAUDE_REVIEW_LEVELS must be a JSON object of levels."],
+  ["null", "CLAUDE_REVIEW_LEVELS must be a JSON object of levels."],
+  ['"deep"', "CLAUDE_REVIEW_LEVELS must be a JSON object of levels."],
+  [
+    '{"standard":"sonnet"}',
+    "CLAUDE_REVIEW_LEVELS level standard must be an object.",
+  ],
+  [
+    '{"Standard; rm -rf":{"model":"sonnet"}}',
+    "CLAUDE_REVIEW_LEVELS has a level name that is not lower-case kebab of at most 32 characters.",
+  ],
+  [
+    '{"standard":{"temperature":"1"}}',
+    "CLAUDE_REVIEW_LEVELS level standard has a field other than model, effort, max-turns.",
+  ],
+  [
+    '{"standard":{"model":"sonnet --dangerously-skip-permissions"}}',
+    "CLAUDE_REVIEW_LEVELS level standard: The model must be a model alias or ID.",
+  ],
+  [
+    '{"standard":{"model":""}}',
+    "CLAUDE_REVIEW_LEVELS level standard: The model must be a model alias or ID.",
+  ],
+  [
+    '{"standard":{"effort":"extreme"}}',
+    "CLAUDE_REVIEW_LEVELS level standard: The effort must be low, medium, high, xhigh or max.",
+  ],
+  ...['"abc"', "0", "-5", "7.5", "1000000", "true"].map((turns) => [
+    `{"standard":{"max-turns":${turns}}}`,
+    "CLAUDE_REVIEW_LEVELS level standard: max-turns must be a whole number from 1 to 999999.",
+  ]),
+  [
+    '{"thorough":{"model":"opus","effort":"max"}}',
+    "CLAUDE_REVIEW_LEVELS level thorough is new, so it needs max-turns.",
+  ],
+];
+
+test("a malformed CLAUDE_REVIEW_LEVELS runs the built-in levels and names the field in an ::error:: annotation, in every leg", async () => {
+  for (const job of [key, subscription, fallback]) {
+    for (const [levels, message] of MALFORMED_LEVELS) {
+      const outputs = await composeOutputs(
+        { ...NO_EXPLICIT, REVIEW_LEVELS: levels },
+        job,
+      );
+      assert.deepEqual(ran(outputs), ["opus", "high", "75"], levels);
+      assert.deepEqual(
+        outputs.errors,
+        [`${message} The built-in levels are used instead.`],
+        levels,
+      );
+    }
+  }
+  // The whole override is dropped, not just its bad level.
+  const outputs = await composeOutputs({
+    ...NO_EXPLICIT,
+    REVIEW_LEVEL_VARIABLE: "quick",
+    REVIEW_LEVELS: '{"quick":{"model":"opus"},"deep":{"effort":"extreme"}}',
+  });
+  assert.deepEqual(ran(outputs), ["sonnet", "high", "75"]);
+  assert.equal(outputs.errors.length, 1);
+});
+
+test("an unknown CLAUDE_REVIEW_LEVEL runs standard with an ::error:: annotation that does not echo it", async () => {
+  const outputs = await composeOutputs({
+    ...NO_EXPLICIT,
+    REVIEW_LEVEL_VARIABLE: "thorough$(id)",
+  });
+  assert.deepEqual(ran(outputs), ["opus", "high", "75"]);
+  assert.deepEqual(outputs.errors, [
+    "CLAUDE_REVIEW_LEVEL names no level; standard is used instead.",
+  ]);
+});
+
+test("a review-level input that names no level still fails the compose step", async () => {
+  await composeFails(
+    { REVIEW_LEVEL_INPUT: "thorough" },
+    /The review-level input names no level; the levels are quick, standard, deep\./u,
   );
-  assert.deepEqual(
-    ran(
-      await composeOutputs({
-        ...NO_EXPLICIT,
-        REVIEW_LEVEL: "deep",
-        REVIEW_LEVELS: '{"deep":{"max-turns":120}}',
-      }),
-    ),
-    ["opus", "xhigh", "120"],
+  // Even beside a usable CLAUDE_REVIEW_LEVEL, and when the override that
+  // would add it is malformed.
+  await composeFails(
+    { REVIEW_LEVEL_INPUT: "thorough", REVIEW_LEVEL_VARIABLE: "deep" },
+    /names no level/u,
   );
-  assert.deepEqual(
-    ran(
-      await composeOutputs({
-        ...NO_EXPLICIT,
-        REVIEW_LEVEL: "thorough",
-        REVIEW_LEVELS:
-          '{"thorough":{"model":"opus","effort":"max","max-turns":"150"}}',
-      }),
-    ),
-    ["opus", "max", "150"],
-  );
-  // An override of another level leaves the chosen one as built in.
-  assert.deepEqual(
-    ran(
-      await composeOutputs({
-        ...NO_EXPLICIT,
-        REVIEW_LEVEL: "quick",
-        REVIEW_LEVELS: '{"deep":{"effort":"max"}}',
-      }),
-    ),
-    ["sonnet", "high", "75"],
+  await composeFails(
+    {
+      REVIEW_LEVEL_INPUT: "thorough",
+      REVIEW_LEVELS: '{"thorough":{"model":"opus"}}',
+    },
+    /names no level/u,
   );
 });
 
-test("an unknown level or a CLAUDE_REVIEW_LEVELS value outside what the compose step accepts fails the compose step", async () => {
-  await composeFails(
-    { REVIEW_LEVEL: "thorough" },
-    /review level 'thorough' is not one of quick, standard, deep\./u,
-  );
-  for (const [levels, pattern] of [
-    ["{not json", /CLAUDE_REVIEW_LEVELS is not JSON/u],
-    ["[]", /must be a JSON object of levels/u],
-    ["null", /must be a JSON object of levels/u],
-    ['"deep"', /must be a JSON object of levels/u],
-    ['{"deep":"opus"}', /level 'deep' must be an object/u],
-    ['{"Deep":{"model":"opus"}}', /level 'Deep' must be lower-case kebab/u],
-    [
-      '{"deep":{"temperature":"1"}}',
-      /level 'deep' has unknown fields: temperature/u,
-    ],
-    [
-      '{"deep":{"model":"opus --dangerously-skip-permissions"}}',
-      /level 'deep': The model must be a model alias or ID/u,
-    ],
-    ['{"deep":{"model":""}}', /level 'deep': The model must be/u],
-    [
-      '{"deep":{"effort":"extreme"}}',
-      /level 'deep': The effort must be low, medium, high, xhigh or max/u,
-    ],
-    [
-      '{"deep":{"max-turns":"abc"}}',
-      /level 'deep': max-turns must be a whole number from 1 to 999999/u,
-    ],
-    ['{"deep":{"max-turns":0}}', /max-turns must be a whole number/u],
-    ['{"deep":{"max-turns":-5}}', /max-turns must be a whole number/u],
-    ['{"deep":{"max-turns":7.5}}', /max-turns must be a whole number/u],
-    ['{"deep":{"max-turns":1000000}}', /max-turns must be a whole number/u],
-    ['{"deep":{"max-turns":true}}', /max-turns must be a whole number/u],
-    [
-      '{"thorough":{"model":"opus","effort":"max"}}',
-      /level 'thorough' is new, so it needs max-turns/u,
-    ],
+test("model-args with --model, --effort and --max-turns reads no level variable, even a malformed one", async () => {
+  for (const [levels, variable] of [
+    ["{not json", ""],
+    ["[]", "thorough"],
+    ['{"standard":{"effort":"extreme"}}', ""],
   ]) {
-    // A bad override fails even when the chosen level is untouched by it.
-    await composeFails(
-      { REVIEW_LEVEL: "standard", REVIEW_LEVELS: levels },
-      pattern,
-    );
-  }
-  // An override that fails stops model-args callers too: never a silent fallback.
-  await composeFails(
-    {
-      REVIEW_LEVELS: "[]",
+    const outputs = await composeOutputs({
+      ...NO_EXPLICIT,
+      REVIEW_LEVELS: levels,
+      REVIEW_LEVEL_VARIABLE: variable,
       MODEL_ARGS: "--model sonnet --max-turns 30 --effort high",
-    },
-    /must be a JSON object/u,
-  );
-  // No levels directory, or an explicit input outside what the launcher takes.
+    });
+    assert.deepEqual(ran(outputs), ["sonnet", "high", "30"], levels);
+    assert.deepEqual(outputs.errors, [], levels);
+  }
+  // Without one of them the variable is read, and reported.
+  const partial = await composeOutputs({
+    ...NO_EXPLICIT,
+    REVIEW_LEVELS: "[]",
+    MODEL_ARGS: "--model sonnet --max-turns 30",
+  });
+  assert.deepEqual(ran(partial), ["sonnet", "high", "30"]);
+  assert.equal(partial.errors.length, 1);
+});
+
+test("a missing levels directory or an explicit value the launcher refuses fails the compose step", async () => {
   await composeFails({ LEVELS_DIR: "" }, /The review levels were not found/u);
   await composeFails(
     { MODEL: "sonnet;id" },

@@ -43,18 +43,29 @@ name: PR Review CLI
 # CLAUDE_LANES_REPO_DISABLED (repository) each stop the lane unless exactly
 # `false`, unset included, and the lane's own switch stops it at `true`:
 # CLAUDE_REVIEW_DISABLED for lane code, CLAUDE_SECURITY_REVIEW_DISABLED for
-# lane security; neither stops the other lane. A stop logs a notice and skips check-key-credit and every model job. The
-# default, false, reads no switch.
+# lane security; neither stops the other lane. A stop logs a notice and
+# skips check-key-credit and every model job. The switches are read once,
+# when the run starts: a run already past that job keeps going, so cancel it.
+# The org and repository switches stop only callers that pass
+# `kill-switch: true`. The default, false, reads no switch.
 #
-# Review level: model, effort and max-turns left empty come from a level in
-# .github/actions/review-levels/levels.json (quick, standard, deep). The level
-# is review-level, else the caller's CLAUDE_REVIEW_LEVEL variable, else
-# standard. The caller's CLAUDE_REVIEW_LEVELS variable, a JSON object such as
+# Review level: model, effort and max-turns left empty, passed empty
+# included, come from a level in .github/actions/review-levels/levels.json
+# (quick, standard, deep). The level is review-level, else the caller's
+# CLAUDE_REVIEW_LEVEL variable, else standard. The caller's
+# CLAUDE_REVIEW_LEVELS variable, a JSON object such as
 # {"deep":{"max-turns":120},"wide":{"model":"opus","effort":"max","max-turns":150}},
-# replaces a level's fields or adds a level; a new level names all three. An
-# unknown level, an unknown field, or a model, effort or turn budget the
-# compose step does not accept fails the compose step, model-args or not.
-# model-args wins over the explicit inputs, which win over the level.
+# replaces a level's fields or adds a level; a new level names all three.
+# A review-level input that names no level fails the compose step. A
+# CLAUDE_REVIEW_LEVELS the compose step cannot use (not JSON, an unknown
+# field, a model, effort or turn budget it does not accept) leaves the
+# built-in levels in force, and a CLAUDE_REVIEW_LEVEL that names no level
+# leaves standard: each logs an ::error:: annotation naming the field, never
+# the variable's text. model-args wins over the explicit inputs, which win
+# over the level; a model-args without --model or --effort takes that value
+# from the input, else the level, and one with all three flags reads no
+# level variable. A caller that passes none of them, or whose model-args
+# comes back empty, runs standard: opus.
 #
 # A workflow_run caller (review after another workflow finishes on the pull
 # request) names the pull request and head itself, since its event carries
@@ -311,7 +322,10 @@ on:
           The review level that fills any of model, effort and max-turns left
           empty: quick, standard, deep, or a level the CLAUDE_REVIEW_LEVELS
           variable adds. Empty falls back to the CLAUDE_REVIEW_LEVEL variable,
-          then standard. An unknown level fails the compose step.
+          then standard. A level this input names that does not exist fails
+          the compose step; an unknown CLAUDE_REVIEW_LEVEL, or a
+          CLAUDE_REVIEW_LEVELS it cannot use, logs an ::error:: annotation
+          and the built-in default is used.
         type: string
         default: ""
       kill-switch:
@@ -2317,10 +2331,11 @@ jobs:
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # The model, effort and turn budget: model-args, when set, replaces the
-      # flags it carries; else an explicit input; else the review level, read
-      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
-      # override it cannot read fails the step. started-at lets the outcome
-      # step tell a step timeout from other failures.
+      # flags it carries; else a non-empty input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A bad
+      # review-level input fails the step; a bad level variable is an
+      # ::error:: annotation and the built-in default is used. started-at lets
+      # the outcome step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -2334,7 +2349,8 @@ jobs:
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
           LEVELS_DIR: ${{ steps.levels.outputs.dir }}
-          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVEL_INPUT: ${{ inputs.review-level }}
+          REVIEW_LEVEL_VARIABLE: ${{ vars.CLAUDE_REVIEW_LEVEL }}
           REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -2371,28 +2387,36 @@ jobs:
               return;
             }
             const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
-            let run;
-            try {
-              run = levels.resolveRun({
-                level: env.REVIEW_LEVEL,
-                levels: env.REVIEW_LEVELS,
-                model: env.MODEL,
-                effort: env.EFFORT,
-                maxTurns: env.MAX_TURNS,
-              });
-            } catch (error) {
-              core.setFailed(error.message);
+            // resolve-config's claude-args shape (claude-code-plugins
+            // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
+            const shape = env.MODEL_ARGS
+              ? /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS)
+              : null;
+            if (env.MODEL_ARGS && !shape) {
+              core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
               return;
             }
-            delete run.level;
-            if (env.MODEL_ARGS) {
-              // resolve-config's claude-args shape (claude-code-plugins
-              // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
-              const shape = /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS);
-              if (!shape) {
-                core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
+            // model-args with all three flags leaves the level nothing to
+            // fill, so the level and its variables are not read.
+            let run = {};
+            if (!(shape?.[2] && shape[5])) {
+              try {
+                const resolved = levels.resolveRun({
+                  levelInput: env.REVIEW_LEVEL_INPUT,
+                  levelVariable: env.REVIEW_LEVEL_VARIABLE,
+                  levels: env.REVIEW_LEVELS,
+                  model: env.MODEL,
+                  effort: env.EFFORT,
+                  maxTurns: env.MAX_TURNS,
+                });
+                for (const message of resolved.errors) core.error(message);
+                run = resolved.run;
+              } catch (error) {
+                core.setFailed(error.message);
                 return;
               }
+            }
+            if (shape) {
               run["max-turns"] = shape[3];
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
@@ -5037,10 +5061,11 @@ jobs:
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # The model, effort and turn budget: model-args, when set, replaces the
-      # flags it carries; else an explicit input; else the review level, read
-      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
-      # override it cannot read fails the step. started-at lets the outcome
-      # step tell a step timeout from other failures.
+      # flags it carries; else a non-empty input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A bad
+      # review-level input fails the step; a bad level variable is an
+      # ::error:: annotation and the built-in default is used. started-at lets
+      # the outcome step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -5054,7 +5079,8 @@ jobs:
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
           LEVELS_DIR: ${{ steps.levels.outputs.dir }}
-          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVEL_INPUT: ${{ inputs.review-level }}
+          REVIEW_LEVEL_VARIABLE: ${{ vars.CLAUDE_REVIEW_LEVEL }}
           REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -5091,28 +5117,36 @@ jobs:
               return;
             }
             const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
-            let run;
-            try {
-              run = levels.resolveRun({
-                level: env.REVIEW_LEVEL,
-                levels: env.REVIEW_LEVELS,
-                model: env.MODEL,
-                effort: env.EFFORT,
-                maxTurns: env.MAX_TURNS,
-              });
-            } catch (error) {
-              core.setFailed(error.message);
+            // resolve-config's claude-args shape (claude-code-plugins
+            // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
+            const shape = env.MODEL_ARGS
+              ? /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS)
+              : null;
+            if (env.MODEL_ARGS && !shape) {
+              core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
               return;
             }
-            delete run.level;
-            if (env.MODEL_ARGS) {
-              // resolve-config's claude-args shape (claude-code-plugins
-              // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
-              const shape = /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS);
-              if (!shape) {
-                core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
+            // model-args with all three flags leaves the level nothing to
+            // fill, so the level and its variables are not read.
+            let run = {};
+            if (!(shape?.[2] && shape[5])) {
+              try {
+                const resolved = levels.resolveRun({
+                  levelInput: env.REVIEW_LEVEL_INPUT,
+                  levelVariable: env.REVIEW_LEVEL_VARIABLE,
+                  levels: env.REVIEW_LEVELS,
+                  model: env.MODEL,
+                  effort: env.EFFORT,
+                  maxTurns: env.MAX_TURNS,
+                });
+                for (const message of resolved.errors) core.error(message);
+                run = resolved.run;
+              } catch (error) {
+                core.setFailed(error.message);
                 return;
               }
+            }
+            if (shape) {
               run["max-turns"] = shape[3];
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
@@ -7730,10 +7764,11 @@ jobs:
 
       # The prompt and the output schema go to files run-claude-cli reads.
       # The model, effort and turn budget: model-args, when set, replaces the
-      # flags it carries; else an explicit input; else the review level, read
-      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A level or
-      # override it cannot read fails the step. started-at lets the outcome
-      # step tell a step timeout from other failures.
+      # flags it carries; else a non-empty input; else the review level, read
+      # from levels.json with CLAUDE_REVIEW_LEVELS merged over it. A bad
+      # review-level input fails the step; a bad level variable is an
+      # ::error:: annotation and the built-in default is used. started-at lets
+      # the outcome step tell a step timeout from other failures.
       - name: Compose the review
         id: compose
         if: steps.scope.outputs.review != 'false'
@@ -7747,7 +7782,8 @@ jobs:
           MAX_TURNS: ${{ inputs.max-turns }}
           MODEL_ARGS: ${{ inputs.model-args }}
           LEVELS_DIR: ${{ steps.levels.outputs.dir }}
-          REVIEW_LEVEL: ${{ inputs.review-level || vars.CLAUDE_REVIEW_LEVEL || 'standard' }}
+          REVIEW_LEVEL_INPUT: ${{ inputs.review-level }}
+          REVIEW_LEVEL_VARIABLE: ${{ vars.CLAUDE_REVIEW_LEVEL }}
           REVIEW_LEVELS: ${{ vars.CLAUDE_REVIEW_LEVELS }}
           CLI_VERSION: ${{ inputs.cli-version || vars.CLAUDE_LANE_CLI_VERSION || 'latest' }}
           REPOSITORY: ${{ github.repository }}
@@ -7784,28 +7820,36 @@ jobs:
               return;
             }
             const levels = require(path.join(env.LEVELS_DIR, "levels.cjs"));
-            let run;
-            try {
-              run = levels.resolveRun({
-                level: env.REVIEW_LEVEL,
-                levels: env.REVIEW_LEVELS,
-                model: env.MODEL,
-                effort: env.EFFORT,
-                maxTurns: env.MAX_TURNS,
-              });
-            } catch (error) {
-              core.setFailed(error.message);
+            // resolve-config's claude-args shape (claude-code-plugins
+            // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
+            const shape = env.MODEL_ARGS
+              ? /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS)
+              : null;
+            if (env.MODEL_ARGS && !shape) {
+              core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
               return;
             }
-            delete run.level;
-            if (env.MODEL_ARGS) {
-              // resolve-config's claude-args shape (claude-code-plugins
-              // .github/actions/resolve-config/resolve-config.mjs MODEL_ARGS).
-              const shape = /^(--model ([a-z]+) )?--max-turns ([1-9][0-9]*)( --effort ([a-z]+))?$/u.exec(env.MODEL_ARGS);
-              if (!shape) {
-                core.setFailed("model-args must be [--model <alias>] --max-turns <n> [--effort <level>].");
+            // model-args with all three flags leaves the level nothing to
+            // fill, so the level and its variables are not read.
+            let run = {};
+            if (!(shape?.[2] && shape[5])) {
+              try {
+                const resolved = levels.resolveRun({
+                  levelInput: env.REVIEW_LEVEL_INPUT,
+                  levelVariable: env.REVIEW_LEVEL_VARIABLE,
+                  levels: env.REVIEW_LEVELS,
+                  model: env.MODEL,
+                  effort: env.EFFORT,
+                  maxTurns: env.MAX_TURNS,
+                });
+                for (const message of resolved.errors) core.error(message);
+                run = resolved.run;
+              } catch (error) {
+                core.setFailed(error.message);
                 return;
               }
+            }
+            if (shape) {
               run["max-turns"] = shape[3];
               if (shape[2]) run.model = shape[2];
               if (shape[5]) run.effort = shape[5];
