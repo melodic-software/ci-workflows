@@ -133,7 +133,6 @@ if ($Path.Count -eq 0) {
         }
     }
 }
-# Leaf inputs are filtered by extension too — a hook may pass a mixed file list.
 $files = @($candidates | Where-Object {
         [System.IO.Path]::GetExtension($_) -in '.ps1', '.psm1' -and
         -not (Test-PathExcluded -FullPath $_ -Patterns $ExcludePath)
