@@ -162,4 +162,4 @@ if (require.main === module) {
   if (!ok) process.exitCode = 1;
 }
 
-module.exports = { parseOutputs, runChunks };
+module.exports = { runChunks };

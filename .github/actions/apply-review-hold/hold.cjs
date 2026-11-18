@@ -597,10 +597,6 @@ async function run({ github, context, core, env = process.env }) {
 }
 
 module.exports = {
-  CRITERIA,
-  linkedIssue,
-  modelHold,
   namesPull,
-  refsIssue,
   run,
 };

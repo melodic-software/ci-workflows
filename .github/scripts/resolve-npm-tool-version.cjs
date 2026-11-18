@@ -152,5 +152,4 @@ if (require.main === module) {
 module.exports = Object.freeze({
   ResolveError,
   resolveNpmToolVersion,
-  runCli,
 });

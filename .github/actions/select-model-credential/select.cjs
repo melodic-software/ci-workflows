@@ -243,4 +243,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { HANDOFF_REASONS, leg, main, next, secretName, start };
+module.exports = { leg, main, next, secretName, start };

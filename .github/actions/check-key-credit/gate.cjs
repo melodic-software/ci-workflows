@@ -350,8 +350,6 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULT_WINDOW_HOURS,
-  MARKER_PREFIX,
-  PROBE_PREFIX,
   backoff,
   decide,
   judgeMarkers,

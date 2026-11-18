@@ -125,7 +125,7 @@ function main(env = process.env) {
   fs.appendFileSync(env.GITHUB_OUTPUT, `file=${sealed}\n`);
 }
 
-module.exports = { main, parsePublicKey, sealRecord };
+module.exports = { main };
 
 if (require.main === module) {
   try {

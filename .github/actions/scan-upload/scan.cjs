@@ -143,7 +143,7 @@ async function main(env = process.env, gatePath = null) {
   return 0;
 }
 
-module.exports = { checkImports, main, scanPaths };
+module.exports = { checkImports, main };
 
 if (require.main === module) {
   main().then((code) => {

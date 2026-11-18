@@ -835,7 +835,6 @@ async function shadowReport(core, env, report) {
 }
 
 module.exports = {
-  anchorProblem,
   bindingLine,
   commentBody,
   commentableLines,
@@ -844,15 +843,12 @@ module.exports = {
   isPartial,
   judge,
   loadGate,
-  parseReview,
   partialReason,
   placeComments,
   run,
   scan,
   scopedFiles,
-  statusLine,
   stripHtml,
   summaryText,
-  unbound,
   writeRecord,
 };

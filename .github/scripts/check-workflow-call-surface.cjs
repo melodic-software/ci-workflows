@@ -215,9 +215,5 @@ if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
 module.exports = Object.freeze({
   POLICY_PATH,
-  SurfaceCheckError,
-  compareSurface,
-  loadContracts,
   main,
-  workflowCallSurface,
 });
