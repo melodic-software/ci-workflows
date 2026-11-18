@@ -98,6 +98,13 @@ name: Intake Triage
 #     run to the job outputs: the result subtype, the error flag and the
 #     denial count, and the structured fields (labels, type, comment,
 #     needs_human) checked against the job's allowlist and enums.
+#   - A caller's verdict-schema only adds fields to the output schema: a
+#     field may not reuse a base name, every object stays closed, and every
+#     value is bounded (.github/actions/intake-triage-verdict). A schema that
+#     breaks those rules fails the leg before any model call. The added
+#     fields' values are checked against those bounds again in the leg and
+#     in the apply job, and a string that looks like a credential drops the
+#     verdict. Only a run that was not escalated returns one.
 #   - Only the Apply job writes, and it runs no model.
 #     It takes the triage-fallback job's outputs when that job ran, else the
 #     triage-subscription job's, else the claude job's, so a handoff applies once. It takes the issue from
@@ -222,6 +229,21 @@ on:
           prompt. Trusted: they come from the caller workflow, not the issue.
         type: string
         default: ""
+      verdict-schema:
+        description: >-
+          Typed fields to add to the triage's output schema, as JSON:
+          `{ "properties": { "<name>": <JSON Schema> }, "required": [...] }`.
+          A name may not reuse a base field (labels, comment, needs_human,
+          reason, type). Each field must be bounded: a string needs maxLength
+          (at most 1000) or an enum, an array maxItems (at most 20), a number
+          or integer a minimum and maximum, and an object additionalProperties
+          false. The prompt names the fields, and the checked values come back
+          in the verdict output. Any other keyword, an unbounded field, more
+          than 16 fields per object, nesting past 3 levels or more than 8192
+          bytes fails the run (.github/actions/intake-triage-verdict). Empty
+          adds nothing.
+        type: string
+        default: ""
       cli-version:
         description: >-
           Claude Code CLI to run: latest or an exact major.minor.patch (stable
@@ -325,6 +347,13 @@ on:
           the issue untouched for a later run to retry; else empty. A caller
           step that reads the lane comment skips on it.
         value: ${{ jobs.apply.outputs.deferred }}
+      verdict:
+        description: >-
+          The verdict-schema fields the triage returned, as a JSON object,
+          each checked against its type and bounds in the leg and again in the
+          apply job. Empty when verdict-schema is empty, the run escalated or
+          was deferred, or any field failed a check.
+        value: ${{ jobs.apply.outputs.verdict }}
     secrets:
       CLAUDE_API_KEY:
         description: >-
@@ -745,7 +774,7 @@ jobs:
 
       # The allowlist is the caller's labels that exist in the repository; the
       # same list becomes the output schema's enum, and the extract step and
-      # the apply job check it again. The prompt and schema go to files run-claude-cli reads.
+      # the apply job check it again. The prompt goes to a file run-claude-cli reads.
       - name: Resolve labels and compose Claude CLI arguments
         id: compose
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -906,25 +935,6 @@ jobs:
               core.warning(`Issue Types unreadable, so the lane sets none: ${error.message}`);
             }
 
-            const schema = {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                // An enum needs at least one value; with nothing allowed, labels must be empty.
-                labels:
-                  allowed.length > 0
-                    ? { type: "array", uniqueItems: true, items: { type: "string", enum: allowed } }
-                    : { type: "array", maxItems: 0 },
-                comment: { type: "string", maxLength: 3000 },
-                needs_human: { type: "boolean" },
-                reason: { type: "string", maxLength: 500 },
-              },
-              required: ["labels", "comment", "needs_human", "reason"],
-            };
-            if (types.length > 0) {
-              schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
-              schema.required.push("type");
-            }
             const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
@@ -962,20 +972,31 @@ jobs:
             `;
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "intake-triage-"));
             const promptFile = path.join(directory, "prompt.md");
-            const schemaFile = path.join(directory, "schema.json");
             fs.writeFileSync(promptFile, prompt);
-            fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
+            core.setOutput("type-names", JSON.stringify(types.map((t) => t.name)));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
-            core.setOutput("schema-file", schemaFile);
             core.setOutput("model", run.model);
             core.setOutput("effort", run.effort);
             core.setOutput("max-turns", run["max-turns"]);
             core.setOutput("cli-version", cliVersion);
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
+
+      # The base schema, closed, plus the fields verdict-schema adds, which
+      # the action names in the prompt. A verdict-schema that breaks its
+      # rules fails this step, so the leg stops before any model call.
+      - name: Compose the output schema
+        id: schema
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: schema
+          allowed: ${{ steps.compose.outputs.allowed }}
+          type-names: ${{ steps.compose.outputs.type-names }}
+          prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
 
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
@@ -1028,7 +1049,7 @@ jobs:
             WebFetch
             WebSearch
             mcp__*
-          json-schema-file: ${{ steps.compose.outputs.schema-file }}
+          json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: "8"
@@ -1094,10 +1115,24 @@ jobs:
           public-key: ${{ inputs.lane-transcript-public-key }}
           job-id: intake-${{ github.job }}
 
+      # No model runs here. The fields verdict-schema adds, each checked
+      # against its type and bounds again, for the extract step to carry;
+      # empty when verdict-schema is. A crash here drops only the verdict.
+      - name: Extract the verdict
+        id: verdict
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
+        continue-on-error: true
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: extract
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
+      # job's allowlist and enums, as JSON, with the checked verdict under
+      # `verdict` when verdict-schema is set. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -1105,6 +1140,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
@@ -1148,6 +1184,7 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
+              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -1523,7 +1560,7 @@ jobs:
 
       # The allowlist is the caller's labels that exist in the repository; the
       # same list becomes the output schema's enum, and the extract step and
-      # the apply job check it again. The prompt and schema go to files run-claude-cli reads.
+      # the apply job check it again. The prompt goes to a file run-claude-cli reads.
       - name: Resolve labels and compose Claude CLI arguments
         id: compose
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1684,25 +1721,6 @@ jobs:
               core.warning(`Issue Types unreadable, so the lane sets none: ${error.message}`);
             }
 
-            const schema = {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                // An enum needs at least one value; with nothing allowed, labels must be empty.
-                labels:
-                  allowed.length > 0
-                    ? { type: "array", uniqueItems: true, items: { type: "string", enum: allowed } }
-                    : { type: "array", maxItems: 0 },
-                comment: { type: "string", maxLength: 3000 },
-                needs_human: { type: "boolean" },
-                reason: { type: "string", maxLength: 500 },
-              },
-              required: ["labels", "comment", "needs_human", "reason"],
-            };
-            if (types.length > 0) {
-              schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
-              schema.required.push("type");
-            }
             const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
@@ -1740,20 +1758,31 @@ jobs:
             `;
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "intake-triage-"));
             const promptFile = path.join(directory, "prompt.md");
-            const schemaFile = path.join(directory, "schema.json");
             fs.writeFileSync(promptFile, prompt);
-            fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
+            core.setOutput("type-names", JSON.stringify(types.map((t) => t.name)));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
-            core.setOutput("schema-file", schemaFile);
             core.setOutput("model", run.model);
             core.setOutput("effort", run.effort);
             core.setOutput("max-turns", run["max-turns"]);
             core.setOutput("cli-version", cliVersion);
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
+
+      # The base schema, closed, plus the fields verdict-schema adds, which
+      # the action names in the prompt. A verdict-schema that breaks its
+      # rules fails this step, so the leg stops before any model call.
+      - name: Compose the output schema
+        id: schema
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: schema
+          allowed: ${{ steps.compose.outputs.allowed }}
+          type-names: ${{ steps.compose.outputs.type-names }}
+          prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
 
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
@@ -1804,7 +1833,7 @@ jobs:
             WebFetch
             WebSearch
             mcp__*
-          json-schema-file: ${{ steps.compose.outputs.schema-file }}
+          json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: "8"
@@ -1840,10 +1869,24 @@ jobs:
           public-key: ${{ inputs.lane-transcript-public-key }}
           job-id: intake-${{ github.job }}
 
+      # No model runs here. The fields verdict-schema adds, each checked
+      # against its type and bounds again, for the extract step to carry;
+      # empty when verdict-schema is. A crash here drops only the verdict.
+      - name: Extract the verdict
+        id: verdict
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
+        continue-on-error: true
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: extract
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
+      # job's allowlist and enums, as JSON, with the checked verdict under
+      # `verdict` when verdict-schema is set. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -1851,6 +1894,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
@@ -1894,6 +1938,7 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
+              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -2267,7 +2312,7 @@ jobs:
 
       # The allowlist is the caller's labels that exist in the repository; the
       # same list becomes the output schema's enum, and the extract step and
-      # the apply job check it again. The prompt and schema go to files run-claude-cli reads.
+      # the apply job check it again. The prompt goes to a file run-claude-cli reads.
       - name: Resolve labels and compose Claude CLI arguments
         id: compose
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -2428,25 +2473,6 @@ jobs:
               core.warning(`Issue Types unreadable, so the lane sets none: ${error.message}`);
             }
 
-            const schema = {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                // An enum needs at least one value; with nothing allowed, labels must be empty.
-                labels:
-                  allowed.length > 0
-                    ? { type: "array", uniqueItems: true, items: { type: "string", enum: allowed } }
-                    : { type: "array", maxItems: 0 },
-                comment: { type: "string", maxLength: 3000 },
-                needs_human: { type: "boolean" },
-                reason: { type: "string", maxLength: 500 },
-              },
-              required: ["labels", "comment", "needs_human", "reason"],
-            };
-            if (types.length > 0) {
-              schema.properties.type = { type: "string", enum: [...types.map((t) => t.name), "none"] };
-              schema.required.push("type");
-            }
             const typeInstruction =
               types.length > 0
                 ? `   - type: the issue's kind, one of ${types.map((t) => t.name).join(", ")}, as the repository's conventions define them; none when unsure.`
@@ -2484,20 +2510,31 @@ jobs:
             `;
             const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "intake-triage-"));
             const promptFile = path.join(directory, "prompt.md");
-            const schemaFile = path.join(directory, "schema.json");
             fs.writeFileSync(promptFile, prompt);
-            fs.writeFileSync(schemaFile, JSON.stringify(schema));
             core.setOutput("allowed", JSON.stringify(allowed));
             core.setOutput("types", JSON.stringify(Object.fromEntries(types.map((t) => [t.name, t.id]))));
+            core.setOutput("type-names", JSON.stringify(types.map((t) => t.name)));
             core.setOutput("type-instruction", typeInstruction);
             core.setOutput("prompt-file", promptFile);
-            core.setOutput("schema-file", schemaFile);
             core.setOutput("model", run.model);
             core.setOutput("effort", run.effort);
             core.setOutput("max-turns", run["max-turns"]);
             core.setOutput("cli-version", cliVersion);
             // Lets the outcome step tell a step timeout from other failures.
             core.setOutput("started-at", String(Math.floor(Date.now() / 1000)));
+
+      # The base schema, closed, plus the fields verdict-schema adds, which
+      # the action names in the prompt. A verdict-schema that breaks its
+      # rules fails this step, so the leg stops before any model call.
+      - name: Compose the output schema
+        id: schema
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: schema
+          allowed: ${{ steps.compose.outputs.allowed }}
+          type-names: ${{ steps.compose.outputs.type-names }}
+          prompt-file: ${{ steps.compose.outputs.prompt-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
 
       # Only whether the secret is set leaves this step, never its value.
       - name: Check the credential
@@ -2548,7 +2585,7 @@ jobs:
             WebFetch
             WebSearch
             mcp__*
-          json-schema-file: ${{ steps.compose.outputs.schema-file }}
+          json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: "8"
@@ -2584,10 +2621,24 @@ jobs:
           public-key: ${{ inputs.lane-transcript-public-key }}
           job-id: intake-${{ github.job }}
 
+      # No model runs here. The fields verdict-schema adds, each checked
+      # against its type and bounds again, for the extract step to carry;
+      # empty when verdict-schema is. A crash here drops only the verdict.
+      - name: Extract the verdict
+        id: verdict
+        if: always() && steps.compose.outcome == 'success' && steps.credential.outputs.present == 'true' && steps.claude.outputs.handoff != 'true'
+        continue-on-error: true
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: extract
+          execution-file: ${{ steps.claude.outputs.execution-file }}
+          verdict-schema: ${{ inputs.verdict-schema }}
+
       # No model runs here. It reduces the run to the job outputs the apply
       # job reads: the result subtype, the error flag and the denial count,
       # each a closed value, and the structured output, checked against this
-      # job's allowlist and enums, as JSON. Only the sealed transcript also leaves. The
+      # job's allowlist and enums, as JSON, with the checked verdict under
+      # `verdict` when verdict-schema is set. Only the sealed transcript also leaves. The
       # reason, turns and denied tool names go to this job's summary only.
       - name: Extract the triage
         id: extract
@@ -2595,6 +2646,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution-file }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
           ALLOWED: ${{ steps.compose.outputs.allowed }}
           TYPES: ${{ steps.compose.outputs.types }}
           CLI_VERSION: ${{ steps.claude.outputs.cli-version }}
@@ -2638,6 +2690,7 @@ jobs:
                 comment: typeof raw.comment === "string" ? raw.comment.trim().slice(0, 3000) : "",
                 needs_human: raw.needs_human,
               };
+              if (env.VERDICT) triage.verdict = JSON.parse(env.VERDICT);
             }
             core.setOutput("result-subtype", subtype);
             core.setOutput("result-error", result.is_error === true ? "true" : "false");
@@ -2719,6 +2772,7 @@ jobs:
       issues: write # apply labels, the Issue Type and the triage comment
     outputs:
       deferred: ${{ steps.apply.outputs.deferred }}
+      verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
       - name: Apply the triage
         id: apply
@@ -2923,6 +2977,9 @@ jobs:
             // is applied, only the escalation label and a fixed note. Its
             // enum-checked type survives when usable.
             const escalated = escalate.length > 0;
+            // The caller's verdict fields leave only a run that was not
+            // escalated; the next step checks them against verdict-schema.
+            if (!escalated && output?.verdict !== undefined) core.setOutput("verdict", JSON.stringify(output.verdict));
             if (escalated) {
               labels.clear();
               labels.add(env.ESCALATION_LABEL);
@@ -3169,6 +3226,18 @@ jobs:
             ];
             await core.summary.addRaw(summary.join("\n")).write();
             if (failure) core.setFailed(`Applying the triage failed: ${failure.message}`);
+
+      # The leg's verdict, checked against verdict-schema again before it
+      # becomes the workflow's verdict output: this job trusts no job output.
+      - name: Check the verdict
+        id: verdict
+        if: always() && steps.apply.outputs.verdict != ''
+        continue-on-error: true
+        uses: $/.github/actions/intake-triage-verdict
+        with:
+          mode: check
+          verdict: ${{ steps.apply.outputs.verdict }}
+          verdict-schema: ${{ inputs.verdict-schema }}
 
       # The job token's api-budget notice, from the readings the script
       # steps' requests left. It spends no request.

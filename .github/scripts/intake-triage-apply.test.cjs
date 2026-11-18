@@ -15,6 +15,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
+const verdictModule = require("../actions/intake-triage-verdict/verdict.cjs");
 const { evaluate } = require("./actions-expression.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -86,7 +87,10 @@ async function runScript(script, env, github) {
 
 // Runs the extract step on one result message and returns its outputs, the
 // claude job's outputs as the apply job reads them.
-async function extract(resultMessage, { output, allowed, raw } = {}) {
+async function extract(
+  resultMessage,
+  { output, allowed, raw, verdict = "" } = {},
+) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-extract-"));
   const executionFile = path.join(directory, "execution.json");
   fs.writeFileSync(
@@ -106,6 +110,7 @@ async function extract(resultMessage, { output, allowed, raw } = {}) {
         ALLOWED: JSON.stringify(allowed),
         TYPES: JSON.stringify(TYPES),
         CLI_VERSION: "",
+        VERDICT: verdict,
       },
       {},
     );
@@ -301,6 +306,7 @@ async function apply(resultMessage, options = {}) {
   const outputs = await extract(resultMessage, {
     output: options.output,
     allowed,
+    verdict: options.verdict,
   });
   return runApply(legEnv("KEY", outputs), { ...options, allowed });
 }
@@ -703,8 +709,20 @@ async function compose(graphql, env = {}) {
       rest: { issues: { listLabelsForRepo: () => {} } },
     },
   );
-  const schema = outputs["schema-file"]
-    ? JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"))
+  // The leg's next step builds the schema from the compose step's outputs.
+  const schema = outputs["prompt-file"]
+    ? JSON.parse(
+        fs.readFileSync(
+          verdictModule.main({
+            INPUT_MODE: "schema",
+            INPUT_ALLOWED: outputs.allowed,
+            INPUT_TYPE_NAMES: outputs["type-names"],
+            INPUT_PROMPT_FILE: outputs["prompt-file"],
+            INPUT_VERDICT_SCHEMA: "",
+          }).outputs["schema-file"],
+          "utf8",
+        ),
+      )
     : undefined;
   return { outputs, warnings, failed, schema };
 }
@@ -1713,4 +1731,96 @@ test("two priority picks apply neither and keep the floor", async () => {
   });
   assert.deepEqual(labels, [FLOOR_LABEL]);
   assert.deepEqual(removed, []);
+});
+
+// verdict-schema: the leg's verdict step reads the added fields from the
+// execution file, the extract step carries them in the triage, and the apply
+// job hands them on only from a run it did not escalate.
+const VERDICT_SCHEMA = JSON.stringify({
+  properties: {
+    size: { type: "string", enum: ["S", "M", "L"] },
+    complexity: { type: "integer", minimum: 1, maximum: 5 },
+  },
+  required: ["size"],
+});
+
+function verdictFor(output, verdictSchema = VERDICT_SCHEMA) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-verdict-"));
+  try {
+    const executionFile = path.join(directory, "execution.json");
+    fs.writeFileSync(
+      executionFile,
+      JSON.stringify([{ ...SUCCESS, structured_output: output }]),
+    );
+    return verdictModule.main({
+      INPUT_MODE: "extract",
+      INPUT_EXECUTION_FILE: executionFile,
+      INPUT_VERDICT_SCHEMA: verdictSchema,
+    }).outputs.verdict;
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("a verdict-schema verdict rides in the triage and leaves the apply job from a clean run", async () => {
+  const output = triaged({ size: "M", complexity: 2 });
+  const verdict = verdictFor(output);
+  const legOutputs = await extract(SUCCESS, {
+    output,
+    allowed: ["priority: high"],
+    verdict,
+  });
+  assert.deepEqual(JSON.parse(legOutputs.triage).verdict, {
+    size: "M",
+    complexity: 2,
+  });
+  const { outputs, labels } = await apply(SUCCESS, { output, verdict });
+  assert.equal(outputs.verdict, '{"size":"M","complexity":2}');
+  assert.deepEqual(labels, ["priority: high"]);
+  // The apply job's check step passes it on unchanged.
+  assert.equal(
+    verdictModule.main({
+      INPUT_MODE: "check",
+      INPUT_VERDICT: outputs.verdict,
+      INPUT_VERDICT_SCHEMA: VERDICT_SCHEMA,
+    }).outputs.verdict,
+    '{"size":"M","complexity":2}',
+  );
+});
+
+test("an out-of-bound verdict is dropped while the triage still applies", async () => {
+  const output = triaged({ size: "XL", complexity: 2 });
+  assert.equal(verdictFor(output), "");
+  const { outputs, labels } = await apply(SUCCESS, { output, verdict: "" });
+  assert.equal(outputs.verdict, undefined);
+  assert.deepEqual(labels, ["priority: high"]);
+});
+
+test("an escalated or deferred run hands on no verdict", async () => {
+  const asked = triaged({ needs_human: true, size: "S" });
+  const escalated = await apply(SUCCESS, {
+    output: asked,
+    verdict: verdictFor(asked),
+  });
+  assert.deepEqual(escalated.labels, [ESCALATION_LABEL]);
+  assert.equal(escalated.outputs.verdict, undefined);
+  const clean = triaged({ size: "S" });
+  const deferred = await apply(
+    { ...SUCCESS, permission_denials: [{ tool_name: "Read" }] },
+    { output: clean, verdict: verdictFor(clean) },
+  );
+  assert.equal(deferred.outputs.deferred, "true");
+  assert.equal(deferred.outputs.verdict, undefined);
+});
+
+test("with no verdict-schema the triage carries no verdict and the apply job outputs none", async () => {
+  const output = triaged({ size: "M" });
+  assert.equal(verdictFor(output, ""), "");
+  const legOutputs = await extract(SUCCESS, {
+    output,
+    allowed: ["priority: high"],
+  });
+  assert.equal(Object.hasOwn(JSON.parse(legOutputs.triage), "verdict"), false);
+  const { outputs } = await apply(SUCCESS, { output });
+  assert.equal(outputs.verdict, undefined);
 });
