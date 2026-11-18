@@ -25,13 +25,14 @@ for name in version sha256 signer_workflow source_digest; do
   fi
 done
 
-asset="$(mktemp -d)/actionlint_${version}_linux_amd64.tar.gz"
+asset_name="actionlint_${version}_linux_amd64.tar.gz"
+asset="$(mktemp -d)/$asset_name"
 curl -q --fail --silent --show-error --location \
   --proto '=https' --proto-redir '=https' \
   --connect-timeout 10 --max-time 120 \
   --retry 8 --retry-all-errors --retry-max-time 300 \
   --output "$asset" -- \
-  "https://github.com/kjanat/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+  "https://github.com/kjanat/actionlint/releases/download/v${version}/$asset_name"
 
 if ! printf '%s  %s\n' "$sha256" "$asset" | sha256sum -c -; then
   echo "::error::The v$version asset does not match the pinned sha256."

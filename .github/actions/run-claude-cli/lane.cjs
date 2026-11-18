@@ -511,11 +511,16 @@ function cliArgs(config) {
   return args;
 }
 
-function toolLines(text, label) {
-  const rules = (text ?? "")
+// The input's non-blank lines, trimmed.
+function inputLines(text) {
+  return (text ?? "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+}
+
+function toolLines(text, label) {
+  const rules = inputLines(text);
   if (rules.some((rule) => rule.startsWith("-"))) {
     throw new LaneError(`${label} entries may not start with '-'`);
   }
@@ -526,10 +531,7 @@ function toolLines(text, label) {
 // absolute one as written) and kept only when it has no `..` part and its
 // real path is an existing directory inside the workspace's real path.
 function dirLines(text, label, workspace) {
-  const entries = (text ?? "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const entries = inputLines(text);
   if (entries.length === 0) return [];
   if ((workspace ?? "").trim() === "") {
     throw new LaneError(`${label} needs GITHUB_WORKSPACE to resolve against`);
@@ -583,6 +585,17 @@ function linesToMessages(text) {
   return messages;
 }
 
+function finalResult(messages) {
+  return messages.findLast((message) => message?.type === "result");
+}
+
+// The last message's numeric api_error_status, the one classify.cjs reads,
+// or null.
+function apiErrorStatus(messages) {
+  const status = messages.at(-1)?.api_error_status;
+  return Number.isInteger(status) ? status : null;
+}
+
 // The CLI's first error line, only when classify proved it is the CLI's own
 // text (a credit stop or a limit stop with no model output). Workflow
 // commands are neutralized and the line is cut short. It goes to the scanned
@@ -590,7 +603,7 @@ function linesToMessages(text) {
 function cliMessage(messages, failureClass) {
   if (failureClass !== "credit-stop" && failureClass !== "rate-limit")
     return null;
-  const result = messages.findLast((message) => message?.type === "result");
+  const result = finalResult(messages);
   const assistants = messages.filter((m) => m?.type === "assistant");
   const modelWrote =
     assistants.some((m) => typeof m.error !== "string") ||
@@ -612,8 +625,7 @@ function legRecord({
   next,
   message = null,
 }) {
-  const result =
-    messages.findLast((message) => message?.type === "result") ?? {};
+  const result = finalResult(messages) ?? {};
   const denials = Array.isArray(result.permission_denials)
     ? result.permission_denials
     : [];
@@ -628,7 +640,6 @@ function legRecord({
     result.modelUsage && typeof result.modelUsage === "object"
       ? result.modelUsage
       : {};
-  const status = messages.at(-1)?.api_error_status;
   const facts = failureClass === "" ? {} : apiErrorFacts(messages);
   return {
     run_id: config.runId,
@@ -659,7 +670,7 @@ function legRecord({
     num_turns: count(result.num_turns),
     is_error: typeof result.is_error === "boolean" ? result.is_error : null,
     class: failureClass,
-    api_error_status: Number.isInteger(status) ? status : null,
+    api_error_status: apiErrorStatus(messages),
     error_type: facts.errorType ?? null,
     error_code: facts.errorCode ?? null,
     request_id: facts.requestId ?? null,
@@ -782,7 +793,7 @@ function judgeLeg({
   if (limitResets !== null) {
     return { failureClass: "rate-limit", resets: limitResets, messages };
   }
-  const result = messages.findLast((message) => message?.type === "result");
+  const result = finalResult(messages);
   if (!timedOut && exitCode === 0 && result && result.is_error === false) {
     return { failureClass: "", resets: null, messages };
   }
@@ -1122,12 +1133,10 @@ async function runLeg(
         limitResets: stopped === "limit" ? limitResets : null,
       });
     }
-    // The same message classify.cjs reads its status from.
-    const status = judged.messages.at(-1)?.api_error_status;
     reason = handoffReason(
       leg,
       judged.failureClass,
-      Number.isInteger(status) ? status : null,
+      apiErrorStatus(judged.messages),
       {
         fallbackReady: config.fallbackReady === true,
         limitStop: judged.failureClass === "rate-limit" && judged.resets !== null,
@@ -1262,10 +1271,10 @@ function verifyManagedSettings(
 
 // True when the runner user can still write the Docker socket, which is root
 // on the host by another name.
-function dockerReachable(socket, access = fs.accessSync) {
+function dockerReachable(socket) {
   if (!fs.existsSync(socket)) return false;
   try {
-    access(socket, fs.constants.W_OK);
+    fs.accessSync(socket, fs.constants.W_OK);
     return true;
   } catch {
     return false;
@@ -1573,10 +1582,8 @@ function install(
 // json-schema-file and succeeded; else null.
 function structuredOutputText(config, laneClass, executionFile) {
   if (config.jsonSchema === "" || laneClass !== "") return null;
-  const result = (readMessages(executionFile) ?? []).findLast(
-    (message) => message?.type === "result",
-  );
-  const value = result?.structured_output;
+  const value = finalResult(readMessages(executionFile) ?? [])
+    ?.structured_output;
   return value !== null && typeof value === "object"
     ? JSON.stringify(value)
     : null;
@@ -1594,8 +1601,9 @@ async function run(env) {
     process.stdout.write(`::${token}::\n`);
   }
   const logFile = path.join(config.workDir, "run-claude-cli-log.jsonl");
+  const secrets = [config.leg.value];
   const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
-  const clean = !holdsCredential(logText, [config.leg.value]);
+  const clean = !holdsCredential(logText, secrets);
   if (clean) fs.writeFileSync(logFile, logText);
   const structuredText = structuredOutputText(
     config,
@@ -1604,14 +1612,14 @@ async function run(env) {
   );
   const structuredClean =
     structuredText === null ||
-    !holdsCredential(structuredText, [config.leg.value]);
+    !holdsCredential(structuredText, secrets);
   const structuredFile = path.join(config.workDir, "structured-output.json");
   const structuredWritten = structuredText !== null && structuredClean;
   if (structuredWritten) fs.writeFileSync(structuredFile, structuredText);
   writeOutputs(env.GITHUB_OUTPUT, {
     ...outcome.outputs,
     "execution-file-clean": String(
-      fileClean(outcome.outputs["execution-file"], [config.leg.value]),
+      fileClean(outcome.outputs["execution-file"], secrets),
     ),
     "log-file": clean ? logFile : "",
     "structured-output-file": structuredWritten ? structuredFile : "",
@@ -1671,11 +1679,11 @@ if (require.main === module) {
       throw new LaneError(`unknown command ${JSON.stringify(command)}`);
     }
   })().catch((error) => {
-    const message =
-      error instanceof LaneError
-        ? error.message
-        : "unexpected failure (see the step log)";
-    if (!(error instanceof LaneError)) console.error(error);
+    const known = error instanceof LaneError;
+    if (!known) console.error(error);
+    const message = known
+      ? error.message
+      : "unexpected failure (see the step log)";
     process.stdout.write(`::error title=run-claude-cli::${message}\n`);
     process.exitCode = 1;
   });
@@ -1688,7 +1696,6 @@ module.exports = {
   LaneError,
   LIVE_VALUE_CHARS,
   LIVE_WITHHELD,
-  MAX_LEG_STDOUT_BYTES,
   NPM_REGISTRY,
   SANDBOX_SETTINGS,
   SIGNING_KEY_FINGERPRINT,
@@ -1697,10 +1704,7 @@ module.exports = {
   handoffReason,
   holdsCredential,
   install,
-  judgeLeg,
   legEnv,
-  legRecord,
-  linesToMessages,
   readConfig,
   resolveCliVersion,
   run,

@@ -39,6 +39,16 @@ jobs:
     steps:
       - run: echo ok
 `;
+const WITHOUT_LABEL = BASE_REUSABLE.replace(
+  "      label:\n        type: string\n        required: false\n",
+  "",
+);
+/** BASE_REUSABLE with a `mode` input, required or not. */
+const withMode = (required) =>
+  BASE_REUSABLE.replace(
+    "    secrets:",
+    `      mode:\n        type: string\n        required: ${required}\n    secrets:`,
+  );
 
 function policy(contract) {
   return JSON.stringify({
@@ -96,12 +106,7 @@ const errors = (output) =>
 test("removing an input the contract still lists fails, naming it and the order", () => {
   const { status, output } = check({
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "      label:\n        type: string\n        required: false\n",
-        "",
-      ),
-    },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 1);
   const [error, ...rest] = errors(output);
@@ -145,12 +150,7 @@ test("renaming a contracted secret fails on the old name", () => {
 test("adding a required input the contract does not list fails, naming it and the order", () => {
   const { status, output } = check({
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "    secrets:",
-        "      mode:\n        type: string\n        required: true\n    secrets:",
-      ),
-    },
+    head: { [REUSABLE]: withMode(true) },
   });
   assert.equal(status, 1);
   const found = errors(output);
@@ -163,12 +163,7 @@ test("adding a required input the contract already lists passes", () => {
   const { status, output } = check({
     policyText: policy({ allowedInputs: ["runner", "label", "mode"] }),
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "    secrets:",
-        "      mode:\n        type: string\n        required: true\n    secrets:",
-      ),
-    },
+    head: { [REUSABLE]: withMode(true) },
   });
   assert.equal(status, 0, output);
   assert.deepEqual(errors(output), []);
@@ -176,18 +171,8 @@ test("adding a required input the contract already lists passes", () => {
 
 test("making a listed-nowhere optional input required fails", () => {
   const { status, output } = check({
-    base: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "    secrets:",
-        "      mode:\n        type: string\n        required: false\n    secrets:",
-      ),
-    },
-    head: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "    secrets:",
-        "      mode:\n        type: string\n        required: true\n    secrets:",
-      ),
-    },
+    base: { [REUSABLE]: withMode(false) },
+    head: { [REUSABLE]: withMode(true) },
   });
   assert.equal(status, 1);
   assert.match(errors(output)[0], /required input 'mode' was added/u);
@@ -224,12 +209,7 @@ test("removing an input the contract does not list passes", () => {
   const { status, output } = check({
     policyText: policy({ allowedInputs: ["runner"] }),
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: {
-      [REUSABLE]: BASE_REUSABLE.replace(
-        "      label:\n        type: string\n        required: false\n",
-        "",
-      ),
-    },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 0, output);
   assert.deepEqual(errors(output), []);
@@ -301,10 +281,6 @@ test("a new required secret must be in every secret map", () => {
 });
 
 test("unknown sibling fields in a contract entry are ignored", () => {
-  const removed = BASE_REUSABLE.replace(
-    "      label:\n        type: string\n        required: false\n",
-    "",
-  );
   const contract = {
     allowedSecretsUntil: "2026-12-31",
     allowedCallerPermissionsUntil: "2026-12-31",
@@ -313,7 +289,7 @@ test("unknown sibling fields in a contract entry are ignored", () => {
   const blocked = check({
     policyText: policy(contract),
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [REUSABLE]: removed },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(blocked.status, 1, blocked.output);
   assert.match(
@@ -323,7 +299,7 @@ test("unknown sibling fields in a contract entry are ignored", () => {
   const allowed = check({
     policyText: policy({ ...contract, allowedInputs: ["runner"] }),
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [REUSABLE]: removed },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(allowed.status, 0, allowed.output);
 });

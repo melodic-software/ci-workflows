@@ -4,8 +4,8 @@
 # substitution actually runs — and spans the right bytes when an expression
 # crosses lines, carries a `}}` in a string literal, or is never closed at all —
 # that a step ShellCheck cannot read is announced, that every tracked composite
-# is reached — including
-# one carrying no shell at all — that a malformed `runs.steps` shape is refused
+# is reached — including one carrying no shell at all — that a malformed
+# `runs.steps` shape is refused
 # rather than extracted from, and that a file set yielding no block fails rather
 # than passing empty. Without these, a selector matching nothing — or nearly
 # nothing — is indistinguishable from a clean scan.
@@ -41,14 +41,23 @@ expect_findings() {
   fi
 }
 
+# Run the check on the remaining arguments, which must fail; its output is
+# printed and left in $1 for the caller's assertions.
+expect_check_failure() {
+  local output="$1" message="$2"
+  shift 2
+  if bash "$check" "$@" >"$output" 2>&1; then
+    echo "$message" >&2
+    exit 1
+  fi
+  cat -- "$output"
+}
+
 broken="$temp/composite-run-shellcheck-broken.txt"
-if bash "$check" \
+expect_check_failure "$broken" \
+  'The intentionally broken composite run: block unexpectedly passed.' \
   fixtures/composite-action/bad/action.yml \
-  fixtures/composite-action/uses-only/action.yml >"$broken" 2>&1; then
-  echo 'The intentionally broken composite run: block unexpectedly passed.' >&2
-  exit 1
-fi
-cat -- "$broken"
+  fixtures/composite-action/uses-only/action.yml
 grep -F 'SC2086' "$broken"
 grep -F "ls \$PATHS" "$broken"
 # The fixture interpolates an expression inline, which no real action.yml here
@@ -69,11 +78,9 @@ grep -F 'visit fixtures/composite-action/uses-only/action.yml' "$broken"
 # would otherwise reach a write path and an interpolated yq expression. The
 # shape is refused, not extracted from.
 mapping="$temp/composite-run-shellcheck-mapping.txt"
-if bash "$check" fixtures/composite-action/mapping-steps/action.yml >"$mapping" 2>&1; then
-  echo 'A mapping-shaped runs.steps was unexpectedly accepted.' >&2
-  exit 1
-fi
-cat -- "$mapping"
+expect_check_failure "$mapping" \
+  'A mapping-shaped runs.steps was unexpectedly accepted.' \
+  fixtures/composite-action/mapping-steps/action.yml
 grep -F 'runs.steps is not a sequence' "$mapping"
 
 # GitHub's custom-shell form (`command [...options] {0}`) is run with the
@@ -103,11 +110,9 @@ fi
 # Neither is a gate hole — both make the check go red — so the assertions are on
 # WHERE and WHETHER a real finding is reported, never on the exit status alone.
 spans="$temp/composite-run-shellcheck-expression-spans.txt"
-if bash "$check" fixtures/composite-action/expression-spans/action.yml >"$spans" 2>&1; then
-  echo 'The expression-spans fixture unexpectedly passed.' >&2
-  exit 1
-fi
-cat -- "$spans"
+expect_check_failure "$spans" \
+  'The expression-spans fixture unexpectedly passed.' \
+  fixtures/composite-action/expression-spans/action.yml
 
 # An expression spanning lines must consume its newline without deleting it.
 # `set -eo pipefail` occupies line 1 and the block's fifth line carries the
@@ -138,12 +143,9 @@ fi
 # than following the runner — see the header of the script under test. Nothing
 # in the toolchain would catch a wrong choice, so both halves of it are pinned.
 unterminated="$temp/composite-run-shellcheck-unterminated.txt"
-if bash "$check" fixtures/composite-action/unterminated-expression/action.yml \
-  >"$unterminated" 2>&1; then
-  echo 'The unterminated-expression fixture unexpectedly passed.' >&2
-  exit 1
-fi
-cat -- "$unterminated"
+expect_check_failure "$unterminated" \
+  'The unterminated-expression fixture unexpectedly passed.' \
+  fixtures/composite-action/unterminated-expression/action.yml
 
 # The opener stops the scan rather than extending it to the next expression's
 # `}}`. Extending it underscores that well-formed expression and the `ls` after
@@ -168,11 +170,8 @@ findings_at "$intact" 4 "$unterminated" | grep -F 'SC1073'
 # syntactic, so the paths below need not exist.
 outside="$temp/composite-run-shellcheck-outside.txt"
 for bad in "$PWD/fixtures/composite-action/bad/action.yml" ../action.yml; do
-  if bash "$check" "$bad" >"$outside" 2>&1; then
-    echo "A path that is not repo-relative was unexpectedly accepted: $bad" >&2
-    exit 1
-  fi
-  cat -- "$outside"
+  expect_check_failure "$outside" \
+    "A path that is not repo-relative was unexpectedly accepted: $bad" "$bad"
   grep -F 'must be a repo-relative path' "$outside"
 done
 
@@ -191,9 +190,7 @@ while IFS= read -r action; do
 done < <(git ls-files -- '.github/actions/*/action.yml')
 
 empty="$temp/composite-run-shellcheck-empty.txt"
-if bash "$check" .github/workflows/pr-require-checks.yml >"$empty" 2>&1; then
-  echo 'A file set containing no composite run: block unexpectedly passed.' >&2
-  exit 1
-fi
-cat -- "$empty"
+expect_check_failure "$empty" \
+  'A file set containing no composite run: block unexpectedly passed.' \
+  .github/workflows/pr-require-checks.yml
 grep -F 'no bash/sh run: block was extracted' "$empty"

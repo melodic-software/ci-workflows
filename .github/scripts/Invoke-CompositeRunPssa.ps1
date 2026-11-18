@@ -222,8 +222,6 @@ foreach ($file in $files) {
         # The extracted script is named after the action's own directory, which
         # a bare filename does not have.
         'not inside an action directory'
-    } else {
-        $null
     }
     if ($reason) {
         Write-Annotation -Message ("'$file' is $reason; each argument must be a repo-relative path" +

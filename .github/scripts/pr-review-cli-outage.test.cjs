@@ -1,6 +1,6 @@
 "use strict";
 
-// The hosted review's outage posture (#1007): its reads are sent at most 3
+// The hosted review's outage posture: its reads are sent at most 3
 // times, a resend only on a 5xx, no answer or a rate limit, and a read of the
 // pull request's base that still fails holds the run green with a `held: `
 // notice instead of publishing a red. Each leg's copy is run as shipped.
@@ -147,8 +147,10 @@ function runFullDiff(leg, statuses) {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin);
   const count = path.join(dir, "count");
-  fs.writeFileSync(
-    path.join(bin, "gh"),
+  const script = (name, body) =>
+    fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
+  script(
+    "gh",
     [
       "#!/usr/bin/env bash",
       `n=$(( $(cat "${count}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${count}"`,
@@ -162,18 +164,12 @@ function runFullDiff(leg, statuses) {
       'echo "gh: failed (HTTP $code)" >&2',
       "exit 1",
     ].join("\n"),
-    { mode: 0o755 },
   );
-  fs.writeFileSync(
-    path.join(bin, "git"),
+  script(
+    "git",
     '#!/usr/bin/env bash\n[ "$1" = diff ] && [ "$2" = --name-only ] && echo a.js\nexit 0\n',
-    {
-      mode: 0o755,
-    },
   );
-  fs.writeFileSync(path.join(bin, "sleep"), "#!/usr/bin/env bash\nexit 0\n", {
-    mode: 0o755,
-  });
+  script("sleep", "#!/usr/bin/env bash\nexit 0\n");
   const output = path.join(dir, "output");
   fs.writeFileSync(output, "");
   const result = spawnSync("bash", ["-e", "-c", step(leg, "full-diff").run], {

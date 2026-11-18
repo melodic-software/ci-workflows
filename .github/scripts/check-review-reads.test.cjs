@@ -157,6 +157,8 @@ function lane(files) {
   return { workspace, transcript };
 }
 
+const SCOPE = { scope: ".claude-lane/pr.diff" };
+
 const unreadOf = (workspace, diffs, toRead, messagesPerReview, binary) =>
   checkReads({
     workspace,
@@ -197,10 +199,7 @@ test("a single review that read every listed file's section has no unread path",
   const { workspace } = lane({ ".claude-lane/pr.diff": DIFF });
   const diff = path.join(workspace, ".claude-lane/pr.diff");
   const messages = read(diff, DIFF, 1, 37);
-  assert.deepEqual(
-    unreadOf(workspace, { scope: ".claude-lane/pr.diff" }, LIST, [messages]),
-    [],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, LIST, [messages]), []);
 });
 
 test("a file read short of its last line is unread, and is named", () => {
@@ -208,10 +207,9 @@ test("a file read short of its last line is unread, and is named", () => {
   const diff = path.join(workspace, ".claude-lane/pr.diff");
   // Lines 1-13 stop one line short of the space path's last hunk line (14).
   const messages = [...read(diff, DIFF, 1, 13), ...read(diff, DIFF, 15, 37)];
-  assert.deepEqual(
-    unreadOf(workspace, { scope: ".claude-lane/pr.diff" }, LIST, [messages]),
-    ["docs/my file.md"],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, LIST, [messages]), [
+    "docs/my file.md",
+  ]);
 });
 
 test("a path with spaces or quotes matches git's header for it, and a deleted file is never required", () => {
@@ -219,38 +217,35 @@ test("a path with spaces or quotes matches git's header for it, and a deleted fi
   const diff = path.join(workspace, ".claude-lane/pr.diff");
   // Only the space path's and the quoted path's sections are read.
   const messages = read(diff, DIFF, 8, 21);
-  assert.deepEqual(
-    unreadOf(workspace, { scope: ".claude-lane/pr.diff" }, LIST, [messages]),
-    ["data.bin", "src/a.js", "src/new-name.js"],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, LIST, [messages]), [
+    "data.bin",
+    "src/a.js",
+    "src/new-name.js",
+  ]);
   // src/gone.js (26-31) is in no list; leaving it unread changes nothing.
   const all = [...read(diff, DIFF, 1, 25), ...read(diff, DIFF, 32, 37)];
-  assert.deepEqual(
-    unreadOf(workspace, { scope: ".claude-lane/pr.diff" }, LIST, [all]),
-    [],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, LIST, [all]), []);
 });
 
 test("an unverified pure rename is read once its header lines are shown; a listed binary file needs only its lines before the first hunk, a text file all of its lines", () => {
   const { workspace } = lane({ ".claude-lane/pr.diff": DIFF });
   const diff = path.join(workspace, ".claude-lane/pr.diff");
-  const scope = { scope: ".claude-lane/pr.diff" };
   const rename = read(diff, DIFF, 22, 25);
   assert.deepEqual(
-    unreadOf(workspace, scope, ["src/new-name.js", "data.bin"], [rename]),
+    unreadOf(workspace, SCOPE, ["src/new-name.js", "data.bin"], [rename]),
     ["data.bin"],
   );
   // data.bin's header is lines 32-35; its hunk starts at 36.
   const header = read(diff, DIFF, 32, 35);
   const binary = new Set(["data.bin"]);
   assert.deepEqual(
-    unreadOf(workspace, scope, ["data.bin"], [header], binary),
+    unreadOf(workspace, SCOPE, ["data.bin"], [header], binary),
     [],
   );
   assert.deepEqual(
     unreadOf(
       workspace,
-      scope,
+      SCOPE,
       ["data.bin"],
       [read(diff, DIFF, 32, 34)],
       binary,
@@ -258,12 +253,12 @@ test("an unverified pure rename is read once its header lines are shown; a liste
     ["data.bin"],
   );
   // Off the binary list the same header alone is not enough.
-  assert.deepEqual(unreadOf(workspace, scope, ["data.bin"], [header]), [
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["data.bin"], [header]), [
     "data.bin",
   ]);
   // A text file's header without its hunk lines is not read.
   assert.deepEqual(
-    unreadOf(workspace, scope, ["src/a.js"], [read(diff, DIFF, 1, 4)], binary),
+    unreadOf(workspace, SCOPE, ["src/a.js"], [read(diff, DIFF, 1, 4)], binary),
     ["src/a.js"],
   );
 });
@@ -280,25 +275,11 @@ test("a diff longer than one Read counts when the Reads' ranges together cover e
   const { workspace } = lane({ ".claude-lane/pr.diff": big });
   const diff = path.join(workspace, ".claude-lane/pr.diff");
   const covered = [...read(diff, big, 1, 2000), ...read(diff, big, 2001, 3005)];
-  assert.deepEqual(
-    unreadOf(
-      workspace,
-      { scope: ".claude-lane/pr.diff" },
-      ["lib/big.js"],
-      [covered],
-    ),
-    [],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["lib/big.js"], [covered]), []);
   const gap = [...read(diff, big, 1, 2000), ...read(diff, big, 2002, 3005)];
-  assert.deepEqual(
-    unreadOf(
-      workspace,
-      { scope: ".claude-lane/pr.diff" },
-      ["lib/big.js"],
-      [gap],
-    ),
-    ["lib/big.js"],
-  );
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["lib/big.js"], [gap]), [
+    "lib/big.js",
+  ]);
 });
 
 test("a subagent's Read counts; an errored Read, Grep, or a Read of another file does not", () => {
@@ -307,35 +288,33 @@ test("a subagent's Read counts; an errored Read, Grep, or a Read of another file
     "copy.diff": DIFF,
   });
   const diff = path.join(workspace, ".claude-lane/pr.diff");
-  const scope = { scope: ".claude-lane/pr.diff" };
   const sub = read(diff, DIFF, 1, 7, { parent: "toolu_agent" });
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [sub]), []);
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [sub]), []);
   const failed = read(diff, DIFF, 1, 7, { error: true });
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [failed]), [
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [failed]), [
     "src/a.js",
   ]);
   // The same bytes at a path the job did not write are no evidence.
   const elsewhere = read(path.join(workspace, "copy.diff"), DIFF, 1, 7);
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [elsewhere]), [
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [elsewhere]), [
     "src/a.js",
   ]);
   const grep = read(diff, DIFF, 1, 7);
   grep[0].message.content[0].name = "Grep";
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [grep]), [
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [grep]), [
     "src/a.js",
   ]);
 });
 
 test("a relative, ./-prefixed or absolute file_path names the same diff file, and the older arrow numbering counts", () => {
   const { workspace } = lane({ ".claude-lane/pr.diff": DIFF });
-  const scope = { scope: ".claude-lane/pr.diff" };
   for (const file of [
     ".claude-lane/pr.diff",
     "./.claude-lane/pr.diff",
     path.join(workspace, ".claude-lane/pr.diff"),
   ]) {
     assert.deepEqual(
-      unreadOf(workspace, scope, ["src/a.js"], [read(file, DIFF, 1, 7)]),
+      unreadOf(workspace, SCOPE, ["src/a.js"], [read(file, DIFF, 1, 7)]),
       [],
       file,
     );
@@ -345,20 +324,19 @@ test("a relative, ./-prefixed or absolute file_path names the same diff file, an
     .slice(0, 7)
     .map((line, i) => `${String(i + 1).padStart(6)}→${line}`)
     .join("\n");
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [arrow]), []);
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [arrow]), []);
   // A result given as text blocks reads the same.
   const blocks = read(".claude-lane/pr.diff", DIFF, 1, 7);
   const text = blocks[1].message.content[0].content;
   blocks[1].message.content[0].content = [{ type: "text", text }];
-  assert.deepEqual(unreadOf(workspace, scope, ["src/a.js"], [blocks]), []);
+  assert.deepEqual(unreadOf(workspace, SCOPE, ["src/a.js"], [blocks]), []);
 });
 
 test("a listed path no section names is unread, and a header names a path only exactly", () => {
   const { workspace } = lane({ ".claude-lane/pr.diff": DIFF });
   const all = read(".claude-lane/pr.diff", DIFF, 1, 37);
-  const scope = { scope: ".claude-lane/pr.diff" };
   assert.deepEqual(
-    unreadOf(workspace, scope, ["src/a.js", "src/missing.js"], [all]),
+    unreadOf(workspace, SCOPE, ["src/a.js", "src/missing.js"], [all]),
     ["src/missing.js"],
   );
   // `y b/x`'s header ends with ` b/x`, yet only `x`'s header is x's.
@@ -559,14 +537,15 @@ function run(files, env) {
 const REVIEW = (coverage) =>
   JSON.stringify({ findings: 0, coverage, summary: "S", comments: [] });
 const FILES = `${LIST.join("\n")}\n`;
+const JOB_FILES = {
+  ".claude-lane/pr.diff": DIFF,
+  ".claude-lane/files.txt": FILES,
+};
 
 test("the runner passes a complete review on unchanged when every listed file was read", () => {
   const { outputs, review, stdout } = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: read(".claude-lane/pr.diff", DIFF, 1, 37) },
     },
     { REVIEW: REVIEW({ read: 5, changed: 5 }) },
@@ -581,10 +560,7 @@ test("the runner passes a complete review on unchanged when every listed file wa
 test("the runner lowers the read count to the files with evidence and names the unread ones, path names only", () => {
   const { outputs, review, stdout } = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
     },
     { REVIEW: REVIEW({ read: 5, changed: 5 }) },
@@ -602,10 +578,7 @@ test("the runner lowers the read count to the files with evidence and names the 
   // A path outside the plain characters is counted, never printed.
   const quoted = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: read(".claude-lane/pr.diff", DIFF, 1, 14) },
     },
     { REVIEW: REVIEW({ read: 5, changed: 5 }) },
@@ -619,10 +592,7 @@ test("the runner lowers the read count to the files with evidence and names the 
   // A model count already lower stays.
   const lower = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
     },
     { REVIEW: REVIEW({ read: 3, changed: 5 }) },
@@ -675,14 +645,13 @@ test("with copies and verified renames counted as read, the job's to-read list i
 });
 
 test("a missing or unparsable transcript, or a missing diff, leaves every listed file unread", () => {
-  const files = {
-    ".claude-lane/pr.diff": DIFF,
-    ".claude-lane/files.txt": FILES,
-  };
   for (const [label, setup] of [
-    ["no transcript", { workspace: files }],
-    ["unparsable", { workspace: files, transcripts: { first: "{not json" } }],
-    ["not an array", { workspace: files, transcripts: { first: "{}" } }],
+    ["no transcript", { workspace: JOB_FILES }],
+    [
+      "unparsable",
+      { workspace: JOB_FILES, transcripts: { first: "{not json" } },
+    ],
+    ["not an array", { workspace: JOB_FILES, transcripts: { first: "{}" } }],
     [
       "no diff",
       {
@@ -998,10 +967,7 @@ const FORMAT_WARNING =
   "::warning title=pr-review-cli reads::the CLI's Read output format was not recognized; the per-file read check did not run";
 
 test("when no Read result of a job diff file gives a line number, the check does not run and the extract step's count stands", () => {
-  const workspace = {
-    ".claude-lane/pr.diff": DIFF,
-    ".claude-lane/files.txt": FILES,
-  };
+  const workspace = JOB_FILES;
   const env = { REVIEW: REVIEW({ read: 5, changed: 5 }) };
   const all = run(
     {
@@ -1136,10 +1102,7 @@ test("names that would take the review past 100000 bytes are dropped, and the co
   const summary = "x".repeat(99990 - JSON.stringify(base).length);
   const { review } = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
     },
     {
@@ -1156,7 +1119,7 @@ test("names that would take the review past 100000 bytes are dropped, and the co
 // --- report mode: logs the check, passes the extract step's review on ---
 
 const SHORT = {
-  workspace: { ".claude-lane/pr.diff": DIFF, ".claude-lane/files.txt": FILES },
+  workspace: JOB_FILES,
   transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
 };
 const WHOLE_READ = {
@@ -1311,10 +1274,7 @@ test("the recorded tool notices are what the CLI prints for an offset past the e
 });
 
 test("a Read the model shapes past the end of a diff is no evidence, never the fallback", () => {
-  const workspace = {
-    ".claude-lane/pr.diff": DIFF,
-    ".claude-lane/files.txt": FILES,
-  };
+  const workspace = JOB_FILES;
   const env = { REVIEW: REVIEW({ read: 5, changed: 5 }) };
   for (const structured of [true, false]) {
     const { outputs, review, stdout } = run(
@@ -1402,10 +1362,7 @@ test("a whole-file Read whose lines carry an unknown prefix still gives the fall
   };
   const { outputs, stdout } = run(
     {
-      workspace: {
-        ".claude-lane/pr.diff": DIFF,
-        ".claude-lane/files.txt": FILES,
-      },
+      workspace: JOB_FILES,
       transcripts: { first: prefixed },
     },
     { REVIEW: REVIEW({ read: 5, changed: 5 }) },

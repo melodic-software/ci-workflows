@@ -99,6 +99,15 @@ load_args() {
   mapfile -d '' -t captured_args <"$captures/$invocation.args"
 }
 
+# append_file_args <array name>: appends the loaded arguments that are not flags.
+append_file_args() {
+  local -n into="$1"
+  local arg
+  for arg in "${captured_args[@]}"; do
+    [[ "$arg" == --* ]] || into+=("$arg")
+  done
+}
+
 assert_contains() {
   local name="$1" expected="$2"
   shift 2
@@ -262,9 +271,7 @@ run_action 0 SHELLCHECK_BATCH_SIZE=1 FILES=$'script.sh\nscript.sh script.sh'
 load_args 1
 [[ ! -e "$captures/2.args" ]]
 listed_files=()
-for arg in "${captured_args[@]}"; do
-  [[ "$arg" == --* ]] || listed_files+=("$arg")
-done
+append_file_args listed_files
 if [[ ${#listed_files[@]} -ne 1 ]]; then
   printf 'FAIL: expected one deduplicated file, got %s\n' "${#listed_files[@]}" >&2
   exit 1
@@ -331,9 +338,7 @@ batch_files=()
 for invocation in 1 2; do
   load_args "$invocation"
   assert_contains "single-file batch $invocation keeps the rcfile" --rcfile=.shellcheckrc "${captured_args[@]}"
-  for arg in "${captured_args[@]}"; do
-    [[ "$arg" == --* ]] || batch_files+=("$arg")
-  done
+  append_file_args batch_files
 done
 [[ ${#batch_files[@]} -eq 2 ]]
 assert_contains 'single-file batches cover script.sh' script.sh "${batch_files[@]}"
@@ -355,9 +360,7 @@ all_files=()
 for invocation in 1 2 3; do
   load_args "$invocation"
   assert_contains "batch $invocation carries the rcfile" --rcfile=.shellcheckrc "${captured_args[@]}"
-  for arg in "${captured_args[@]}"; do
-    [[ "$arg" == --* ]] || all_files+=("$arg")
-  done
+  append_file_args all_files
 done
 assert_contains 'fan-out covers the first new file' fanout/f01.sh "${all_files[@]}"
 assert_contains 'fan-out covers the last new file' fanout/f85.sh "${all_files[@]}"

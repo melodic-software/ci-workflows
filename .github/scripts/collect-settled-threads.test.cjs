@@ -24,6 +24,22 @@ const {
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
+// Runs fn with process.env extended by values, restoring every key after.
+async function withEnv(values, fn) {
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 const KYLE = 153232337;
 const LANES_BOT = 337595936;
 const A = "a".repeat(40);
@@ -398,21 +414,19 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
     RUNNER_TEMP: dir,
     GITHUB_SERVER_URL: "https://github.com",
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
   const cwd = process.cwd();
-  Object.assign(process.env, values);
-  process.chdir(work);
-  try {
-    await run({ github, context: { repo: { owner: "o", repo: "r" } }, core });
-  } finally {
-    process.chdir(cwd);
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
+  await withEnv(values, async () => {
+    process.chdir(work);
+    try {
+      await run({
+        github,
+        context: { repo: { owner: "o", repo: "r" } },
+        core,
+      });
+    } finally {
+      process.chdir(cwd);
     }
-  }
+  });
   assert.deepEqual(calls, [
     [
       "getContent",
@@ -475,15 +489,10 @@ for (const [name, nodes, listed] of [
     const dir = makeTemporaryDirectory("settled-threads-none-");
     const output = path.join(dir, "settled-threads.md");
     fs.writeFileSync(output, "SHIPPED BY THE HEAD");
-    const saved = {
-      RUNNER_TEMP: process.env.RUNNER_TEMP,
-      OUTPUT_FILE: process.env.OUTPUT_FILE,
-    };
-    Object.assign(process.env, { RUNNER_TEMP: dir, OUTPUT_FILE: output });
     const outputs = {};
     const calls = [];
-    try {
-      await run({
+    await withEnv({ RUNNER_TEMP: dir, OUTPUT_FILE: output }, () =>
+      run({
         github: {
           graphql: async () => ({
             repository: { pullRequest: { reviewThreads: { nodes } } },
@@ -501,13 +510,8 @@ for (const [name, nodes, listed] of [
         },
         context: { repo: { owner: "o", repo: "r" } },
         core: { info: () => {}, setOutput: (k, v) => (outputs[k] = v) },
-      });
-    } finally {
-      for (const [k, v] of Object.entries(saved)) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
+      }),
+    );
     assert.deepEqual(outputs, {});
     assert.deepEqual(calls, listed ? [] : ["getContent"]);
     assert.equal(fs.existsSync(output), false);

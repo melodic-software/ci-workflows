@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Resolve an npm tool version for composite actions (#377).
+ * Resolve an npm tool version for composite actions.
  *
  * Precedence: explicit input → exact package.json pin → reviewed fallback.
  * Ranges / aliases / conflicting declarations fail closed.
@@ -89,11 +89,8 @@ function resolveNpmToolVersion({
   }
 
   const manifest = readPackageJson(packageJsonPath);
-  if (manifest === null) {
-    return { version: fallbackVersion, source: "fallback" };
-  }
-
-  const declared = collectDeclaredVersions(manifest, packageName);
+  const declared =
+    manifest === null ? [] : collectDeclaredVersions(manifest, packageName);
   if (declared.length === 0) {
     return { version: fallbackVersion, source: "fallback" };
   }
@@ -119,29 +116,26 @@ function resolveNpmToolVersion({
   return { version: pin, source: "package.json" };
 }
 
-function runCli(env = process.env) {
-  const result = resolveNpmToolVersion({
-    versionInput: env.VERSION_INPUT ?? "",
+function runCli(env) {
+  const { version, source } = resolveNpmToolVersion({
+    versionInput: env.VERSION_INPUT,
     fallbackVersion: env.FALLBACK_VERSION,
     packageName: env.PACKAGE_NAME,
-    packageJsonPath: env.PACKAGE_JSON ?? "package.json",
+    packageJsonPath: env.PACKAGE_JSON,
   });
-  process.stdout.write(
-    `resolved version=${result.version} source=${result.source}\n`,
-  );
+  process.stdout.write(`resolved version=${version} source=${source}\n`);
   if (env.GITHUB_OUTPUT) {
     fs.appendFileSync(
       env.GITHUB_OUTPUT,
-      `version=${result.version}\nsource=${result.source}\n`,
+      `version=${version}\nsource=${source}\n`,
       "utf8",
     );
   }
-  return result;
 }
 
 if (require.main === module) {
   try {
-    runCli();
+    runCli(process.env);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`::error::${message}\n`);
@@ -152,5 +146,4 @@ if (require.main === module) {
 module.exports = Object.freeze({
   ResolveError,
   resolveNpmToolVersion,
-  runCli,
 });

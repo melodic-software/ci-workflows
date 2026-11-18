@@ -159,7 +159,6 @@ scratch="$(mktemp -d)"
 trap 'declare -F gh_api_calls_report >/dev/null && gh_api_calls_report; rm -rf -- "$scratch"' EXIT
 gh_stdout="$scratch/gh-stdout"
 gh_stderr="$scratch/gh-stderr"
-
 gh_headers="$scratch/gh-headers"
 # shellcheck source=../gh-api.sh
 source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
@@ -172,8 +171,7 @@ source "${BASH_SOURCE[0]%/*}/../gh-api.sh"
 read_boolean() {
   local name="$1" value="$2" fallback="$3"
   case "$value" in
-    true) echo true ;;
-    false) echo false ;;
+    true | false) echo "$value" ;;
     '') echo "$fallback" ;;
     *)
       echo "::error::${name} must be 'true' or 'false', got: ${value}" >&2
@@ -183,25 +181,13 @@ read_boolean() {
 }
 
 # shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
-if ! contract_only="$(read_boolean contract-only "$CONTRACT_ONLY" false)"; then
-  exit 1
-fi
-# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
-if ! same_repo="$(read_boolean same-repo "$SAME_REPO" true)"; then
-  exit 1
-fi
-# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
-if ! rerun_contract_only_siblings="$(read_boolean rerun-contract-only-siblings "$RERUN_CONTRACT_ONLY_SIBLINGS" false)"; then
-  exit 1
-fi
-# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
-if ! record_pending="$(read_boolean record-pending "$RECORD_PENDING" false)"; then
-  exit 1
-fi
-# shellcheck disable=SC2310 # read_boolean reports a bad value through its status; the caller exits on it.
-if ! yield_to_full_run="$(read_boolean yield-to-full-run "$YIELD_TO_FULL_RUN" false)"; then
-  exit 1
-fi
+{
+  contract_only="$(read_boolean contract-only "$CONTRACT_ONLY" false)" || exit 1
+  same_repo="$(read_boolean same-repo "$SAME_REPO" true)" || exit 1
+  rerun_contract_only_siblings="$(read_boolean rerun-contract-only-siblings "$RERUN_CONTRACT_ONLY_SIBLINGS" false)" || exit 1
+  record_pending="$(read_boolean record-pending "$RECORD_PENDING" false)" || exit 1
+  yield_to_full_run="$(read_boolean yield-to-full-run "$YIELD_TO_FULL_RUN" false)" || exit 1
+}
 
 # GitHub's documented escaping for workflow-command data, so a value echoed back
 # in an annotation cannot close it and inject a second command. `%` first, or the
@@ -978,6 +964,26 @@ set_wait_note() {
   fi
 }
 
+# in_flight_sibling_ids <runs-file>
+# Every incomplete run in a run listing, at any run id, minus this run. `!=`
+# rather than `<`: neither run of an `opened`/`labeled` pair is reliably the
+# lower id, so an ordering term drops the sibling a wait exists to see.
+# `// $self` covers a run object with no `id`, keeping a malformed entry out
+# rather than waiting on it forever. Sorted so the ids read in run order and a
+# log line is stable from one poll to the next.
+in_flight_sibling_ids() {
+  jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
+    '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
+    <"$1"
+}
+
+# run_attempt_of <run-id> <runs-file>
+# The listed run's `run_attempt`, `1` when it has none, empty when the run is
+# not listed.
+run_attempt_of() {
+  jq -r --arg id "$1" 'first(.workflow_runs[]? | select((.id | tostring) == $id) | .run_attempt // 1) // ""' <"$2"
+}
+
 # Poll until this SHA's verdict settles, nothing that could still write one is
 # in flight, or the ceiling is reached. See the header for the ordering and the
 # wait set.
@@ -1022,15 +1028,7 @@ wait_for_sibling_runs() {
       carried_state_read=false
       break
     fi
-    # Every incomplete sibling, at any run id, minus this run. `!=` rather than
-    # `<`: neither run of an `opened`/`labeled` pair is reliably the lower id,
-    # so an ordering term drops the sibling this wait exists to see. `// $self`
-    # covers a run object with no `id`, keeping a malformed entry out rather
-    # than waiting on it forever. Sorted so the ids read in run order and the
-    # log line is stable from one poll to the next.
-    ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
-      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
-      <"$gh_stdout")"
+    ids="$(in_flight_sibling_ids "$gh_stdout")"
     # Kept for the settled-failure check below, which runs after the status
     # read has overwritten gh_stdout.
     cp -- "$gh_stdout" "$scratch/runs.json"
@@ -1139,6 +1137,15 @@ fail_carry_forward() {
   exit 1
 }
 
+# Passes on a carried `success`, else fails with the red that fits the state.
+finish_carry_forward() {
+  if [[ "$carried_state" == success ]]; then
+    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
+    exit 0
+  fi
+  fail_carry_forward
+}
+
 # Yield mode (`yield-to-full-run` true): a contract-only run does not wait for
 # a full run's verdict. It lists this workflow's in-flight runs on the SHA,
 # then reads the status, in that order for the reason the wait gives. A full
@@ -1219,9 +1226,8 @@ list_in_flight_full_runs() {
     warn_actions_failed "repos/${REPOSITORY}/actions/workflows/${workflow_id}/runs" 'actions: read' "$closed"
     return 1
   fi
-  ids="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
-    '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
-    <"$gh_stdout")" || return 1
+  # shellcheck disable=SC2310 # in_flight_sibling_ids returns jq's status; a body it cannot parse fails closed here.
+  ids="$(in_flight_sibling_ids "$gh_stdout")" || return 1
   cp -- "$gh_stdout" "$scratch/runs.json"
   if [[ -z "$ids" ]]; then
     return 0
@@ -1249,7 +1255,8 @@ contract_sibling_attempts=" "
 read_sibling_shape() {
   local id="$1" gate="$2" attempt
   sibling_shape=unknown
-  attempt="$(jq -r --arg id "$id" 'first(.workflow_runs[]? | select((.id | tostring) == $id) | .run_attempt // 1) // ""' <"$scratch/runs.json")" || attempt=""
+  # shellcheck disable=SC2310 # run_attempt_of returns jq's status; an unparsable listing leaves the attempt unknown.
+  attempt="$(run_attempt_of "$id" "$scratch/runs.json")" || attempt=""
   if [[ -n "$attempt" && "$contract_sibling_attempts" == *" ${id}:${attempt}:${gate} "* ]]; then
     sibling_shape=contract
     return 0
@@ -1390,9 +1397,7 @@ writer_attempt_wrote() {
 if [[ "$contract_only" == true && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -gt 0) ]]; then
   contract_started="$(date +%s)"
   # shellcheck disable=SC2310 # resolve_own_gate warns itself; its callers below fail closed.
-  if ! resolve_own_gate step 'The yield listing and the writer check fail closed on it.'; then
-    :
-  fi
+  resolve_own_gate step 'The yield listing and the writer check fail closed on it.' || true
 fi
 
 if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
@@ -1460,24 +1465,16 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
     echo "::error::the full run(s) this run held for ended without recording ${STATUS_CONTEXT} on ${SHA}, so the older success is not carried; re-run the full workflow."
     exit 1
   fi
-  if [[ "$carried_state" == success ]]; then
-    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
-    exit 0
-  fi
-  fail_carry_forward
+  finish_carry_forward
 fi
 
 if [[ "$contract_only" == true ]]; then
   echo "Contract-only event: reading the ${STATUS_CONTEXT} status on ${SHA} instead of aggregating skipped lanes."
-  if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]]; then
-    carry_forward_wait_status=0
-    # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling through its status; the caller exits on it.
-    wait_for_sibling_runs || carry_forward_wait_status=$?
-    if [[ "$carry_forward_wait_status" -ne 0 ]]; then
-      # Never pass on timeout: a run that could still write this SHA's verdict
-      # is in flight, so whatever is on the SHA right now is not settled.
-      fail_carry_forward
-    fi
+  # Never pass on timeout: a run that could still write this SHA's verdict is
+  # in flight, so whatever is on the SHA right now is not settled.
+  # shellcheck disable=SC2310 # wait_for_sibling_runs reports the ceiling through its status; the caller exits on it.
+  if [[ "$CARRY_FORWARD_WAIT_SECONDS" -gt 0 ]] && ! wait_for_sibling_runs; then
+    fail_carry_forward
   fi
   # Only when the loop did not read it: a failed Actions read or a mid-loop
   # status-read failure degrades to this single read, whose failure fails the run.
@@ -1488,11 +1485,7 @@ if [[ "$contract_only" == true ]]; then
       fail_carry_forward
     fi
   fi
-  if [[ "$carried_state" == success ]]; then
-    echo "Carried forward: ${STATUS_CONTEXT} is success on ${SHA} (recorded by ${STATUS_CREATOR})."
-    exit 0
-  fi
-  fail_carry_forward
+  finish_carry_forward
 fi
 
 # ---------------------------------------------------------------------------
@@ -1628,14 +1621,13 @@ rerun_failed_contract_only_siblings() {
     if [[ "$wait_for_in_flight" != true ]]; then
       break
     fi
-    in_flight="$(jq -r --argjson incomplete "$INCOMPLETE_RUN_STATUSES" --argjson self "$GITHUB_RUN_ID" \
-      '[ .workflow_runs[]? | select(.status as $s | $incomplete | index($s)) | select((.id // $self) != $self) | .id ] | sort | join(" ")' \
-      <"$runs")"
+    in_flight="$(in_flight_sibling_ids "$runs")"
     waiting=""
     for id in $in_flight; do
       # A run attempt known to be a full run stays one: a job that is running
       # or ran never turns back into a skipped one, so it is not read again.
-      attempt="$(jq -r --arg id "$id" 'first(.workflow_runs[]? | select((.id | tostring) == $id) | .run_attempt // 1) // ""' <"$runs")" || attempt=""
+      # shellcheck disable=SC2310 # run_attempt_of returns jq's status; an unparsable listing leaves the attempt unknown.
+      attempt="$(run_attempt_of "$id" "$runs")" || attempt=""
       if [[ -n "$attempt" && "$full_runs" == *" ${id}:${attempt} "* ]]; then
         continue
       fi

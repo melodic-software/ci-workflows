@@ -56,35 +56,25 @@ function fakeGithub({
   commits = [[]],
 } = {}) {
   const calls = { get: 0, paginate: 0, list: 0, commits: 0 };
-  const next = (queue, n) => queue[Math.min(n, queue.length - 1)];
+  const take = (queue, counter) => {
+    const answer = queue[Math.min(calls[counter]++, queue.length - 1)];
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
   return {
     calls,
     rest: {
       pulls: {
-        get: async () => {
-          const answer = next(get, calls.get++);
-          if (answer instanceof Error) throw answer;
-          return { data: answer };
-        },
-        list: async () => {
-          const answer = next(list, calls.list++);
-          if (answer instanceof Error) throw answer;
-          return { data: answer };
-        },
+        get: async () => ({ data: take(get, "get") }),
+        list: async () => ({ data: take(list, "list") }),
         listFiles: "pulls.listFiles",
         listCommits: "pulls.listCommits",
       },
     },
-    paginate: async (method) => {
-      if (method === "pulls.listCommits") {
-        const answer = next(commits, calls.commits++);
-        if (answer instanceof Error) throw answer;
-        return answer;
-      }
-      const answer = next(pages, calls.paginate++);
-      if (answer instanceof Error) throw answer;
-      return answer.map((filename) => ({ filename }));
-    },
+    paginate: async (method) =>
+      method === "pulls.listCommits"
+        ? take(commits, "commits")
+        : take(pages, "paginate").map((filename) => ({ filename })),
   };
 }
 

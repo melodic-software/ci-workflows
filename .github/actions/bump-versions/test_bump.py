@@ -463,47 +463,24 @@ class RegistryParseTest(unittest.TestCase):
         self.assertEqual(nxt, "https://example.test/page2")
 
     def test_uv_cpython_builds_counts_hashed_stable_builds(self) -> None:
+        def build(
+            name: str, minor: int, patch: int, pre: str, sha256: str | None
+        ) -> dict[str, Any]:
+            return {
+                "name": name,
+                "major": 3,
+                "minor": minor,
+                "patch": patch,
+                "prerelease": pre,
+                "sha256": sha256,
+            }
+
         meta = {
-            "a": {
-                "name": "cpython",
-                "major": 3,
-                "minor": 14,
-                "patch": 10,
-                "prerelease": "",
-                "sha256": "a" * 64,
-            },
-            "b": {
-                "name": "cpython",
-                "major": 3,
-                "minor": 14,
-                "patch": 10,
-                "prerelease": "",
-                "sha256": "b" * 64,
-            },
-            "c": {
-                "name": "cpython",
-                "major": 3,
-                "minor": 15,
-                "patch": 0,
-                "prerelease": "a1",
-                "sha256": "c" * 64,
-            },
-            "d": {
-                "name": "pypy",
-                "major": 3,
-                "minor": 11,
-                "patch": 13,
-                "prerelease": "",
-                "sha256": "d" * 64,
-            },
-            "e": {
-                "name": "cpython",
-                "major": 3,
-                "minor": 13,
-                "patch": 18,
-                "prerelease": "",
-                "sha256": None,
-            },
+            "a": build("cpython", 14, 10, "", "a" * 64),
+            "b": build("cpython", 14, 10, "", "b" * 64),
+            "c": build("cpython", 15, 0, "a1", "c" * 64),
+            "d": build("pypy", 11, 13, "", "d" * 64),
+            "e": build("cpython", 13, 18, "", None),
         }
         self.assertEqual(bump.uv_cpython_builds(meta), {"3.14.10": 2})
 
@@ -560,7 +537,7 @@ class RegistryIntegrityTest(unittest.TestCase):
                 ],
             }
             rel = bump.Release("1.0.0", "1.0.0", NOW, {"dist": dist})
-            verifier = bump.Verifier("pkg", {"source": {}}, rel, work, policy)
+            verifier = bump.Verifier({"source": {}}, rel, work, policy)
             self.assertIn(
                 "registry signature verified against k1", verifier.npm_note("pkg", rel)
             )
@@ -669,7 +646,7 @@ class PublisherChecksTest(unittest.TestCase):
     def verifier(self, verify: dict[str, Any], work: Path) -> Any:
         rel = bump.Release("1.2.0", "v1.2.0", NOW)
         tool = {"source": {"repo": "o/r"}, "verify": verify}
-        return bump.Verifier("t", tool, rel, work, {"_dir": work})
+        return bump.Verifier(tool, rel, work, {"_dir": work})
 
     def test_manifest_value_requires_checksum_match(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -750,7 +727,7 @@ class PublisherChecksTest(unittest.TestCase):
 
             v = self.verifier({"checksums": {"asset": "h"}}, work)
             v.assets["p-1.2.0.msi"] = msi
-            proc = subprocess_result(stdout, returncode)
+            proc = mock.Mock(stdout=stdout, returncode=returncode)
             with (
                 mock.patch.object(bump, "run_raw", return_value=proc),
                 mock.patch.object(bump, "fetch", side_effect=fake_fetch),
@@ -794,7 +771,7 @@ class PublisherChecksTest(unittest.TestCase):
 class ManifestPatternTest(unittest.TestCase):
     def digest(self, spec: dict[str, str], value: str) -> str:
         rel = bump.Release("1.2.0", "v1.2.0", NOW)
-        v = bump.Verifier("t", {"source": {}}, rel, Path("/x"), {})
+        v = bump.Verifier({"source": {}}, rel, Path("/x"), {})
         with mock.patch.object(v, "manifest_value", return_value=value):
             return v.digest(spec, "1.2.0")
 
@@ -1012,10 +989,6 @@ class OwnPolicyPinsTest(unittest.TestCase):
                     for n in names
                 }
                 self.assertEqual(len(versions), 1, f"{group} pins {sorted(versions)}")
-
-
-def subprocess_result(stdout: str, returncode: int) -> Any:
-    return mock.Mock(stdout=stdout, returncode=returncode)
 
 
 if __name__ == "__main__":

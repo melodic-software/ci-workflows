@@ -57,6 +57,11 @@ function expectedRepositories(count = 2) {
   );
 }
 
+// One repository page whose total_count is its own length.
+function pageOf(...repositories) {
+  return [{ total_count: repositories.length, repositories }];
+}
+
 function repositoriesFrom(names) {
   return names.map((fullName, index) => repositoryEntry(fullName, index + 1));
 }
@@ -271,7 +276,7 @@ test("attests JWT metadata and one exact repository page", async () => {
 
 test("a manifest target the App cannot reach is reported unreachable, not a failed attestation", async () => {
   const result = await runAttestation({
-    pages: [{ total_count: 1, repositories: [repository("repository-1", 1)] }],
+    pages: pageOf(repository("repository-1", 1)),
   });
   assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), [
     "melodic-software/repository-2",
@@ -285,16 +290,11 @@ test("a manifest target the App cannot reach is reported unreachable, not a fail
 
 test("an extra selected repository is an over-grant finding, not a failed attestation", async () => {
   const result = await runAttestation({
-    pages: [
-      {
-        total_count: 3,
-        repositories: [
-          repository("repository-1", 1),
-          repository("repository-2", 2),
-          repository("excess", 3),
-        ],
-      },
-    ],
+    pages: pageOf(
+      repository("repository-1", 1),
+      repository("repository-2", 2),
+      repository("excess", 3),
+    ),
   });
   assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
   assert.equal(result.warnings.length, 1);
@@ -308,16 +308,11 @@ test("an extra selected repository is an over-grant finding, not a failed attest
 test("an over-grant that reaches azure-iac fails the whole attestation", async () => {
   await assert.rejects(
     runAttestation({
-      pages: [
-        {
-          total_count: 3,
-          repositories: [
-            repository("repository-1", 1),
-            repository("repository-2", 2),
-            repository("azure-iac", 3),
-          ],
-        },
-      ],
+      pages: pageOf(
+        repository("repository-1", 1),
+        repository("repository-2", 2),
+        repository("azure-iac", 3),
+      ),
     }),
     /trust root melodic-software\/azure-iac is selected on installation 144867070/u,
   );
@@ -339,16 +334,11 @@ test("the workflow passes the calling repository as the sync source", () => {
 
 test("the selected sync source is expected access, not an over-grant", async () => {
   const result = await runAttestation({
-    pages: [
-      {
-        total_count: 3,
-        repositories: [
-          repository("repository-1", 1),
-          repository("repository-2", 2),
-          repository("standards", 3),
-        ],
-      },
-    ],
+    pages: pageOf(
+      repository("repository-1", 1),
+      repository("repository-2", 2),
+      repository("standards", 3),
+    ),
   });
   assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), []);
   assert.deepEqual(result.warnings, []);
@@ -361,16 +351,11 @@ test("a trust root fails the attestation even as the sync source", async () => {
   await assert.rejects(
     runAttestation({
       env: { SOURCE_REPOSITORY: "melodic-software/azure-iac" },
-      pages: [
-        {
-          total_count: 3,
-          repositories: [
-            repository("repository-1", 1),
-            repository("repository-2", 2),
-            repository("azure-iac", 3),
-          ],
-        },
-      ],
+      pages: pageOf(
+        repository("repository-1", 1),
+        repository("repository-2", 2),
+        repository("azure-iac", 3),
+      ),
     }),
     /trust root melodic-software\/azure-iac is selected on installation 144867070/u,
   );
@@ -378,17 +363,12 @@ test("a trust root fails the attestation even as the sync source", async () => {
 
 test("excess beside the sync source is still an over-grant", async () => {
   const result = await runAttestation({
-    pages: [
-      {
-        total_count: 4,
-        repositories: [
-          repository("repository-1", 1),
-          repository("repository-2", 2),
-          repository("standards", 3),
-          repository("excess", 4),
-        ],
-      },
-    ],
+    pages: pageOf(
+      repository("repository-1", 1),
+      repository("repository-2", 2),
+      repository("standards", 3),
+      repository("excess", 4),
+    ),
   });
   assert.equal(result.warnings.length, 1);
   assert.match(
@@ -403,12 +383,7 @@ test("excess beside the sync source is still an over-grant", async () => {
 
 test("equal-count access with one swap reports both the unreachable target and the over-grant", async () => {
   const result = await runAttestation({
-    pages: [
-      {
-        total_count: 2,
-        repositories: [repository("repository-1", 1), repository("excess", 2)],
-      },
-    ],
+    pages: pageOf(repository("repository-1", 1), repository("excess", 2)),
   });
   assert.deepEqual(JSON.parse(result.outputs["unreachable-repositories"]), [
     "melodic-software/repository-2",
@@ -575,19 +550,11 @@ for (const [name, options, pattern] of [
   [
     "foreign repository entry",
     {
-      pages: [
-        {
-          total_count: 2,
-          repositories: [
-            repository("repository-1", 1),
-            {
-              id: 2,
-              full_name: "other/repository-2",
-              owner: { login: "other" },
-            },
-          ],
-        },
-      ],
+      pages: pageOf(repository("repository-1", 1), {
+        id: 2,
+        full_name: "other/repository-2",
+        owner: { login: "other" },
+      }),
     },
     /malformed or foreign entry/u,
   ],
@@ -651,24 +618,14 @@ test("fails closed when total_count changes", async () => {
 });
 
 test("fails closed when equal-count access changes between observations", async () => {
-  const first = [
-    {
-      total_count: 2,
-      repositories: [
-        repository("repository-1", 1),
-        repository("repository-2", 2),
-      ],
-    },
-  ];
-  const second = [
-    {
-      total_count: 2,
-      repositories: [
-        repository("repository-1", 1),
-        repository("replacement", 3),
-      ],
-    },
-  ];
+  const first = pageOf(
+    repository("repository-1", 1),
+    repository("repository-2", 2),
+  );
+  const second = pageOf(
+    repository("repository-1", 1),
+    repository("replacement", 3),
+  );
   await assert.rejects(
     runAttestation({ snapshots: [first, second] }),
     /changed between consecutive observations/u,

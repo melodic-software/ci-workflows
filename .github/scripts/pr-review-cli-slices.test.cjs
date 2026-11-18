@@ -144,17 +144,26 @@ const HUNK = (n, width) =>
 const BIG = ".github/workflows/big.yml";
 const SMALL = "src/small.js";
 const SMALL_DIFF = `${HEADER(SMALL)}@@ -1 +1 @@\n-a\n+b\n`;
+const HUNKS = [1, 2, 3].map((n) => HUNK(n, 300));
+// Under a 1000-byte budget the big file is cut after its second hunk.
+const CUT_DIFF = `${HEADER(BIG)}${HUNKS.join("")}${SMALL_DIFF}`;
+const RENAME_HEADER =
+  "diff --git a/lib/longername.js b/lib/x.js\nsimilarity index 50%\nrename from lib/longername.js\nrename to lib/x.js\n--- a/lib/longername.js\n+++ b/lib/x.js\n";
+// `n` one-line added files f0 to f<n-1>.
+const smallFiles = (n) =>
+  Array.from(
+    { length: n },
+    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
+  ).join("");
 
 test("a file over one chunk's budget is cut at its hunks, each piece under its header, every hunk in order", () => {
   // A 1000-byte budget: the header and hunks 1 and 2 fit one piece (about
   // 820 bytes); hunk 3 starts the next, which the small file joins.
-  const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
-  const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
-    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
     assert.equal(cut.outputs.chunks, "2", job.name);
-    assert.equal(cut.chunk(1), `${HEADER(BIG)}${hunks[0]}${hunks[1]}`);
-    assert.equal(cut.chunk(2), `${HEADER(BIG)}${hunks[2]}${SMALL_DIFF}`);
+    assert.equal(cut.chunk(1), `${HEADER(BIG)}${HUNKS[0]}${HUNKS[1]}`);
+    assert.equal(cut.chunk(2), `${HEADER(BIG)}${HUNKS[2]}${SMALL_DIFF}`);
     // The sliced file counts once, in the chunk holding its last piece, so
     // the chunks' counts still add up to the files in scope.
     assert.equal(cut.outputs.files, "0,2", job.name);
@@ -247,10 +256,8 @@ test("a deleted file over the budget is not cut: the split refuses it as before"
 });
 
 test("a renamed file's path is printed only when both sides of its header name it", () => {
-  const header =
-    "diff --git a/lib/longername.js b/lib/x.js\nsimilarity index 50%\nrename from lib/longername.js\nrename to lib/x.js\n--- a/lib/longername.js\n+++ b/lib/x.js\n";
   for (const job of LEGS) {
-    const big = split(job, `${header}${HUNK(1, 1200)}`, {
+    const big = split(job, `${RENAME_HEADER}${HUNK(1, 1200)}`, {
       READ_BUDGET: "1000",
     });
     assert.match(big.stdout, /^::warning::a file: one hunk of /mu, job.name);
@@ -259,9 +266,7 @@ test("a renamed file's path is printed only when both sides of its header name i
 });
 
 test("a rename's piece note names its header's line, never half the header", async () => {
-  const header =
-    "diff --git a/lib/longername.js b/lib/x.js\nsimilarity index 50%\nrename from lib/longername.js\nrename to lib/x.js\n--- a/lib/longername.js\n+++ b/lib/x.js\n";
-  const diff = `${header}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+  const diff = `${RENAME_HEADER}${HUNKS.join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
     const cut = split(job, diff, { READ_BUDGET: "1000" });
     const prompts = await compose(job, cut, cut.chunkDir);
@@ -298,9 +303,8 @@ function rejoin(cut) {
 }
 
 test("a diff with no final newline rejoins byte for byte, cut in the middle or at its end", () => {
-  const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
-  const middle = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF.slice(0, -1)}`;
-  const end = `${SMALL_DIFF}${HEADER(BIG)}${hunks.join("").slice(0, -1)}`;
+  const middle = `${HEADER(BIG)}${HUNKS.join("")}${SMALL_DIFF.slice(0, -1)}`;
+  const end = `${SMALL_DIFF}${HEADER(BIG)}${HUNKS.join("").slice(0, -1)}`;
   for (const job of LEGS) {
     for (const diff of [middle, end]) {
       const cut = split(job, diff, { READ_BUDGET: "1000" });
@@ -313,10 +317,7 @@ test("a diff with no final newline rejoins byte for byte, cut in the middle or a
 // --- no change for a diff that fits today ---
 
 test("with no file over the budget the splitter gets the step's input byte for byte, and the outputs are as before", () => {
-  const many = Array.from(
-    { length: 81 },
-    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
-  ).join("");
+  const many = smallFiles(81);
   // Five files of about 400 bytes: over a 1000-byte budget together, each under it.
   const five = Array.from(
     { length: 5 },
@@ -370,10 +371,7 @@ test("with verified renames left out, the splitter gets the distinct diff byte f
           `diff --git a/${a} b/${b}\nsimilarity index 100%\nrename from ${a}\nrename to ${b}\n`,
       )
       .join("");
-    const rest = Array.from(
-      { length: 50 },
-      (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
-    ).join("");
+    const rest = smallFiles(50);
     const cut = split(job, moved + rest, { RENAMES: "3" }, (work) =>
       fs.writeFileSync(
         path.join(work, ".claude-lane", "renames.txt"),
@@ -390,6 +388,26 @@ test("with verified renames left out, the splitter gets the distinct diff byte f
 
 const { isPartial } = require("../actions/publish-review/publish.cjs");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+// The github-script step `id` of `job`, run with `values` in its env.
+async function runStep(job, id, values, core) {
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    await new AsyncFunction(
+      "require",
+      "core",
+      job.steps.find((s) => s.id === id).with.script,
+    )(require, core);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
 
 // The extract step of `job` over the chunks `cut` wrote, with the counts
 // and piece names the compose step passes on (`composed`, its outputs; none
@@ -458,33 +476,18 @@ async function extract(
   };
   const outputs = {};
   const warnings = [];
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
-  Object.assign(process.env, values);
   const summary = { addRaw: () => summary, write: async () => {} };
-  try {
-    await new AsyncFunction(
-      "require",
-      "core",
-      job.steps.find((s) => s.id === "extract").with.script,
-    )(require, {
-      setOutput: (k, v) => {
-        outputs[k] = v;
-      },
-      setFailed: (m) => {
-        throw new Error(m);
-      },
-      info: () => {},
-      warning: (m) => warnings.push(m),
-      summary,
-    });
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+  await runStep(job, "extract", values, {
+    setOutput: (k, v) => {
+      outputs[k] = v;
+    },
+    setFailed: (m) => {
+      throw new Error(m);
+    },
+    info: () => {},
+    warning: (m) => warnings.push(m),
+    summary,
+  });
   return { ...outputs, warnings };
 }
 
@@ -492,10 +495,8 @@ test("a review of a cut file is complete only when every chunk holding a piece r
   // Chunk 1: the first two hunks of the big file; chunk 2: its last hunk and
   // the small file. Two files in scope; chunk 1 has one piece to read, chunk
   // 2 one piece and one file.
-  const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
-  const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
-    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
     assert.equal(cut.outputs.files, "0,2");
     const composed = (await compose(job, cut, cut.chunkDir)).outputs;
     assert.equal(composed["chunk-pieces"], "1,0");
@@ -536,8 +537,7 @@ test("a review of a cut file is complete only when every chunk holding a piece r
 
 test("a malformed piece count leaves no completed review", async () => {
   for (const job of LEGS) {
-    const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
-    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
     const out = await extract(job, cut, [1, 2], 2, {
       "chunk-pieces": "1",
       "chunk-piece-names": "[]",
@@ -551,9 +551,8 @@ test("a malformed piece count leaves no completed review", async () => {
 });
 
 test("a split that cut a file but passed on no piece counts leaves no completed review", async () => {
-  const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
-    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
     assert.equal(cut.outputs.files, "0,2");
     const out = await extract(job, cut, [0, 2], 2, {});
     assert.equal(
@@ -566,9 +565,8 @@ test("a split that cut a file but passed on no piece counts leaves no completed 
 });
 
 test("a chunk claiming more than its units cannot make up another chunk's shortfall", async () => {
-  const diff = `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
   for (const job of LEGS) {
-    const cut = split(job, diff, { READ_BUDGET: "1000" });
+    const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
     const composed = (await compose(job, cut, cut.chunkDir)).outputs;
     // Units 1 and 2: chunk 1 claims 3, chunk 2 read 1 of its 2.
     const out = await extract(job, cut, [3, 1], 2, composed);
@@ -579,10 +577,7 @@ test("a chunk claiming more than its units cannot make up another chunk's shortf
 });
 
 test("with no cut file the extract step's result is as before, whatever the piece inputs hold when empty", async () => {
-  const many = Array.from(
-    { length: 50 },
-    (_, i) => `diff --git a/f${i} b/f${i}\n+line ${i}\n`,
-  ).join("");
+  const many = smallFiles(50);
   for (const job of LEGS) {
     const cut = split(job, many);
     assert.equal(cut.outputs.files, "40,10");
@@ -649,9 +644,7 @@ function readAll(id, file, skip = 0) {
 // file. `skip` drops one line of a chunk's Read; `tamper` edits the chunks
 // first. Returns the lines the check wrote.
 function checkCut({ job, skip = {}, tamper = () => {} }) {
-  const hunks = [1, 2, 3].map((n) => HUNK(n, 300));
-  const diff = `${HEADER(BIG)}${hunks.join("")}${SMALL_DIFF}`;
-  const cut = split(job, diff, { READ_BUDGET: "1000" });
+  const cut = split(job, CUT_DIFF, { READ_BUDGET: "1000" });
   const work = cut.work;
   fs.writeFileSync(
     path.join(work, ".claude-lane", "files.txt"),
@@ -768,29 +761,14 @@ async function compose(job, cut, chunkDir) {
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
   };
   const outputs = {};
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
-  Object.assign(process.env, values);
-  try {
-    await new AsyncFunction(
-      "require",
-      "core",
-      job.steps.find((s) => s.id === "compose").with.script,
-    )(require, {
-      setOutput: (k, v) => {
-        outputs[k] = v;
-      },
-      setFailed: (m) => {
-        throw new Error(m);
-      },
-    });
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+  await runStep(job, "compose", values, {
+    setOutput: (k, v) => {
+      outputs[k] = v;
+    },
+    setFailed: (m) => {
+      throw new Error(m);
+    },
+  });
   const prompts = Array.from({ length: Number(outputs.chunks) }, (_, i) =>
     fs.readFileSync(
       path.join(
@@ -807,8 +785,7 @@ async function compose(job, cut, chunkDir) {
 // Chunk 1: the big file's hunks 1 and 2; chunk 2: its hunk 3 and the small
 // file; chunk 3: a file of about 600 bytes alone.
 const MEDIUM = "src/medium.js";
-const cutDiff = () =>
-  `${HEADER(BIG)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}${HEADER(MEDIUM)}${HUNK(1, 500)}`;
+const cutDiff = () => `${CUT_DIFF}${HEADER(MEDIUM)}${HUNK(1, 500)}`;
 
 test("a chunk holding a piece of a cut file names the path, the piece and its hunks, and asks for every hunk", async () => {
   for (const job of LEGS) {
@@ -878,7 +855,7 @@ test("a chunk with no piece keeps today's note, byte for byte", async () => {
 test("a cut file's path that is not plain is named by its header's line", async () => {
   for (const job of LEGS) {
     const odd = "src/we ird.js";
-    const diff = `${HEADER(odd)}${[1, 2, 3].map((n) => HUNK(n, 300)).join("")}${SMALL_DIFF}`;
+    const diff = `${HEADER(odd)}${HUNKS.join("")}${SMALL_DIFF}`;
     const cut = split(job, diff, { READ_BUDGET: "1000" });
     const prompts = await compose(job, cut, cut.chunkDir);
     assert.match(

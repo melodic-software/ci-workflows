@@ -116,6 +116,13 @@ assert_captured_args() {
   done
 }
 
+assert_scanner_not_run() {
+  if [[ -e "$temporary_directory/args" ]]; then
+    echo "$1" >&2
+    exit 1
+  fi
+}
+
 run_git_preflight_rejection() {
   local name="$1" scan_path="$2" path_value="${3:-$temporary_directory/bin:$PATH}"
   local fake_git_mode="${4:-}" output status
@@ -142,10 +149,7 @@ run_git_preflight_rejection() {
     echo "$output" >&2
     return 1
   fi
-  if [[ -e "$temporary_directory/args" ]]; then
-    echo "$name: scanner ran before Git preflight rejected the target" >&2
-    return 1
-  fi
+  assert_scanner_not_run "$name: scanner ran before Git preflight rejected the target"
   echo "ok: $name"
 }
 
@@ -169,24 +173,15 @@ done
 head_sha="$(git -C "$full_repository" rev-parse HEAD)"
 for bad_base in "$head_sha" "$(printf 'f%.0s' {1..40})"; do
   EVENT_NAME=pull_request_target BASE_SHA="$bad_base" run_case "unscannable PR range $bad_base fails closed" 2 clean '' '' true git "$full_repository"
-  if [[ -e "$temporary_directory/args" ]]; then
-    echo "scanner ran over an unscannable range from $bad_base" >&2
-    exit 1
-  fi
+  assert_scanner_not_run "scanner ran over an unscannable range from $bad_base"
 done
 EVENT_NAME=pull_request BASE_SHA="$base_sha" LOG_OPTS=--all run_case 'explicit log-opts' 0 clean '' '' true git "$full_repository"
 assert_captured_args 'explicit log-opts overrides the event default' \
   git "$full_repository" --log-opts=--all --config "$temporary_directory/config.toml" --no-banner --redact
 EVENT_NAME=pull_request BASE_SHA='' run_case 'pull request without base SHA fails closed' 2 clean '' '' true git "$full_repository"
-if [[ -e "$temporary_directory/args" ]]; then
-  echo 'scanner ran without a pull request base SHA' >&2
-  exit 1
-fi
+assert_scanner_not_run 'scanner ran without a pull request base SHA'
 EVENT_NAME=merge_group BASE_SHA='' run_case 'merge group without base SHA fails closed' 2 clean '' '' true git "$full_repository"
-if [[ -e "$temporary_directory/args" ]]; then
-  echo 'scanner ran without a merge group base SHA' >&2
-  exit 1
-fi
+assert_scanner_not_run 'scanner ran without a merge group base SHA'
 run_case 'Git finding remains blocking' 1 finding '' '' true git "$full_repository"
 run_case 'Git operational error fails closed' 7 error '' '' true git "$full_repository"
 run_git_preflight_rejection 'shallow Git repository fails closed' "$shallow_repository"

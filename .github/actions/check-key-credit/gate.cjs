@@ -9,17 +9,17 @@
 // inside the window, citing the run that uploaded it. The window counts from
 // that upload, so a topped-up or rotated key is tried on the first run after
 // it (the window backs off: see below). No marker in the window, any failure
-// or an unreadable answer runs the key, as before this gate: it never skips
+// or an unreadable answer runs the key: it never skips
 // the subscription path and never fails the step.
 //
 // The name carries the caller workflow's file and the key job, so each
 // caller's key is judged on its own credit stops. A fork's pull_request run
 // holds no secret but can upload an artifact of any name from a modified
 // workflow, so a marker counts only when its run's head repository is this
-// repository (workflow_run.head_repository_id equal to repository_id), as
-// the run-history read's exclude_pull_requests did. Any workflow of this
-// repository can still upload one; the worst it does is move reviews to the
-// subscription for the window. More than 100 markers of one name in
+// repository (workflow_run.head_repository_id equal to repository_id). Any
+// workflow of this repository can still upload one; the worst it does is
+// move reviews to the subscription for the window. More than 100 markers of
+// one name in
 // retention can push the newest off the page, which runs the key or shortens
 // the step.
 //
@@ -224,7 +224,7 @@ async function decide({ listArtifacts, name, sinceMs, probe = null, probeSinceMs
   }
   const { steps, windowMs } = backoff(
     stops,
-    probe ? markers(probes.artifacts, probe, -Infinity) : [],
+    markers(probes.artifacts, probe, -Infinity),
     nowMs - sinceMs,
     nowMs - probeSinceMs,
   );
@@ -268,7 +268,7 @@ function readEnv(env) {
   return {
     keyJob,
     hours,
-    // Out of range or unreadable turns probing off: the key runs as before.
+    // Out of range or unreadable turns probing off: the key runs unprobed.
     probeMinutes:
       probeMinutes > 0 && probeMinutes <= MAX_PROBE_MINUTES ? probeMinutes : 0,
     repository,
@@ -350,8 +350,6 @@ if (require.main === module) {
 
 module.exports = {
   DEFAULT_WINDOW_HOURS,
-  MARKER_PREFIX,
-  PROBE_PREFIX,
   backoff,
   decide,
   judgeMarkers,

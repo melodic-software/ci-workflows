@@ -28,7 +28,6 @@ log() { printf 'install: %s\n' "$*"; }
 # future non-login and login shell inherits the toolchain on PATH.
 profile="$HOME/.bashrc"
 env_line() {
-  [[ -f "$profile" ]] || : >"$profile"
   grep -qxF "$1" "$profile" 2>/dev/null || printf '%s\n' "$1" >>"$profile"
 }
 
@@ -41,8 +40,7 @@ if [[ -f .node-version ]]; then
     log "nvm not found at $NVM_DIR; installing nvm"
     mkdir -p "$NVM_DIR"
     # nvm v0.40.3, pinned to the commit the annotated tag currently resolves to
-    # (977563e…) rather than the mutable tag name. Download, checksum, then run —
-    # same shape as the .NET installer below.
+    # (977563e…) rather than the mutable tag name. Download, checksum, then run.
     nvm_installer="$(mktemp)"
     curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 3 \
       https://raw.githubusercontent.com/nvm-sh/nvm/977563e97ddc66facf3a8e31c6cff01d236f09bd/install.sh \

@@ -53,6 +53,10 @@ for (const lane of lanes) {
   const workflow = load(lane.file);
   const job = workflow.jobs[lane.job];
   const step = job.steps.at(-1);
+  const byId = (id) => job.steps.find((candidate) => candidate.id === id);
+  const claudeStep = job.steps.find((candidate) =>
+    String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
+  );
 
   test(`${lane.file}: one job reviews and reports under the status-check name`, () => {
     assert.deepEqual(Object.keys(workflow.jobs), [lane.job]);
@@ -63,9 +67,6 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: the review step survives a failed attempt and the job forwards the verdict`, () => {
-    const claudeStep = job.steps.find((candidate) =>
-      String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
-    );
     assert.equal(claudeStep["continue-on-error"], true);
     assert.ok(claudeStep["timeout-minutes"] > 0);
     for (const name of ["review-failed", "failure-class"]) {
@@ -82,10 +83,6 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: the outcome step times the attempt that counts against that attempt's own budget`, () => {
-    const claudeStep = job.steps.find((candidate) =>
-      String(candidate.uses ?? "").startsWith("anthropics/claude-code-action@"),
-    );
-    const byId = (id) => job.steps.find((candidate) => candidate.id === id);
     const outcome = byId("review-outcome");
     assert.equal(
       outcome.with["step-timeout-minutes"],
@@ -215,11 +212,8 @@ for (const lane of lanes) {
       job.steps[modelAt].if,
       /&& steps\.sandbox\.outcome != 'failure'$/u,
     );
-    const outcome = job.steps.find(
-      (candidate) => candidate.id === "review-outcome",
-    );
     assert.equal(
-      outcome.with["known-failure-class"],
+      byId("review-outcome").with["known-failure-class"],
       `\${{ steps.sandbox.outcome == 'failure' && 'sandbox-unavailable' || '' }}`,
     );
   });
@@ -236,10 +230,10 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: a review whose every allowed Bash call failed is detected but has no failing status arm`, () => {
-    const outcome = job.steps.find(
-      (candidate) => candidate.id === "review-outcome",
+    assert.equal(
+      String(byId("review-outcome").with["detect-failed-shell"]),
+      "true",
     );
-    assert.equal(String(outcome.with["detect-failed-shell"]), "true");
     assert.doesNotMatch(
       job.steps.map((candidate) => candidate.run ?? "").join("\n"),
       /shell-failed\)/u,
@@ -280,8 +274,7 @@ for (const lane of lanes) {
   });
 
   test(`${lane.file}: a failed isolation install goes red as install-failed, not no-outcome`, () => {
-    const isolate = job.steps.find((candidate) => candidate.id === "isolate");
-    assert.equal(isolate?.name, "Install subprocess isolation");
+    assert.equal(byId("isolate")?.name, "Install subprocess isolation");
     assert.equal(step.env.ISOLATE_OUTCOME, `\${{ steps.isolate.outcome }}`);
     for (const [outcome, named] of [
       ["failure", "install-failed"],
