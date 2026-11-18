@@ -164,8 +164,7 @@ function extract(schema, file, text) {
       );
     }
   }
-  const lines = text.split("\n");
-  lines.forEach((line, n) => {
+  text.split("\n").forEach((line, n) => {
     if (QUERY_FILE.test(line) && !COMMENT.test(line)) {
       unsupported.push(`${file}:${n + 1}: query=@file is not checked`);
     }

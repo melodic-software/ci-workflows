@@ -32,12 +32,11 @@ const {
   routeOk,
   watch,
 } = require(path.join(ACTION_DIR, "api-budget.cjs"));
-const WORKFLOW = parseWorkflow(
-  fs.readFileSync(
-    path.join(ROOT, ".github", "workflows", "pr-review-cli.yml"),
-    "utf8",
-  ),
+const WORKFLOW_TEXT = fs.readFileSync(
+  path.join(ROOT, ".github", "workflows", "pr-review-cli.yml"),
+  "utf8",
 );
+const WORKFLOW = parseWorkflow(WORKFLOW_TEXT);
 const INTAKE_TEXT = fs.readFileSync(
   path.join(ROOT, ".github", "workflows", "intake-triage.yml"),
   "utf8",
@@ -63,6 +62,7 @@ const NOTICE = "::notice title=api-budget::";
 const CALLS = "::notice title=api-calls::";
 const ROUTES = "::notice title=api-routes::";
 const RESET = 1792748042;
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // A `gh api -i` header block, CRLF header lines as gh prints them.
 const head = ({ status = 200, used, reset = RESET, resource = "core" }) =>
@@ -80,16 +80,11 @@ const octokitHeaders = ({ used, reset = RESET, resource = "core" }) => ({
 });
 
 function bash(dir, script, { input = "", env = {} } = {}) {
-  const result = spawnSync("bash", ["-c", `. "${LIB}"\n${script}`], {
+  return spawnSync("bash", ["-c", `. "${LIB}"\n${script}`], {
     input,
     encoding: "utf8",
     env: { PATH: process.env.PATH, RUNNER_TEMP: dir, ...RUNNER, ...env },
   });
-  return {
-    stdout: result.stdout,
-    stderr: result.stderr,
-    status: result.status,
-  };
 }
 const state = (dir, token = "github-token") =>
   fs.readFileSync(path.join(dir, "api-budget", token), "utf8");
@@ -102,6 +97,28 @@ function record(dir, ...readings) {
       headers: octokitHeaders(r),
     });
   }
+}
+
+// An Octokit client that only collects the request hooks registered on it.
+function hookedClient(extra = {}) {
+  const hooks = { after: [], error: [] };
+  const github = {
+    ...extra,
+    hook: {
+      after: (name, fn) => hooks.after.push([name, fn]),
+      error: (name, fn) => hooks.error.push([name, fn]),
+      ...extra.hook,
+    },
+  };
+  return { hooks, github };
+}
+
+// The step that ends a job by logging the job token's budget.
+function assertLogsBudget(step, where) {
+  assert.equal(step.uses, "$/.github/actions/report-api-budget", where);
+  assert.equal(step.if, "always()", where);
+  assert.equal(step["continue-on-error"], true, where);
+  assert.equal(step.with.tokens, "github-token", where);
 }
 
 // The action's one step, run as shipped.
@@ -169,13 +186,7 @@ test("recordReading appends one line per response and needs a token name and RUN
 
 test("watch records every response and refusal of one Octokit client and rethrows the error", async () => {
   const dir = makeTemporaryDirectory("api-budget-watch-");
-  const hooks = { after: [], error: [] };
-  const github = {
-    hook: {
-      after: (name, fn) => hooks.after.push([name, fn]),
-      error: (name, fn) => hooks.error.push([name, fn]),
-    },
-  };
+  const { hooks, github } = hookedClient();
   await withRunnerTemp(dir, () => watch(github, "github-token"));
   assert.deepEqual(
     [...hooks.after, ...hooks.error].map(([name]) => name),
@@ -377,10 +388,7 @@ test("nothing in the action or the workflow reads GET /rate_limit", () => {
     ACTION_TEXT,
     fs.readFileSync(LIB, "utf8"),
     fs.readFileSync(path.join(ACTION_DIR, "api-budget.cjs"), "utf8"),
-    fs.readFileSync(
-      path.join(ROOT, ".github", "workflows", "pr-review-cli.yml"),
-      "utf8",
-    ),
+    WORKFLOW_TEXT,
     INTAKE_TEXT,
   ].join("\n");
   assert.doesNotMatch(
@@ -401,13 +409,8 @@ const URLS = {
 for (const job of ["review-key", "review-subscription"]) {
   test(`${job}: the scope step records each response as api-budget.cjs does`, async () => {
     const dir = makeTemporaryDirectory("api-budget-scope-");
-    const hooks = { after: [], error: [] };
-    const github = {
-      hook: {
-        after: (name, fn) => hooks.after.push([name, fn]),
-        error: (name, fn) => hooks.error.push([name, fn]),
-        wrap: () => {},
-      },
+    const { hooks, github } = hookedClient({
+      hook: { wrap: () => {} },
       paginate: async () => {
         throw new Error("no API in this test");
       },
@@ -415,11 +418,10 @@ for (const job of ["review-key", "review-subscription"]) {
         {},
         { get: () => new Proxy({}, { get: () => async () => ({}) }) },
       ),
-    };
+    });
     const core = new Proxy({}, { get: () => () => {} });
     const script = WORKFLOW.jobs[job].steps.find((s) => s.id === "scope").with
       .script;
-    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
     await withRunnerTemp(dir, () =>
       new AsyncFunction("require", "github", "context", "core", script)(
         require,
@@ -472,11 +474,7 @@ for (const job of ["review-key", "review-subscription"]) {
 // Each job that spends the job token ends with the notice, whatever failed.
 test("every pr-review-cli job ends by logging the job token's budget", () => {
   for (const [name, job] of Object.entries(WORKFLOW.jobs)) {
-    const last = job.steps.at(-1);
-    assert.equal(last.uses, "$/.github/actions/report-api-budget", name);
-    assert.equal(last.if, "always()", name);
-    assert.equal(last["continue-on-error"], true, name);
-    assert.equal(last.with.tokens, "github-token", name);
+    assertLogsBudget(job.steps.at(-1), name);
   }
   for (const job of ["review-key", "review-subscription"]) {
     assert.equal(
@@ -505,10 +503,7 @@ test("every intake-triage job that calls the API ends by logging the job token's
   for (const name of callers) {
     const last = INTAKE.jobs[name].steps.at(-1);
     assert.equal(last.name, "Log the API budget", name);
-    assert.equal(last.uses, "$/.github/actions/report-api-budget", name);
-    assert.equal(last.if, "always()", name);
-    assert.equal(last["continue-on-error"], true, name);
-    assert.equal(last.with.tokens, "github-token", name);
+    assertLogsBudget(last, name);
     assert.equal(last.with.responses, undefined, name);
   }
   const status = INTAKE.jobs["report-triage-status"];
@@ -552,23 +547,12 @@ test("every intake-triage and floor-labeler API step opens with one shared recor
 });
 
 test("the floor labeler ends by logging the job token's budget", () => {
-  const last = FLOOR.jobs["apply-label"].steps.at(-1);
-  assert.equal(last.uses, "$/.github/actions/report-api-budget");
-  assert.equal(last.if, "always()");
-  assert.equal(last["continue-on-error"], true);
-  assert.equal(last.with.tokens, "github-token");
+  assertLogsBudget(FLOOR.jobs["apply-label"].steps.at(-1), "apply-label");
 });
 
 test("the intake recorder records each response and refusal as api-budget.cjs does", async () => {
   const dir = makeTemporaryDirectory("api-budget-intake-");
-  const hooks = { after: [], error: [] };
-  const github = {
-    hook: {
-      after: (name, fn) => hooks.after.push([name, fn]),
-      error: (name, fn) => hooks.error.push([name, fn]),
-    },
-  };
-  const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+  const { hooks, github } = hookedClient();
   await new AsyncFunction("require", "github", intakeRecorders[0].recorder)(
     require,
     github,

@@ -26,29 +26,29 @@ const actionLines = fs
   .readFileSync(path.join(actionDir, "action.yml"), "utf8")
   .split(/\r?\n/u);
 
-// A `with:` value the reusable passes the gate composite.
-function stepInput(name) {
-  const line = workflowLines
-    .slice(gateStepIndex)
-    .find((candidate) => candidate.trim().startsWith(`${name}:`));
-  assert.ok(line, `${name} must be passed to the gate step`);
+// The value of the first `name:` line in `lines`.
+function keyValue(lines, name, missing) {
+  const line = lines.find((candidate) =>
+    candidate.trim().startsWith(`${name}:`),
+  );
+  assert.ok(line, missing);
   return line
     .trim()
     .slice(name.length + 1)
     .trim();
 }
 
-// The env value the composite's script step reads.
-function actionEnv(name) {
-  const line = actionLines.find((candidate) =>
-    candidate.trim().startsWith(`${name}:`),
+// A `with:` value the reusable passes the gate composite.
+const stepInput = (name) =>
+  keyValue(
+    workflowLines.slice(gateStepIndex),
+    name,
+    `${name} must be passed to the gate step`,
   );
-  assert.ok(line, `${name} must be set on the composite's step`);
-  return line
-    .trim()
-    .slice(name.length + 1)
-    .trim();
-}
+
+// The env value the composite's script step reads.
+const actionEnv = (name) =>
+  keyValue(actionLines, name, `${name} must be set on the composite's step`);
 
 const DEPENDABOT_ID = 49699333;
 const HEAD = "a".repeat(40);
@@ -66,6 +66,7 @@ const dependabotCommit = (sha = HEAD) => ({
   commit: { verification: { verified: true, reason: "valid" } },
 });
 const foreignHead = { ...dependabotCommit(), author: { id: 12345 } };
+const NARROWED_ALLOWLIST = '["actions/*","github/*"]';
 
 const update = (
   dependencyName,
@@ -103,10 +104,7 @@ async function runGate({
   body = Array.isArray(updates) ? updatesBody(updates) : "",
   packageAutoMerge = "true",
   reviewOnly = "[]",
-  publisherAllowlist = inputDefault("publisher-allowlist").replace(
-    /^'(.*)'$/u,
-    "$1",
-  ),
+  publisherAllowlist = defaultAllowlist(),
   // The synced policy at the base: absent (404) unless a text or an error is given.
   basePolicy = undefined,
   basePolicyError = undefined,
@@ -185,10 +183,11 @@ function assertSkipped(result, reason) {
 }
 
 test("the default allowlist matches standards dependabot-policy autoMerge.publisherAllowlist", () => {
-  assert.deepEqual(
-    JSON.parse(inputDefault("publisher-allowlist").replace(/^'(.*)'$/u, "$1")),
-    ["actions/*", "github/*", "anthropics/*"],
-  );
+  assert.deepEqual(JSON.parse(defaultAllowlist()), [
+    "actions/*",
+    "github/*",
+    "anthropics/*",
+  ]);
   assert.equal(
     stepInput("publisher-allowlist"),
     `\${{ inputs.publisher-allowlist }}`,
@@ -205,7 +204,7 @@ test("a narrowed allowlist skips a publisher it leaves out", async () => {
       updates: [
         update("anthropics/claude-code-action", "version-update:semver-patch"),
       ],
-      publisherAllowlist: '["actions/*","github/*"]',
+      publisherAllowlist: NARROWED_ALLOWLIST,
     }),
     /anthropics\/claude-code-action is not an allowlisted publisher/u,
   );
@@ -214,7 +213,7 @@ test("a narrowed allowlist skips a publisher it leaves out", async () => {
 test("a narrowed allowlist still arms a publisher it keeps", async () => {
   const { armCalls, notices } = await runGate({
     updates: [update("github/codeql-action", "version-update:semver-minor")],
-    publisherAllowlist: '["actions/*","github/*"]',
+    publisherAllowlist: NARROWED_ALLOWLIST,
   });
   assert.equal(notices.length, 0);
   assert.equal(armCalls.length, 1);
@@ -262,10 +261,7 @@ const syncedPolicy = ({ fastTrack, ecosystems, reviewOnly } = {}) =>
   });
 
 test("the gate's default allowlist is the reusable's publisher-allowlist default", () => {
-  assert.deepEqual(
-    DEFAULT_PUBLISHER_ALLOWLIST,
-    JSON.parse(inputDefault("publisher-allowlist").replace(/^'(.*)'$/u, "$1")),
-  );
+  assert.deepEqual(DEFAULT_PUBLISHER_ALLOWLIST, JSON.parse(defaultAllowlist()));
 });
 
 test("the synced policy is read at the base commit, never the head", async () => {
@@ -332,6 +328,12 @@ const ownMinor = (versions = {}) =>
   });
 const OWN_ALLOWLIST =
   '["actions/*","github/*","anthropics/*","melodic-software/*"]';
+const vendorMinorBelowOne = update(
+  "actions/checkout",
+  "version-update:semver-minor",
+  undefined,
+  { prevVersion: "0.3.0", newVersion: "0.4.0" },
+);
 const belowOne = (name) =>
   new RegExp(
     `${name.replaceAll("/", "\\/").replaceAll(".", "\\.")} changes its minor version below 1\\.0`,
@@ -370,12 +372,7 @@ test("a synced policy without fastTrack.own exempts no allowlisted name below 1.
 test("with the synced policy, a vendor action's minor below 1.0 is still skipped", async () => {
   assertSkipped(
     await runGate({
-      updates: [
-        update("actions/checkout", "version-update:semver-minor", undefined, {
-          prevVersion: "0.3.0",
-          newVersion: "0.4.0",
-        }),
-      ],
+      updates: [vendorMinorBelowOne],
       basePolicy: syncedPolicy(),
     }),
     belowOne("actions/checkout"),
@@ -408,13 +405,7 @@ test("with the synced policy, an own action's move to 1.0 still goes to a person
 test("a group with an own and a vendor minor below 1.0 is skipped for the vendor's", async () => {
   assertSkipped(
     await runGate({
-      updates: [
-        ownMinor(),
-        update("actions/checkout", "version-update:semver-minor", undefined, {
-          prevVersion: "0.3.0",
-          newVersion: "0.4.0",
-        }),
-      ],
+      updates: [ownMinor(), vendorMinorBelowOne],
       basePolicy: syncedPolicy(),
     }),
     belowOne("actions/checkout"),
@@ -477,7 +468,7 @@ test("a caller's narrowed allowlist wins over the synced policy", async () => {
     assertSkipped(
       await runGate({
         updates: [update(name, "version-update:semver-patch")],
-        publisherAllowlist: '["actions/*","github/*"]',
+        publisherAllowlist: NARROWED_ALLOWLIST,
         basePolicy: syncedPolicy(),
       }),
       new RegExp(
@@ -794,6 +785,10 @@ test("a head that moved after the event is skipped", async () => {
     /the PR head moved after this event/u,
   );
 });
+
+// The publisher-allowlist input's default, its YAML quotes removed.
+const defaultAllowlist = () =>
+  inputDefault("publisher-allowlist").replace(/^'(.*)'$/u, "$1");
 
 function inputDefault(name) {
   const input = workflowLines.indexOf(`      ${name}:`);

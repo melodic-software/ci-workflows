@@ -17,6 +17,6 @@ Each line names a rule CI does not enforce; the linked file states it in full.
 - Policy is authored in standards; `fixtures/` configs only exercise contracts:
   [rule](README.md#policy-ownership-and-action-inputs).
 - Local-lane guard wrappers keep parity with the standards component:
-  [rule](README.md#actions).
+  [rule](README.md#actions), the note after `check-comment-markers`.
 - Lanes consolidate as composite actions; `CI Status` stays the single required check:
   [rule](README.md#contract).

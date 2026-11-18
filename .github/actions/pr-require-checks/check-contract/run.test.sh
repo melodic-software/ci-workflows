@@ -68,9 +68,6 @@ while [[ $# -gt 0 ]]; do
       include=true
       shift
       ;;
-    --paginate | --silent)
-      shift
-      ;;
     -*)
       shift
       ;;
@@ -271,6 +268,16 @@ user_comment() {
   printf '{"id":%s,"user":{"type":"User"},"body":"%s"}' "$1" "$2"
 }
 
+# fail_case <message> [file ...]
+# Records one failed expectation and prints the files that show why. The suite
+# records and continues: it accumulates failures and reports them all.
+fail_case() {
+  echo "FAIL: $1"
+  shift
+  [[ $# -eq 0 ]] || cat -- "$@"
+  failures=$((failures + 1))
+}
+
 # run_case <expected-status> [NAME=VALUE ...]
 run_case() {
   local expected_status="$1"
@@ -305,66 +312,43 @@ run_case() {
   actual_status=$?
   set -e
   if [[ "$actual_status" -ne "$expected_status" ]]; then
-    echo "FAIL: expected exit $expected_status, got $actual_status"
-    cat "$log_file"
-    # Record and continue: the suite accumulates failures and reports them all.
-    failures=$((failures + 1))
+    fail_case "expected exit $expected_status, got $actual_status" "$log_file"
   fi
 }
 
 expect_output() {
-  local expected="$1"
-  if ! grep -qxF -- "$expected" "$output_file"; then
-    echo "FAIL: expected output '$expected', got:"
-    cat "$output_file"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if ! grep -qxF -- "$1" "$output_file"; then
+    fail_case "expected output '$1', got:" "$output_file" "$log_file"
   fi
 }
 
 expect_no_output() {
-  local unexpected="$1"
-  if grep -qxF -- "$unexpected" "$output_file"; then
-    echo "FAIL: expected NO output '$unexpected', got:"
-    cat "$output_file"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if grep -qxF -- "$1" "$output_file"; then
+    fail_case "expected NO output '$1', got:" "$output_file" "$log_file"
   fi
 }
 
 expect_log() {
-  local expected="$1"
-  if ! grep -qF -- "$expected" "$log_file"; then
-    echo "FAIL: expected log to contain '$expected', got:"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if ! grep -qF -- "$1" "$log_file"; then
+    fail_case "expected log to contain '$1', got:" "$log_file"
   fi
 }
 
 expect_no_log() {
-  local unexpected="$1"
-  if grep -qF -- "$unexpected" "$log_file"; then
-    echo "FAIL: expected log NOT to contain '$unexpected', got:"
-    cat "$log_file"
-    failures=$((failures + 1))
+  if grep -qF -- "$1" "$log_file"; then
+    fail_case "expected log NOT to contain '$1', got:" "$log_file"
   fi
 }
 
 expect_gh_call() {
-  local expected="$1"
-  if ! grep -qF -- "$expected" "$gh_log"; then
-    echo "FAIL: expected a gh call matching '$expected', got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+  if ! grep -qF -- "$1" "$gh_log"; then
+    fail_case "expected a gh call matching '$1', got:" "$gh_log"
   fi
 }
 
 expect_no_gh_call() {
-  local unexpected="$1"
-  if grep -qF -- "$unexpected" "$gh_log"; then
-    echo "FAIL: expected NO gh call matching '$unexpected', got:"
-    cat "$gh_log"
-    failures=$((failures + 1))
+  if grep -qF -- "$1" "$gh_log"; then
+    fail_case "expected NO gh call matching '$1', got:" "$gh_log"
   fi
 }
 
@@ -373,9 +357,7 @@ expect_no_gh_call() {
 # is empty instead.
 expect_no_gh_calls_at_all() {
   if [[ -s "$gh_log" ]]; then
-    echo 'FAIL: expected NO gh calls at all, got:'
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case 'expected NO gh calls at all, got:' "$gh_log"
   fi
 }
 
@@ -383,15 +365,10 @@ expect_comment_body() {
   local key="$1" expected="$2"
   local payload="$calls/${key}.input.json"
   if [[ ! -f "$payload" ]]; then
-    echo "FAIL: expected a recorded request body for ${key}, none written"
-    cat "$gh_log"
-    failures=$((failures + 1))
-    return
-  fi
-  if ! jq -r '.body' <"$payload" | grep -qF -- "$expected"; then
-    echo "FAIL: expected the ${key} body to contain '$expected', got:"
+    fail_case "expected a recorded request body for ${key}, none written" "$gh_log"
+  elif ! jq -r '.body' <"$payload" | grep -qF -- "$expected"; then
+    fail_case "expected the ${key} body to contain '$expected', got:"
     jq -r '.body' <"$payload"
-    failures=$((failures + 1))
   fi
 }
 
@@ -692,12 +669,10 @@ time_repeats 8000
 time_8000="$best_time"
 echo "  4000 repeats: ${time_4000} s; 8000 repeats: ${time_8000} s"
 if ! awk -v t="$time_4000" 'BEGIN { exit !(t < 5) }'; then
-  echo "FAIL: 4000 repeats took ${time_4000} s, expected under 5 s"
-  failures=$((failures + 1))
+  fail_case "4000 repeats took ${time_4000} s, expected under 5 s"
 fi
 if ! awk -v a="$time_4000" -v b="$time_8000" 'BEGIN { exit !(b < 3 * a) }'; then
-  echo "FAIL: 8000 repeats took ${time_8000} s, at least 3x the ${time_4000} s for 4000"
-  failures=$((failures + 1))
+  fail_case "8000 repeats took ${time_8000} s, at least 3x the ${time_4000} s for 4000"
 fi
 
 # --- linkage: issue-ref-pattern --------------------------------------------
@@ -822,8 +797,7 @@ injected="$temporary_directory/injected"
 set_pull 'feat: add check-contract' "Closes #12${sections}" someone ''
 run_case 0 ISSUE_REF_PATTERN="x\" ~ system(\"touch ${injected}\") ~ \"x"
 if [[ -e "$injected" ]]; then
-  echo 'FAIL: the issue-ref-pattern input executed as awk code'
-  failures=$((failures + 1))
+  fail_case 'the issue-ref-pattern input executed as awk code'
 fi
 
 # --- linkage: masking ------------------------------------------------------
@@ -950,9 +924,7 @@ expect_sends() {
     actual="$(cat "$calls/${1}.count")"
   fi
   if [[ "$actual" != "$2" ]]; then
-    echo "FAIL: expected $2 send(s) of ${1}, got ${actual}"
-    cat "$gh_log"
-    failures=$((failures + 1))
+    fail_case "expected $2 send(s) of ${1}, got ${actual}" "$gh_log"
   fi
 }
 
@@ -1081,8 +1053,7 @@ expect_log "::warning::POST graphql returned HTTP 403 (rate-limit): API rate lim
 expect_log 'waiting 20s, then retrying once.'
 expect_output 'title=pass'
 if [[ "$(cat "$sleep_log")" != 20 ]]; then
-  echo "FAIL: expected one 20s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 20s sleep, got: $(cat "$sleep_log")"
 fi
 rm -f -- "$fixtures/${pull_key}.1.err" "$fixtures/${pull_key}.1.headers"
 
@@ -1094,8 +1065,7 @@ run_case 1 RATE_LIMIT_WAIT_SECONDS=60
 expect_log 'needs a 900s wait, more than the 60s left of rate-limit-wait-seconds (60); not waiting. The limit resets at 900 (1970-01-01T00:15:00Z).'
 expect_log "::error::check-contract: could not read pull request ${repository}#${pr_number} (HTTP 403): rate limited past rate-limit-wait-seconds"
 if [[ -s "$sleep_log" ]]; then
-  echo "FAIL: expected no sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected no sleep, got: $(cat "$sleep_log")"
 fi
 rm -f -- "$fixtures/${pull_key}.1.err" "$fixtures/${pull_key}.1.headers"
 
@@ -1123,8 +1093,7 @@ expect_log 'is rate limited; waiting 60s, then retrying once.'
 expect_no_gh_call "-X POST repos/${repository}/issues/${pr_number}/comments"
 expect_no_gh_call '-X PATCH'
 if [[ "$(cat "$sleep_log")" != 60 ]]; then
-  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 60s sleep, got: $(cat "$sleep_log")"
 fi
 rm -f -- "$fixtures/GET_${comments_key}.1.err"
 
@@ -1138,8 +1107,7 @@ run_case 0
 expect_log 'needs a 60s wait, more than the 0s left of rate-limit-wait-seconds (60); not waiting.'
 expect_log '::notice::check-contract: upserting the linkage comment was refused (HTTP 403); continuing without it'
 if [[ "$(cat "$sleep_log")" != 60 ]]; then
-  echo "FAIL: expected one 60s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 60s sleep, got: $(cat "$sleep_log")"
 fi
 rm -f -- "$fixtures/GET_${comments_key}.1.err" "$fixtures/POST_${comments_key}.1.err"
 set_comments '[]'
@@ -1160,8 +1128,7 @@ expect_log 'waiting 20s, then retrying once.'
 expect_output 'title=pass'
 expect_output 'linkage=pass'
 if [[ "$(cat "$sleep_log")" != 20 ]]; then
-  echo "FAIL: expected one 20s sleep, got: $(cat "$sleep_log")"
-  failures=$((failures + 1))
+  fail_case "expected one 20s sleep, got: $(cat "$sleep_log")"
 fi
 
 # Without the rate-limit classification, a throttled read past the cap would be
@@ -1244,9 +1211,7 @@ set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0
 expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
 if [[ "$(grep -c -- '-X GET ' "$gh_log" || true)" -ne 0 || "$(grep -c -- '-X POST graphql ' "$gh_log" || true)" -ne 1 ]]; then
-  echo 'FAIL: expected no REST read and one GraphQL read, got:'
-  cat "$gh_log"
-  failures=$((failures + 1))
+  fail_case 'expected no REST read and one GraphQL read, got:' "$gh_log"
 fi
 
 echo 'case: a failing pull request reads its marker comment from the GraphQL read'
@@ -1394,8 +1359,7 @@ run_case 1 ENFORCE_HOLD_LABEL=true
 expect_output 'hold=fail'
 expect_log "::error::check-contract: hold-label-unreadable: cannot tell whether pull request ${repository}#${pr_number} carries the 'needs-human' hold label, so this run fails; re-run this job once GitHub answers."
 if [[ "$(cat "$calls/${pull_key}.count")" != 3 ]]; then
-  echo "FAIL: expected the label read to be sent 3 times, got $(cat "$calls/${pull_key}.count")"
-  failures=$((failures + 1))
+  fail_case "expected the label read to be sent 3 times, got $(cat "$calls/${pull_key}.count")"
 fi
 printf '99\n' >"$fixtures/${pull_key}.fail-times"
 run_case 1
@@ -1487,20 +1451,17 @@ echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
 for input_name in token repository pr-number types require-scope do-not-merge-label enforce-hold-label hold-label exempt-authors linkage-label linkage-mode issue-ref-pattern rate-limit-wait-seconds; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
-    echo "FAIL: action.yml declares no '${input_name}' input"
-    failures=$((failures + 1))
+    fail_case "action.yml declares no '${input_name}' input"
   fi
 done
 for environment_name in GH_TOKEN REPOSITORY PR_NUMBER TYPES REQUIRE_SCOPE DO_NOT_MERGE_LABEL ENFORCE_HOLD_LABEL HOLD_LABEL EXEMPT_AUTHORS LINKAGE_LABEL LINKAGE_MODE ISSUE_REF_PATTERN RATE_LIMIT_WAIT_SECONDS EVENT_NAME MERGE_GROUP_HEAD_REF; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
-    echo "FAIL: action.yml does not pass '${environment_name}' to run.sh"
-    failures=$((failures + 1))
+    fail_case "action.yml does not pass '${environment_name}' to run.sh"
   fi
 done
 for output_name in title do-not-merge linkage hold; do
   if ! grep -qE "^  ${output_name}:" "$action_metadata"; then
-    echo "FAIL: action.yml declares no '${output_name}' output"
-    failures=$((failures + 1))
+    fail_case "action.yml declares no '${output_name}' output"
   fi
 done
 
@@ -1510,8 +1471,7 @@ echo 'case: the action.yml issue-ref-pattern default equals the runner default'
 metadata_default="$(sed -n '/^  issue-ref-pattern:/,/^  [a-z]/s/^    default: '"'"'\(.*\)'"'"'$/\1/p' "$action_metadata")"
 runner_default="$(sed -n "s/^DEFAULT_ISSUE_REF_PATTERN='\(.*\)'\$/\1/p" "$script_directory/run.sh")"
 if [[ -z "$metadata_default" || "$metadata_default" != "$runner_default" ]]; then
-  echo "FAIL: action.yml default '${metadata_default}' differs from run.sh default '${runner_default}'"
-  failures=$((failures + 1))
+  fail_case "action.yml default '${metadata_default}' differs from run.sh default '${runner_default}'"
 fi
 
 # --- api-calls count -------------------------------------------------------
@@ -1525,14 +1485,10 @@ set_pull 'feat: add check-contract' "$conforming_body" someone ''
 run_case 0 GITHUB_STEP_SUMMARY="$summary_file"
 expect_log '::notice title=api-calls::github-token=1 not-modified=0 graphql=1'
 if ! grep -qxF 'API calls: github-token=1 not-modified=0 graphql=1' "$summary_file"; then
-  echo 'FAIL: expected the api-calls line in the step summary, got:'
-  cat "$summary_file"
-  failures=$((failures + 1))
+  fail_case 'expected the api-calls line in the step summary, got:' "$summary_file"
 fi
 if [[ "$(tail -n1 "$log_file")" != '::notice title=api-calls::github-token=1 not-modified=0 graphql=1' ]]; then
-  echo 'FAIL: expected the api-calls notice as the last log line'
-  cat "$log_file"
-  failures=$((failures + 1))
+  fail_case 'expected the api-calls notice as the last log line' "$log_file"
 fi
 
 # Without the EXIT trap a failing run reports nothing; the exit status stays 1.

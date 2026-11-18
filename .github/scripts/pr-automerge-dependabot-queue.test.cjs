@@ -14,18 +14,10 @@ const { POLICY_PATH, parseCommitMetadata } = require(
 );
 const { runQueue } = require(path.join(actionDir, "queue.cjs"));
 const workflowsDir = path.join(__dirname, "..", "workflows");
-const queueWorkflow = parseWorkflow(
-  fs.readFileSync(
-    path.join(workflowsDir, "pr-automerge-dependabot-queue.yml"),
-    "utf8",
-  ),
-);
-const reusable = parseWorkflow(
-  fs.readFileSync(
-    path.join(workflowsDir, "pr-automerge-dependabot.yml"),
-    "utf8",
-  ),
-);
+const readWorkflow = (name) =>
+  parseWorkflow(fs.readFileSync(path.join(workflowsDir, name), "utf8"));
+const queueWorkflow = readWorkflow("pr-automerge-dependabot-queue.yml");
+const reusable = readWorkflow("pr-automerge-dependabot.yml");
 
 const DEPENDABOT_ID = 49699333;
 const WEB_FLOW_ID = 19864447;
@@ -193,6 +185,18 @@ const dependabotPull = (number, overrides = {}) => ({
   ...overrides,
 });
 
+// A pull request the App already armed.
+const appArmedPull = (number) =>
+  dependabotPull(number, {
+    auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
+  });
+
+// A head commit Dependabot authored but did not commit.
+const forgedCommit = () => ({
+  ...dependabotCommit(GROUP_MESSAGE),
+  committer: { id: 12345 },
+});
+
 const success = { id: 2, status: "completed", conclusion: "success" };
 
 async function runWithFakes({
@@ -323,11 +327,7 @@ test("an unreadable synced policy leaves every pull request alone", async () => 
 
 test("an armed pull request is disarmed when the synced policy is malformed", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-    ],
+    pulls: [appArmedPull(7)],
     policy: "{",
   });
   assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
@@ -343,12 +343,7 @@ test("an armed pull request is disarmed when the synced policy is malformed", as
 
 test("a synced policy path that cannot be read leaves pull requests alone and disarms armed ones", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-      dependabotPull(8),
-    ],
+    pulls: [appArmedPull(7), dependabotPull(8)],
     policyIsDirectory: true,
   });
   assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
@@ -493,29 +488,17 @@ test("an out-of-tier pull request is left alone and noted", async () => {
 });
 
 test("a pull request whose head commit is not Dependabot's is left alone", async () => {
-  const forged = {
-    ...dependabotCommit(GROUP_MESSAGE),
-    committer: { id: 12345 },
-  };
   const { appCalls, notices } = await runWithFakes({
-    commits: { 7: [forged] },
+    commits: { 7: [forgedCommit()] },
   });
   assert.equal(appCalls.length, 0);
   assert.match(notices[0], /is not a verified Dependabot commit/u);
 });
 
 test("an armed pull request whose new head fails the gate is disarmed, not armed", async () => {
-  const forged = {
-    ...dependabotCommit(GROUP_MESSAGE),
-    committer: { id: 12345 },
-  };
   const { counts, appCalls } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-    ],
-    commits: { 7: [forged] },
+    pulls: [appArmedPull(7)],
+    commits: { 7: [forgedCommit()] },
   });
   assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
   assert.deepEqual(
@@ -526,11 +509,7 @@ test("an armed pull request whose new head fails the gate is disarmed, not armed
 
 test("an armed pull request without readable metadata is disarmed", async () => {
   const { appCalls } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-    ],
+    pulls: [appArmedPull(7)],
     commits: { 7: [dependabotCommit("build: bump x")] },
   });
   assert.deepEqual(
@@ -540,17 +519,9 @@ test("an armed pull request without readable metadata is disarmed", async () => 
 });
 
 test("a failed disarm of a gate-failing pull request warns and counts as failed", async () => {
-  const forged = {
-    ...dependabotCommit(GROUP_MESSAGE),
-    committer: { id: 12345 },
-  };
   const { counts, warnings } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-    ],
-    commits: { 7: [forged] },
+    pulls: [appArmedPull(7)],
+    commits: { 7: [forgedCommit()] },
     appErrors: { "PR_7:disablePullRequestAutoMerge": "boom" },
   });
   assert.deepEqual(counts, { queued: 0, skipped: 0, failed: 1 });
@@ -607,11 +578,7 @@ test("a pull request already in the merge queue is skipped", async () => {
 
 test("a pull request the App already armed is skipped", async () => {
   const { appCalls } = await runWithFakes({
-    pulls: [
-      dependabotPull(7, {
-        auto_merge: { enabled_by: { login: "melodic-release[bot]" } },
-      }),
-    ],
+    pulls: [appArmedPull(7)],
   });
   assert.equal(appCalls.length, 0);
 });
@@ -715,9 +682,7 @@ test("the App token is minted as release-tag.yml mints it, with workflows write"
   assert.equal(mint.with["permission-contents"], "write");
   assert.equal(mint.with["permission-pull-requests"], "write");
   assert.equal(mint.with["permission-workflows"], "write");
-  const release = parseWorkflow(
-    fs.readFileSync(path.join(workflowsDir, "release-tag.yml"), "utf8"),
-  ).jobs.tag;
+  const release = readWorkflow("release-tag.yml").jobs.tag;
   assert.equal(release.environment, job.environment.name);
   const releaseMint = release.steps.find(
     (candidate) => candidate.uses === mint.uses,

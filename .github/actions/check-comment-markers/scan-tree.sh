@@ -57,7 +57,6 @@ while IFS= read -r match; do
   scan_rc=0
   chp_violation_sink=__chp_scan_hits
   __chp_scan_hits=()
-  : >"$scan_stdout"
   {
     chp::scan_text "$content" || scan_rc=$?
   } >"$scan_stdout"

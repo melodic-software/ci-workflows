@@ -42,6 +42,14 @@ emit_output() {
   fi
 }
 
+# emit_results <title> <do-not-merge> <linkage> <hold>
+emit_results() {
+  emit_output title "$1"
+  emit_output do-not-merge "$2"
+  emit_output linkage "$3"
+  emit_output hold "$4"
+}
+
 # Every annotation below quotes attacker-controlled text: the PR title, the PR
 # body, the author login. GitHub's documented escaping for workflow-command data
 # is `%` -> `%25`, CR -> `%0D`, LF -> `%0A`; without it a title carrying a
@@ -72,29 +80,9 @@ url_encode() {
   jq -rn --arg text "$1" '$text|@uri'
 }
 
-case "$LINKAGE_MODE" in
-  advisory | enforce) ;;
-  *)
-    echo "::error::check-contract: linkage-mode must be 'advisory' or 'enforce', got: ${LINKAGE_MODE}"
-    exit 1
-    ;;
-esac
-
-case "$REQUIRE_SCOPE" in
-  true | false) ;;
-  *)
-    echo "::error::check-contract: require-scope must be 'true' or 'false', got: ${REQUIRE_SCOPE}"
-    exit 1
-    ;;
-esac
-
-case "$ENFORCE_HOLD_LABEL" in
-  true | false) ;;
-  *)
-    echo "::error::check-contract: enforce-hold-label must be 'true' or 'false', got: $(escape_annotation "$ENFORCE_HOLD_LABEL")"
-    exit 1
-    ;;
-esac
+require_pattern linkage-mode "$LINKAGE_MODE" '^(advisory|enforce)$' "'advisory' or 'enforce'"
+require_pattern require-scope "$REQUIRE_SCOPE" '^(true|false)$' "'true' or 'false'"
+require_pattern enforce-hold-label "$ENFORCE_HOLD_LABEL" '^(true|false)$' "'true' or 'false'"
 
 hold_result=skipped
 
@@ -139,14 +127,10 @@ if [[ "${EVENT_NAME:-}" == merge_group ]]; then
   merge_group_ref_pattern='^(refs/heads/)?gh-readonly-queue/(.+)/pr-([0-9]+)-[0-9a-f]{40}$'
   if [[ ! "${MERGE_GROUP_HEAD_REF:-}" =~ $merge_group_ref_pattern ]]; then
     echo "::error::check-contract: cannot read a pull request number from the merge-group head ref '$(escape_annotation "${MERGE_GROUP_HEAD_REF:-}")'"
-    emit_output title skipped
-    emit_output do-not-merge fail
-    emit_output linkage skipped
     if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
-      emit_output hold fail
-    else
-      emit_output hold skipped
+      hold_result=fail
     fi
+    emit_results skipped fail skipped "$hold_result"
     exit 1
   fi
   # The queue's branch reaches only a GraphQL variable, so it is not validated.
@@ -156,10 +140,7 @@ if [[ "${EVENT_NAME:-}" == merge_group ]]; then
 # composite is a pull-request gate; such a run must report skipped, not fail.
 elif [[ -z "${PR_NUMBER//[[:space:]]/}" ]]; then
   echo '::notice::check-contract: no pull request in this event; nothing to check'
-  emit_output title skipped
-  emit_output do-not-merge skipped
-  emit_output linkage skipped
-  emit_output hold skipped
+  emit_results skipped skipped skipped skipped
   exit 0
 fi
 
@@ -181,12 +162,9 @@ require_pattern rate-limit-wait-seconds "${RATE_LIMIT_WAIT_SECONDS:-60}" '^(0|[1
 best_effort() {
   local description="$1"
   shift
-  if "$@"; then
-    return 0
+  if ! "$@"; then
+    echo "::notice::check-contract: ${description} was refused (HTTP ${GH_HTTP_STATUS:-unknown}); continuing without it"
   fi
-  local detail="${GH_HTTP_STATUS:-unknown}"
-  echo "::notice::check-contract: ${description} was refused (HTTP ${detail}); continuing without it"
-  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -214,6 +192,11 @@ hold_unreadable() {
     echo "::error::check-contract: hold-label-unreadable: cannot tell whether $1 carries the '$(escape_annotation "$HOLD_LABEL")' hold label, so this run fails; re-run this job once GitHub answers."
   fi
 }
+fail_pr_unreadable() {
+  hold_unreadable "$pr_read"
+  emit_output hold "$hold_result"
+  exit 1
+}
 # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
 if ! gh_api POST graphql -f query="$pr_query" "${pr_query_variables[@]}"; then
   cat "$gh_stderr" >&2
@@ -222,9 +205,7 @@ if ! gh_api POST graphql -f query="$pr_query" "${pr_query_variables[@]}"; then
   else
     echo "::error::check-contract: could not read ${pr_read} (HTTP ${GH_HTTP_STATUS:-unknown}): $(escape_annotation "$GH_MESSAGE")"
   fi
-  hold_unreadable "$pr_read"
-  emit_output hold "$hold_result"
-  exit 1
+  fail_pr_unreadable
 fi
 pr_response="$scratch/pr-response.json"
 cp -- "$gh_stdout" "$pr_response"
@@ -245,9 +226,7 @@ if ! jq -e '.data.repository.pullRequest
      user: {login: (if .author == null then "" elif .author.__typename == "Bot" then "\(.author.login)[bot]" else (.author.login // "") end)},
      labels: [.labels.nodes[] | {name}]}' <"$gh_stdout" >"$pr_json"; then
   echo "::error::check-contract: ${pr_read} read over GraphQL lacks its title, body or complete label list; failing closed"
-  hold_unreadable "$pr_read"
-  emit_output hold "$hold_result"
-  exit 1
+  fail_pr_unreadable
 fi
 # The comments, in the REST listing's shape, when the one page holds them all.
 # Otherwise the marker lookup lists them over REST.
@@ -258,10 +237,10 @@ jq -e '.data.repository.pullRequest.comments
   | [[.nodes[] | {id: .databaseId, user: {type: (.author.__typename // "")}, body}]]' \
   <"$gh_stdout" >"$comments_json" 2>/dev/null || rm -f -- "$comments_json"
 
-pr_title="$(jq -r '.title // ""' <"$pr_json")"
-pr_author="$(jq -r '.user.login // ""' <"$pr_json")"
-jq -r '.body // ""' <"$pr_json" >"$scratch/body.txt"
-jq -r '(.labels // []) | .[].name' <"$pr_json" >"$scratch/labels.txt"
+pr_title="$(jq -r .title <"$pr_json")"
+pr_author="$(jq -r .user.login <"$pr_json")"
+jq -r .body <"$pr_json" >"$scratch/body.txt"
+jq -r '.labels[].name' <"$pr_json" >"$scratch/labels.txt"
 
 # ---------------------------------------------------------------------------
 # Step 2 — title against Conventional Commits with the caller's type list.
@@ -354,10 +333,7 @@ fi
 # request. Linkage is advisory and a group run writes no comment or label.
 # ---------------------------------------------------------------------------
 if [[ "${EVENT_NAME:-}" == merge_group ]]; then
-  emit_output title "$title_result"
-  emit_output do-not-merge "$do_not_merge_result"
-  emit_output linkage skipped
-  emit_output hold "$hold_result"
+  emit_results "$title_result" "$do_not_merge_result" skipped "$hold_result"
   if [[ "$title_result" == fail || "$do_not_merge_result" == fail || "$hold_result" == fail ]]; then
     echo "::error::check-contract: queued pull request #${PR_NUMBER} fails the contract; the merge queue removes it. Fix it and re-queue to merge."
     exit 1
@@ -717,34 +693,21 @@ else
   analysis="$scratch/analysis.txt"
   analyze_body <"$scratch/body.txt" >"$analysis"
 
-  while IFS=$'\t' read -r kind name _rest; do
-    case "$kind" in
-      section-missing)
-        linkage_errors+=("Missing a \"## ${name}\" section. $(section_guidance "$name")")
-        ;;
-      section-empty)
-        linkage_errors+=("The \"## ${name}\" section is empty.")
-        ;;
-      *) ;;
-    esac
-  done <"$analysis"
-
   negated_quoted=""
   while IFS=$'\t' read -r kind text trigger; do
-    [[ "$kind" == negated ]] || continue
-    if [[ -n "$negated_quoted" ]]; then
-      negated_quoted+=", "
-    fi
-    negated_quoted+="\"${text}\" (trigger \"${trigger}\")"
+    case "$kind" in
+      section-missing) linkage_errors+=("Missing a \"## ${text}\" section. $(section_guidance "$text")") ;;
+      section-empty) linkage_errors+=("The \"## ${text}\" section is empty.") ;;
+      negated) negated_quoted+="${negated_quoted:+, }\"${text}\" (trigger \"${trigger}\")" ;;
+      *) ;;
+    esac
   done <"$analysis"
 
   if [[ -n "$negated_quoted" ]]; then
     linkage_errors+=("Negated closing reference (${negated_quoted}). ${negation_reason} Remove the closing keyword and use \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line instead.${pattern_note}")
   fi
 
-  if ! grep -qx 'closing' "$analysis" &&
-    ! grep -qx 'non-closing' "$analysis" &&
-    ! grep -qx 'no-issue' "$analysis"; then
+  if ! grep -qxE 'closing|non-closing|no-issue' "$analysis"; then
     linkage_errors+=("Missing a ${keyword_kind} closing keyword (Closes/Fixes/Resolves ${ref_hint}). If this PR references an issue it must not close, put \"Refs: ${ref_hint}\" (or \"Relates to: ${ref_hint}\") on its own line. If it relates to no ${issue_kind} at all, state \"No linked issue\" (or \"No related issue:\") in the body instead.${pattern_note}")
   fi
 
@@ -787,15 +750,14 @@ find_marker_comment() {
 
 # shellcheck disable=SC2329 # invoked indirectly through best_effort.
 upsert_marker_comment() {
-  local body="$1" comment_id
+  local body="$1"
   # shellcheck disable=SC2310 # find_marker_comment reports the read failure through its status.
   if ! find_marker_comment; then
     return 1
   fi
-  comment_id="$marker_comment_id"
   jq -n --arg body "$body" '{body: $body}' >"$scratch/comment-payload.json"
-  if [[ -n "$comment_id" ]]; then
-    gh_api PATCH "repos/${REPOSITORY}/issues/comments/${comment_id}" --input "$scratch/comment-payload.json"
+  if [[ -n "$marker_comment_id" ]]; then
+    gh_api PATCH "repos/${REPOSITORY}/issues/comments/${marker_comment_id}" --input "$scratch/comment-payload.json"
   else
     gh_api POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --input "$scratch/comment-payload.json"
   fi
@@ -813,28 +775,22 @@ remove_linkage_label() {
   gh_api DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/$(url_encode "$LINKAGE_LABEL")"
 }
 
+comment_heading="${LINKAGE_MARKER}"$'\n\n''**PR body contract — issue linkage**'$'\n\n'
 if [[ "$linkage_result" == fail ]]; then
+  annotation_level=warning
+  if [[ "$LINKAGE_MODE" == enforce ]]; then
+    annotation_level=error
+  fi
+  comment_body="${comment_heading}This PR body does not yet satisfy the issue-linkage contract:"$'\n'
   for message in "${linkage_errors[@]}"; do
-    if [[ "$LINKAGE_MODE" == enforce ]]; then
-      # The linkage messages quote body text (a negated closing reference and
-      # its trigger word), so they are escaped like the title.
-      echo "::error::check-contract: $(escape_annotation "$message")"
-    else
-      echo "::warning::check-contract: $(escape_annotation "$message")"
-    fi
+    # The linkage messages quote body text (a negated closing reference and
+    # its trigger word), so they are escaped like the title.
+    echo "::${annotation_level}::check-contract: $(escape_annotation "$message")"
+    comment_body+=$'\n'"- ${message}"
   done
+  comment_body+=$'\n\n''Edit the body and this comment updates itself on the next run.'
 
-  {
-    printf '%s\n\n' "$LINKAGE_MARKER"
-    printf '%s\n\n' '**PR body contract — issue linkage**'
-    printf '%s\n\n' 'This PR body does not yet satisfy the issue-linkage contract:'
-    for message in "${linkage_errors[@]}"; do
-      printf -- '- %s\n' "$message"
-    done
-    printf '\n%s\n' 'Edit the body and this comment updates itself on the next run.'
-  } >"$scratch/comment-body.md"
-
-  best_effort 'upserting the linkage comment' upsert_marker_comment "$(cat "$scratch/comment-body.md")"
+  best_effort 'upserting the linkage comment' upsert_marker_comment "$comment_body"
   best_effort 'adding the linkage label' add_linkage_label
 else
   if [[ "$linkage_result" == pass ]]; then
@@ -842,15 +798,9 @@ else
   fi
   # Never delete the marker comment: editing it keeps the audit trail of what
   # the gate said and why it stopped saying it.
-  {
-    printf '%s\n\n' "$LINKAGE_MARKER"
-    printf '%s\n\n' '**PR body contract — issue linkage**'
-    printf '%s\n' 'This PR body conforms to the issue-linkage contract. Nothing to do.'
-  } >"$scratch/comment-body.md"
-
   # shellcheck disable=SC2310 # a failed read simply means there is no comment to update.
   if find_marker_comment 2>/dev/null && [[ -n "$marker_comment_id" ]]; then
-    best_effort 'updating the linkage comment' upsert_marker_comment "$(cat "$scratch/comment-body.md")"
+    best_effort 'updating the linkage comment' upsert_marker_comment "${comment_heading}This PR body conforms to the issue-linkage contract. Nothing to do."
   fi
   if grep -qxF -- "$LINKAGE_LABEL" "$scratch/labels.txt"; then
     best_effort 'removing the linkage label' remove_linkage_label
@@ -863,26 +813,12 @@ fi
 # Every check runs before any exit so all four outputs are always emitted; an
 # early exit on the title would leave `linkage` unset for the caller.
 # ---------------------------------------------------------------------------
-emit_output title "$title_result"
-emit_output do-not-merge "$do_not_merge_result"
-emit_output linkage "$linkage_result"
-emit_output hold "$hold_result"
+emit_results "$title_result" "$do_not_merge_result" "$linkage_result" "$hold_result"
 
-exit_code=0
-if [[ "$title_result" == fail ]]; then
-  exit_code=1
-fi
-if [[ "$do_not_merge_result" == fail ]]; then
-  exit_code=1
-fi
-if [[ "$hold_result" == fail ]]; then
-  exit_code=1
-fi
-if [[ "$linkage_result" == fail && "$LINKAGE_MODE" == enforce ]]; then
-  exit_code=1
-fi
 if [[ "$linkage_result" == fail && "$LINKAGE_MODE" == advisory ]]; then
   echo '::notice::check-contract: issue linkage is advisory in this repository; the step does not fail on it.'
 fi
-
-exit "$exit_code"
+if [[ "$title_result" == fail || "$do_not_merge_result" == fail || "$hold_result" == fail ]] ||
+  [[ "$linkage_result" == fail && "$LINKAGE_MODE" == enforce ]]; then
+  exit 1
+fi

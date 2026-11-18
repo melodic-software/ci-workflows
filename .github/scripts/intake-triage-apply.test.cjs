@@ -28,7 +28,11 @@ const workflow = parseWorkflow(
 );
 const step = (name) => workflow.jobs.claude.steps.find((s) => s.name === name);
 const extractStep = step("Extract the triage");
-const fetchStep = step("Fetch the issue for the model");
+const fetchStepOf = (job) =>
+  workflow.jobs[job].steps.find(
+    (s) => s.name === "Fetch the issue for the model",
+  );
+const fetchStep = fetchStepOf("claude");
 const applyStep = workflow.jobs.apply.steps.find(
   (s) => s.name === "Apply the triage",
 );
@@ -38,6 +42,16 @@ const ESCALATION_LABEL = "needs-human";
 const FLOOR_LABEL = "needs-triage";
 const TYPES = { Bug: "IT_bug", Task: "IT_task" };
 const SUCCESS = { type: "result", subtype: "success", num_turns: 3 };
+const DEFAULT_ALLOWED = ["bug", "priority: high", "priority: low"];
+// A key leg that ran cleanly, as the apply job reads its outputs.
+const CLEAN_KEY = {
+  KEY_SUBTYPE: "success",
+  KEY_ERROR: "false",
+  KEY_DENIALS: "0",
+};
+// A compose graphql answer with no repository, so no Issue Types.
+const NO_REPOSITORY = async () => ({ repository: null });
+const labeled = (name, actor) => ({ event: "labeled", label: { name }, actor });
 
 async function runScript(script, env, github) {
   const original = Object.fromEntries(
@@ -84,9 +98,9 @@ async function runScript(script, env, github) {
   }
 }
 
-// Runs the extract step on one result message and returns its outputs, the
-// claude job's outputs as the apply job reads them.
-async function extract(resultMessage, { output, allowed, raw } = {}) {
+// Runs the extract step on one result message and returns everything the
+// script reported.
+async function runExtract(resultMessage, { output, allowed, raw } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-extract-"));
   const executionFile = path.join(directory, "execution.json");
   fs.writeFileSync(
@@ -99,7 +113,7 @@ async function extract(resultMessage, { output, allowed, raw } = {}) {
       ]),
   );
   try {
-    const { outputs } = await runScript(
+    return await runScript(
       extractStep.with.script,
       {
         EXECUTION_FILE: executionFile,
@@ -109,11 +123,15 @@ async function extract(resultMessage, { output, allowed, raw } = {}) {
       },
       {},
     );
-    return outputs;
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }
+
+// The extract step's outputs, the claude job's outputs as the apply job
+// reads them.
+const extract = async (resultMessage, options) =>
+  (await runExtract(resultMessage, options)).outputs;
 
 // The leg's outputs as apply-job env, KEY_ or SUB_ prefixed.
 const legEnv = (prefix, outputs = {}) => ({
@@ -132,7 +150,7 @@ async function runApply(
     existingType,
     floorLabel = FLOOR_LABEL,
     escalationLabel = ESCALATION_LABEL,
-    allowed = ["bug", "priority: high", "priority: low"],
+    allowed = DEFAULT_ALLOWED,
     liveLabels,
     labelsFail = false,
     typeFails = false,
@@ -297,7 +315,7 @@ async function runApply(
 // keptType is the type GitHub reports after the mutation; it defaults to the
 // requested one, and null models a change GitHub dropped.
 async function apply(resultMessage, options = {}) {
-  const allowed = options.allowed ?? ["bug", "priority: high", "priority: low"];
+  const allowed = options.allowed ?? DEFAULT_ALLOWED;
   const outputs = await extract(resultMessage, {
     output: options.output,
     allowed,
@@ -488,40 +506,20 @@ test("a permission denial with another escalation reason still escalates", async
 });
 
 test("extract logs each denied tool and input inside stop-commands, with credentials redacted", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "intake-extract-"));
-  const executionFile = path.join(directory, "execution.json");
-  fs.writeFileSync(
-    executionFile,
-    JSON.stringify([
-      {
-        ...SUCCESS,
-        structured_output: triaged(),
-        permission_denials: [
-          {
-            tool_name: "Bash",
-            tool_input: {
-              command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl",
-            },
+  const { infos } = await runExtract(
+    {
+      ...SUCCESS,
+      permission_denials: [
+        {
+          tool_name: "Bash",
+          tool_input: {
+            command: "x\n::error::forged ##[add-mask]y sk-ant-abcdefghijkl",
           },
-        ],
-      },
-    ]),
+        },
+      ],
+    },
+    { output: triaged(), allowed: [] },
   );
-  let infos;
-  try {
-    ({ infos } = await runScript(
-      extractStep.with.script,
-      {
-        EXECUTION_FILE: executionFile,
-        ALLOWED: "[]",
-        TYPES: JSON.stringify(TYPES),
-        CLI_VERSION: "",
-      },
-      {},
-    ));
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
   const start = infos.findIndex((l) =>
     /^::stop-commands::[0-9a-f-]{36}$/u.test(l),
   );
@@ -748,10 +746,9 @@ test("compose drops an Issue Type that collides with the none sentinel", async (
 });
 
 test("compose turns floor handling off for a floor label the repository lacks", async () => {
-  const graphql = async () => ({ repository: null });
-  const present = await compose(graphql, { FLOOR_LABEL });
+  const present = await compose(NO_REPOSITORY, { FLOOR_LABEL });
   assert.equal(present.outputs.floor, FLOOR_LABEL);
-  const absent = await compose(graphql, { FLOOR_LABEL: "triage-me" });
+  const absent = await compose(NO_REPOSITORY, { FLOOR_LABEL: "triage-me" });
   assert.equal(absent.outputs.floor, "");
   assert.ok(absent.warnings.some((w) => /triage-me/u.test(w)));
 });
@@ -774,7 +771,7 @@ test("compose rejects an admission label as the floor label", async () => {
       },
       {
         paginate: async () => [{ name: ESCALATION_LABEL }, { name: floor }],
-        graphql: async () => ({ repository: null }),
+        graphql: NO_REPOSITORY,
         rest: { issues: { listLabelsForRepo: () => {} } },
       },
     );
@@ -784,7 +781,6 @@ test("compose rejects an admission label as the floor label", async () => {
 });
 
 test("compose reads the model, effort and turn cap from claude-args; the last of each wins", async () => {
-  const graphql = async () => ({ repository: null });
   for (const [baseArgs, model, effort, cap] of [
     [
       "--model claude-sonnet-5 --max-turns 30",
@@ -798,7 +794,9 @@ test("compose reads the model, effort and turn cap from claude-args; the last of
     ["--max-turns='7' --effort=high", "sonnet", "high", "7"],
     ["", "sonnet", "medium", "30"],
   ]) {
-    const { outputs, failed } = await compose(graphql, { BASE_ARGS: baseArgs });
+    const { outputs, failed } = await compose(NO_REPOSITORY, {
+      BASE_ARGS: baseArgs,
+    });
     assert.deepEqual(failed, [], baseArgs);
     assert.deepEqual(
       [outputs.model, outputs.effort, outputs["max-turns"]],
@@ -809,7 +807,6 @@ test("compose reads the model, effort and turn cap from claude-args; the last of
 });
 
 test("compose refuses any other claude-args flag, a missing value or a bad turn cap", async () => {
-  const graphql = async () => ({ repository: null });
   for (const baseArgs of [
     "--max-turnsx 9",
     "--model x --permission-mode bypassPermissions",
@@ -818,42 +815,44 @@ test("compose refuses any other claude-args flag, a missing value or a bad turn 
     "--max-turns 0",
     "sonnet",
   ]) {
-    const { outputs, failed } = await compose(graphql, { BASE_ARGS: baseArgs });
+    const { outputs, failed } = await compose(NO_REPOSITORY, {
+      BASE_ARGS: baseArgs,
+    });
     assert.equal(failed.length, 1, baseArgs);
     assert.equal(outputs["prompt-file"], undefined, baseArgs);
   }
 });
 
 test("the default runs Sonnet at medium effort for 30 turns, which an omitted flag also takes", async () => {
-  const graphql = async () => ({ repository: null });
   const fallback = workflow.on.workflow_call.inputs["claude-args"].default;
   assert.equal(fallback, "--model sonnet --effort medium --max-turns 30");
-  const explicit = await compose(graphql, { BASE_ARGS: fallback });
-  const omitted = await compose(graphql, { BASE_ARGS: "" });
+  const explicit = await compose(NO_REPOSITORY, { BASE_ARGS: fallback });
+  const omitted = await compose(NO_REPOSITORY, { BASE_ARGS: "" });
   for (const key of ["model", "effort", "max-turns"]) {
     assert.equal(explicit.outputs[key], omitted.outputs[key], key);
   }
 });
 
 test("compose maps stable and bundled to latest and refuses other CLI versions", async () => {
-  const graphql = async () => ({ repository: null });
   for (const [requested, resolved] of [
     ["latest", "latest"],
     ["2.1.302", "2.1.302"],
     ["stable", "latest"],
     ["bundled", "latest"],
   ]) {
-    const { outputs } = await compose(graphql, { CLI_VERSION: requested });
+    const { outputs } = await compose(NO_REPOSITORY, {
+      CLI_VERSION: requested,
+    });
     assert.equal(outputs["cli-version"], resolved, requested);
   }
   for (const requested of ["2.1", "2.1.302-beta.1", "next"]) {
-    const { failed } = await compose(graphql, { CLI_VERSION: requested });
+    const { failed } = await compose(NO_REPOSITORY, { CLI_VERSION: requested });
     assert.equal(failed.length, 1, requested);
   }
 });
 
 test("compose writes a prompt naming the issue, the fetched files, the allowed labels and the caller's instructions", async () => {
-  const { outputs } = await compose(async () => ({ repository: null }), {
+  const { outputs } = await compose(NO_REPOSITORY, {
     INSTRUCTIONS: "Prefer the docs label for typos.",
     ISSUE_FILE: "/w/.intake-triage-x/issue.json",
     OPEN_ISSUES_FILE: "/w/.intake-triage-x/open-issues.json",
@@ -1027,9 +1026,7 @@ async function fetchComments(job, comments, ids) {
         },
       },
     };
-    const fetch = workflow.jobs[job].steps.find(
-      (s) => s.name === "Fetch the issue for the model",
-    );
+    const fetch = fetchStepOf(job);
     const { outputs } = await runScript(
       fetch.with.script,
       { ISSUE_NUMBER: "7", GITHUB_WORKSPACE: workspace, ...ids },
@@ -1156,9 +1153,7 @@ for (const job of ["claude", "triage-subscription"]) {
 
 test("the fetch step filters on every run, from the trust inputs", () => {
   for (const job of ["claude", "triage-subscription"]) {
-    const fetch = workflow.jobs[job].steps.find(
-      (s) => s.name === "Fetch the issue for the model",
-    );
+    const fetch = fetchStepOf(job);
     assert.equal(fetch.if, undefined, job);
     assert.equal(
       fetch.env.AUTHOR_IDS,
@@ -1184,9 +1179,7 @@ test("the apply job applies no label outside the allowlist or the repository, no
   });
   const run = await runApply(
     {
-      KEY_SUBTYPE: "success",
-      KEY_ERROR: "false",
-      KEY_DENIALS: "0",
+      ...CLEAN_KEY,
       KEY_TRIAGE: triage,
     },
     {
@@ -1209,9 +1202,7 @@ test("the apply job refuses a malformed issue number from the event or input", a
   for (const requested of ["", "0", "7; rm", "-1"]) {
     const run = await runApply({
       REQUESTED: requested,
-      KEY_SUBTYPE: "success",
-      KEY_ERROR: "false",
-      KEY_DENIALS: "0",
+      ...CLEAN_KEY,
       KEY_TRIAGE: JSON.stringify(triaged()),
     });
     assert.equal(run.failed.length, 1, requested);
@@ -1236,9 +1227,7 @@ test("a missing, unparsable or masked triage output escalates; a forged denial c
     ],
   ]) {
     const run = await runApply({
-      KEY_SUBTYPE: "success",
-      KEY_ERROR: "false",
-      KEY_DENIALS: "0",
+      ...CLEAN_KEY,
       ...env,
     });
     assert.deepEqual(run.labels, [ESCALATION_LABEL, FLOOR_LABEL], name);
@@ -1250,9 +1239,7 @@ test("a missing, unparsable or masked triage output escalates; a forged denial c
 test("the apply job refuses an escalation label the repository lacks", async () => {
   const run = await runApply(
     {
-      KEY_SUBTYPE: "success",
-      KEY_ERROR: "false",
-      KEY_DENIALS: "0",
+      ...CLEAN_KEY,
       KEY_TRIAGE: JSON.stringify(triaged({ needs_human: true })),
     },
     { liveLabels: ["priority: high", FLOOR_LABEL] },
@@ -1451,13 +1438,7 @@ test("with no field value, a priority label a listed person set stands and no fi
     output: triaged(),
     priorityField: FIELD,
     issueLabels: ["priority: low"],
-    events: [
-      {
-        event: "labeled",
-        label: { name: "priority: low" },
-        actor: { type: "User", id: 42 },
-      },
-    ],
+    events: [labeled("priority: low", { type: "User", id: 42 })],
     authorIds: "42",
   });
   assert.deepEqual(fieldWrites, []);
@@ -1483,19 +1464,13 @@ test("a pick nothing can carry leaves the old priority label on", async () => {
     fieldWriteFails: true,
     liveLabels: [ESCALATION_LABEL, FLOOR_LABEL, "priority: low"],
     issueLabels: ["priority: low"],
-    events: [
-      {
-        event: "labeled",
-        label: { name: "priority: low" },
-        actor: { type: "Bot", id: 7 },
-      },
-    ],
+    events: [labeled("priority: low", { type: "Bot", id: 7 })],
   });
   assert.deepEqual(removed, []);
 });
 
 test("compose offers a priority the repository has no label for when the field is set", async () => {
-  const { outputs } = await compose(async () => ({ repository: null }), {
+  const { outputs } = await compose(NO_REPOSITORY, {
     ALLOWED_LABELS: "priority: high\npriority: low\n",
     PRIORITY_FIELD_ID: FIELD,
   });
@@ -1506,7 +1481,7 @@ test("compose offers a priority the repository has no label for when the field i
 });
 
 test("compose never offers admission labels to the model", async () => {
-  const { outputs } = await compose(async () => ({ repository: null }), {
+  const { outputs } = await compose(NO_REPOSITORY, {
     ALLOWED_LABELS:
       "priority: high\nwork-class: example\nprovenance: untrusted\nagent-ready\n",
   });
@@ -1552,7 +1527,6 @@ const PRIORITIES = [
 const MAINTAINER = { id: 1001, type: "User", login: "maintainer" };
 const OUTSIDER = { id: 2002, type: "User", login: "outsider" };
 const LANE_BOT = { id: 41898282, type: "Bot", login: "github-actions[bot]" };
-const labeled = (name, actor) => ({ event: "labeled", label: { name }, actor });
 const priorityRun = (pick, options) =>
   apply(SUCCESS, {
     output: triaged({ labels: [pick] }),

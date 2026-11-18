@@ -16,8 +16,11 @@ workspace="$(realpath -e -- "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}")
   echo '::error::gitleaks: workspace cannot be resolved'
   exit 2
 }
-within_workspace() {
-  [[ "$1" == "$workspace" || "$1" == "$workspace/"* ]]
+# require_within_workspace <resolved path> <label> <input path>
+require_within_workspace() {
+  [[ "$1" == "$workspace" || "$1" == "$workspace/"* ]] && return 0
+  echo "::error::gitleaks: $2 must resolve inside GITHUB_WORKSPACE: $3"
+  exit 2
 }
 
 if [[ ! -f "$CONFIG" || -L "$CONFIG" ]]; then
@@ -25,21 +28,13 @@ if [[ ! -f "$CONFIG" || -L "$CONFIG" ]]; then
   exit 2
 fi
 resolved_config="$(realpath -e -- "$CONFIG")"
-# shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
-if ! within_workspace "$resolved_config"; then
-  echo "::error::gitleaks: config must resolve inside GITHUB_WORKSPACE: $CONFIG"
-  exit 2
-fi
+require_within_workspace "$resolved_config" config "$CONFIG"
 if [[ ! -e "$PATH_TO_SCAN" || -L "$PATH_TO_SCAN" ]]; then
   echo "::error::gitleaks: scan path must exist and cannot be a symlink: $PATH_TO_SCAN"
   exit 2
 fi
 resolved_scan="$(realpath -e -- "$PATH_TO_SCAN")"
-# shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
-if ! within_workspace "$resolved_scan"; then
-  echo "::error::gitleaks: scan path must resolve inside GITHUB_WORKSPACE: $PATH_TO_SCAN"
-  exit 2
-fi
+require_within_workspace "$resolved_scan" 'scan path' "$PATH_TO_SCAN"
 
 case "$SCAN_MODE" in
   dir | git) ;;
@@ -103,11 +98,7 @@ if [[ -n "${REPORT_FORMAT// /}" || -n "${REPORT_PATH// /}" ]]; then
     echo "::error::gitleaks: report parent cannot be resolved: $REPORT_PATH"
     exit 2
   }
-  # shellcheck disable=SC2310 # within_workspace is a predicate with no fallible body commands.
-  if ! within_workspace "$report_parent"; then
-    echo "::error::gitleaks: report path must resolve inside GITHUB_WORKSPACE: $REPORT_PATH"
-    exit 2
-  fi
+  require_within_workspace "$report_parent" 'report path' "$REPORT_PATH"
 fi
 
 args=("$SCAN_MODE" "$PATH_TO_SCAN")
@@ -138,10 +129,8 @@ if [[ -n "${REPORT_FORMAT// /}" ]]; then
   args+=(--report-format "$REPORT_FORMAT" --report-path "$REPORT_PATH")
 fi
 
-set +e
-gitleaks "${args[@]}"
-status=$?
-set -e
+status=0
+gitleaks "${args[@]}" || status=$?
 
 # Gitleaks exits 0 clean and 1 on findings; anything else blocks in every mode.
 if ((status != 0 && status != 1)); then

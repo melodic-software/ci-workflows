@@ -64,12 +64,13 @@ function loadContracts(policyText) {
  */
 function workflowCallSurface(document) {
   const on = document?.on;
-  let call;
-  if (on === "workflow_call") call = null;
-  else if (Array.isArray(on) && on.includes("workflow_call")) call = null;
-  else if (on && typeof on === "object" && "workflow_call" in on) {
-    call = on.workflow_call;
-  } else return null;
+  const listed =
+    on === "workflow_call" ||
+    (Array.isArray(on) && on.includes("workflow_call"));
+  const mapped =
+    !listed && on !== null && typeof on === "object" && "workflow_call" in on;
+  if (!listed && !mapped) return null;
+  const call = mapped ? on.workflow_call : null;
   const entries = (block) =>
     new Map(
       Object.entries(block && typeof block === "object" ? block : {}).map(
@@ -77,11 +78,6 @@ function workflowCallSurface(document) {
       ),
     );
   return { inputs: entries(call?.inputs), secrets: entries(call?.secrets) };
-}
-
-function secretMaps(allowedSecrets) {
-  if (Array.isArray(allowedSecrets)) return allowedSecrets;
-  return [allowedSecrets ?? {}];
 }
 
 /**
@@ -93,12 +89,13 @@ function compareSurface({ key, base, head, contract }) {
   const before = base ?? empty;
   const after = head ?? empty;
   const allowedInputs = new Set(contract.allowedInputs ?? []);
-  const maps = secretMaps(contract.allowedSecrets);
+  const inputListed = (name) => allowedInputs.has(name);
+  const { allowedSecrets } = contract;
+  const maps = Array.isArray(allowedSecrets)
+    ? allowedSecrets
+    : [allowedSecrets ?? {}];
   const listedBy = {
-    input: {
-      any: (name) => allowedInputs.has(name),
-      every: (name) => allowedInputs.has(name),
-    },
+    input: { any: inputListed, every: inputListed },
     secret: {
       any: (name) => maps.some((map) => Object.hasOwn(map ?? {}, name)),
       every: (name) => maps.every((map) => Object.hasOwn(map ?? {}, name)),
@@ -215,9 +212,5 @@ if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
 module.exports = Object.freeze({
   POLICY_PATH,
-  SurfaceCheckError,
-  compareSurface,
-  loadContracts,
   main,
-  workflowCallSurface,
 });

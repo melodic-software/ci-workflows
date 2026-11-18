@@ -961,6 +961,9 @@ const workflowFile = (extra = {}) => ({
   ...extra,
 });
 const atDecided = [prFile(), workflowFile()];
+const manyFiles = Array.from({ length: 300 }, (_, i) =>
+  prFile({ filename: `f${i}.js` }),
+);
 const carryCase = (laterFiles, options = {}) =>
   apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
     comments: [decision()],
@@ -1072,14 +1075,11 @@ test("a file with no patch, or a list of 300 or more files, keeps the cost hold"
     status: "modified",
     sha: "6".repeat(40),
   };
-  const many = Array.from({ length: 300 }, (_, i) =>
-    prFile({ filename: `f${i}.js` }),
-  );
   for (const [name, then, later] of [
     ["no patch at either head", [...atDecided, binary], [...atDecided, binary]],
     // At the decided head the run's vet stops it first (the
     // "lists 300 files" case below); here only the head lists 300.
-    ["300 files at the head", atDecided, many],
+    ["300 files at the head", atDecided, manyFiles],
   ]) {
     const { core } = await apply(costEnv(["cost"], { HEAD_SHA: LATER }), {
       comments: [decision()],
@@ -1248,9 +1248,6 @@ test("the notice fixture carries, and each one-field change to it keeps the cost
 });
 
 test("a run whose head changes this lane's workflow, or lists 300 files, carries nothing", async () => {
-  const many = Array.from({ length: 300 }, (_, i) =>
-    prFile({ filename: `f${i}.js` }),
-  );
   for (const [name, files, why] of [
     [
       "the lane workflow",
@@ -1264,7 +1261,7 @@ test("a run whose head changes this lane's workflow, or lists 300 files, carries
       ],
       /changes this lane's workflow/u,
     ],
-    ["300 files", many, /lists 300 or more files/u],
+    ["300 files", manyFiles, /lists 300 or more files/u],
     ["no file list", undefined, /lists 300 or more files, or no file list/u],
   ]) {
     const { core } = await apply(costEnv(), {
@@ -1611,8 +1608,6 @@ test("an unusable STATUS_JOB_LEGACY reads no run and keeps the cost hold", async
 });
 
 test("the hold comment carries the run's binding above its footer and the run's record lists it; a re-run lists its run's earlier one", async () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
   const { createHash } = require("node:crypto");
   const read = (file) =>
     fs.existsSync(file)
@@ -1624,9 +1619,7 @@ test("the hold comment carries the run's binding above its footer and the run's 
       : [];
   const digest = (body) =>
     createHash("sha256").update(body, "utf8").digest("hex");
-  const dir = fs.mkdtempSync(
-    path.join(require("node:os").tmpdir(), "hold-record-"),
-  );
+  const dir = makeTemporaryDirectory("hold-record-");
   const record = path.join(dir, "first.jsonl");
   const env = baseEnv({
     GITHUB_RUN_ID: "4242",
@@ -1673,12 +1666,7 @@ test("the hold comment carries the run's binding above its footer and the run's 
 });
 
 test("a re-run records only a hold comment word for word its own, never a look-alike bound to its run", async () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const dir = fs.mkdtempSync(
-    path.join(require("node:os").tmpdir(), "hold-record-"),
-  );
-  const record = path.join(dir, "r.jsonl");
+  const record = path.join(makeTemporaryDirectory("hold-record-"), "r.jsonl");
   const marker = `<!-- claude-lane-hold lane=claude-review sha=${HEAD} criteria=cost -->`;
   const lookalike = {
     id: 9,

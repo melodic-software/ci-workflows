@@ -217,6 +217,16 @@ function env(dir, extra = {}) {
   };
 }
 
+// A runner temp directory with an empty GITHUB_OUTPUT file.
+function outputDir(prefix) {
+  const dir = makeTemporaryDirectory(prefix);
+  fs.writeFileSync(path.join(dir, "output"), "");
+  return dir;
+}
+
+const inputVariable = (name) =>
+  `INPUT_${name.toUpperCase().replaceAll("-", "_")}`;
+
 const outputs = (dir) =>
   Object.fromEntries(
     fs
@@ -251,8 +261,7 @@ test("the start call reads the credit history once and names the first leg; an e
     [0.5, "subscription"],
     [3, "key"],
   ]) {
-    const dir = makeTemporaryDirectory("select-start-");
-    fs.writeFileSync(path.join(dir, "output"), "");
+    const dir = outputDir("select-start-");
     const { urls, fetchImpl } = counting([ARTIFACT(hoursAgo)]);
     await select.main(
       env(dir, {
@@ -273,8 +282,7 @@ test("the start call reads the credit history once and names the first leg; an e
 });
 
 test("a failed credit read runs the key", async () => {
-  const dir = makeTemporaryDirectory("select-start-");
-  fs.writeFileSync(path.join(dir, "output"), "");
+  const dir = outputDir("select-start-");
   const { fetchImpl } = counting(null);
   const { lines } = await select.main(
     env(dir, { INPUT_LEG: "start", INPUT_KEY_JOB: KEY_JOB }),
@@ -286,8 +294,7 @@ test("a failed credit read runs the key", async () => {
 });
 
 test("a key leg with key-job reads the credit history itself; leg and next calls make no API call", async () => {
-  const dir = makeTemporaryDirectory("select-leg-");
-  fs.writeFileSync(path.join(dir, "output"), "");
+  const dir = outputDir("select-leg-");
   const inline = counting([
     ARTIFACT(0.5, markerName("pr-review-hosted.yml", "check-intent")),
   ]);
@@ -327,16 +334,14 @@ test("a key leg with key-job reads the credit history itself; leg and next calls
       INPUT_HANDOFF_REASON: "auth",
     },
   ]) {
-    const out = makeTemporaryDirectory("select-leg-");
-    fs.writeFileSync(path.join(out, "output"), "");
+    const out = outputDir("select-leg-");
     await select.main(env(out, extra), none.fetchImpl, () => new Date(NOW));
   }
   assert.equal(none.urls.length, 0);
 });
 
 test("the leg call writes the outputs the jobs read; the next call reads its state", async () => {
-  const dir = makeTemporaryDirectory("select-leg-");
-  fs.writeFileSync(path.join(dir, "output"), "");
+  const dir = outputDir("select-leg-");
   const { lines } = await select.main(
     env(dir, {
       INPUT_LEG: "subscription",
@@ -355,8 +360,7 @@ test("the leg call writes the outputs the jobs read; the next call reads its sta
     lines[0],
     /^::warning::ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN is empty/u,
   );
-  const next = makeTemporaryDirectory("select-next-");
-  fs.writeFileSync(path.join(next, "output"), "");
+  const next = outputDir("select-next-");
   await select.main(env(next, { INPUT_STATE: out.state }));
   assert.deepEqual(outputs(next), {
     "next-leg": "fallback",
@@ -398,13 +402,12 @@ test("a next-leg call with an empty state passes and names no next leg, in every
     );
     const inputs = Object.fromEntries(
       Object.entries(next.with).map(([name, value]) => [
-        `INPUT_${name.toUpperCase().replaceAll("-", "_")}`,
+        inputVariable(name),
         String(evaluate(value, { steps }) ?? ""),
       ]),
     );
     assert.equal(inputs.INPUT_STATE, "", id);
-    const dir = makeTemporaryDirectory("select-skipped-");
-    fs.writeFileSync(path.join(dir, "output"), "");
+    const dir = outputDir("select-skipped-");
     const { lines } = await select.main(env(dir, inputs));
     assert.deepEqual(outputs(dir), { "next-leg": "", "next-reason": "" }, id);
     assert.match(lines[0], /no next leg/u);
@@ -451,8 +454,7 @@ test("the action passes every input to the script and holds the job token back u
   const run = action.runs.steps[0];
   for (const name of Object.keys(action.inputs)) {
     if (name === "github-token") continue;
-    const variable = `INPUT_${name.toUpperCase().replaceAll("-", "_")}`;
-    assert.equal(run.env[variable], `\${{ inputs.${name} }}`, name);
+    assert.equal(run.env[inputVariable(name)], `\${{ inputs.${name} }}`, name);
   }
   assert.equal(
     run.env.GITHUB_TOKEN,
@@ -511,6 +513,12 @@ function launches(leg, fallbackReady) {
 }
 
 const bools = [true, false];
+// Every [keySet, subSet, fbSet] combination.
+const credentialSets = bools.flatMap((a) =>
+  bools.flatMap((b) => bools.map((c) => [a, b, c])),
+);
+// A leg that did not launch its model.
+const NOT_LAUNCHED = { "lane-class": "", handoff: "", "handoff-reason": "" };
 const PR = {
   event_name: "pull_request",
   actor: "kyle-sexton",
@@ -552,9 +560,7 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
   };
   let states = 0;
   for (const gate of ["skip", "ok", "failed"]) {
-    for (const [keySet, subSet, fbSet] of bools.flatMap((a) =>
-      bools.flatMap((b) => bools.map((c) => [a, b, c])),
-    )) {
+    for (const [keySet, subSet, fbSet] of credentialSets) {
       for (const exhausted of ["", "true"]) {
         for (const scoped of bools) {
           const secrets = {
@@ -618,7 +624,7 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
             const runs =
               decided.present === "true"
                 ? launches("key", fbSet)
-                : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
+                : [NOT_LAUNCHED];
             for (const launched of runs) {
               const oldOut = {
                 ...launched,
@@ -685,7 +691,7 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
             const subRuns =
               subDecided.present === "true"
                 ? launches("subscription", fbSet)
-                : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
+                : [NOT_LAUNCHED];
             for (const launched of subRuns) {
               const oldOut = {
                 ...launched,
@@ -762,9 +768,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
   const credential = (job) => job.steps.find((s) => s.id === "credential").with;
   let states = 0;
   for (const gate of ["skip", "ok", "failed"]) {
-    for (const [keySet, subSet, fbSet] of bools.flatMap((a) =>
-      bools.flatMap((b) => bools.map((c) => [a, b, c])),
-    )) {
+    for (const [keySet, subSet, fbSet] of credentialSets) {
       const skipKey = gate === "skip" ? "true" : gate === "ok" ? "false" : "";
       const start =
         gate === "failed" ? {} : select.start({ skipKey: gate === "skip" });
@@ -782,7 +786,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
       const keyOutcomes = [];
       if (!keyRuns) {
         keyOutcomes.push({
-          launched: { "lane-class": "", handoff: "", "handoff-reason": "" },
+          launched: NOT_LAUNCHED,
           result: "skipped",
           new: {},
         });
@@ -807,9 +811,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
           old["key-skipped"] === "true",
         );
         const runs =
-          decided.present === "true"
-            ? launches("key", fbSet)
-            : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
+          decided.present === "true" ? launches("key", fbSet) : [NOT_LAUNCHED];
         for (const launched of runs) {
           keyOutcomes.push({
             launched,
@@ -866,7 +868,7 @@ test("intake-triage picks the same legs, credentials and reasons as its old copi
         const subRuns =
           subDecided.present === "true"
             ? launches("subscription", fbSet)
-            : [{ "lane-class": "", handoff: "", "handoff-reason": "" }];
+            : [NOT_LAUNCHED];
         for (const subLaunched of subRuns) {
           const oldSubOut = {
             ...subLaunched,

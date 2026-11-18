@@ -12,6 +12,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const {
+  DEFAULT_WINDOW_HOURS,
   backoff,
   decide,
   judgeMarkers,
@@ -21,6 +22,15 @@ const {
   probeName,
 } = require("../actions/check-key-credit/gate.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
+
+const readAction = () =>
+  parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
+      "utf8",
+    ),
+  );
 
 const KEY = "claude-review-key";
 const NAME = markerName("pr-review-hosted.yml", KEY);
@@ -209,6 +219,7 @@ function fakeFetch(routes) {
 const ARTIFACTS =
   /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-stop-pr-review-hosted\.yml-claude-review-key&per_page=100$/u;
 const now = () => new Date(NOW);
+const output = (dir) => fs.readFileSync(path.join(dir, "output"), "utf8");
 
 test("main skips on a marker in the window with one call, reads no run or job list, and says which run", async () => {
   const dir = makeTemporaryDirectory("check-key-credit-");
@@ -226,7 +237,7 @@ test("main skips on a marker in the window with one call, reads no run or job li
     /^::notice title=check-key-credit::claude-review-key skips the key: the key's credit stop in run 98 \(https:\/\/example\/o\/r\/actions\/runs\/98\) is inside the 6-hour window/u,
   );
   assert.equal(
-    fs.readFileSync(path.join(dir, "output"), "utf8"),
+    output(dir),
     `skip-key=true\norigin-run=98\nmarker=${NAME}\nprobing-marker=\n`,
   );
   // The response's rate-limit reading, for report-api-budget.
@@ -253,7 +264,7 @@ test("main runs the key with one call when no credit-stop marker counts", async 
       /^check-key-credit: claude-review-key runs the key: no credit-stop marker in the window$/u,
     );
     assert.equal(
-      fs.readFileSync(path.join(dir, "output"), "utf8"),
+      output(dir),
       `skip-key=false\norigin-run=\nmarker=${NAME}\nprobing-marker=\n`,
     );
   }
@@ -276,7 +287,7 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
     // The marker name still goes out, so a key job can record a credit stop
     // while the gate is off; an unreadable ref leaves it empty.
     assert.equal(
-      fs.readFileSync(path.join(dir, "output"), "utf8"),
+      output(dir),
       `skip-key=false\norigin-run=\nmarker=${name}\nprobing-marker=\n`,
     );
   }
@@ -291,7 +302,6 @@ const minutesAgo = (minutes) =>
   new Date(NOW - minutes * 60 * 1000).toISOString();
 const probe = (run, minutes, extra = {}) =>
   marker(run, 0, { name: PROBE, created_at: minutesAgo(minutes), ...extra });
-const output = (dir) => fs.readFileSync(path.join(dir, "output"), "utf8");
 
 test("the probing marker is named apart from the credit-stop marker", () => {
   assert.equal(probeName("pr-review-hosted.yml", KEY), PROBE);
@@ -437,13 +447,7 @@ test("a fork's probing marker, or a probe window of 0 or out of range, never ski
 });
 
 test("the action passes the probe window to the gate and the probing marker out", () => {
-  const { parseWorkflow } = require("./workflow-yaml.cjs");
-  const action = parseWorkflow(
-    fs.readFileSync(
-      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
-      "utf8",
-    ),
-  );
+  const action = readAction();
   assert.equal(
     action.runs.steps[0].env.PROBE_MINUTES,
     `\${{ inputs.probe-minutes }}`,
@@ -457,13 +461,7 @@ test("the action passes the probe window to the gate and the probing marker out"
 });
 
 test("the action passes the caller's workflow ref and the window to the gate, and the marker out", () => {
-  const { parseWorkflow } = require("./workflow-yaml.cjs");
-  const action = parseWorkflow(
-    fs.readFileSync(
-      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
-      "utf8",
-    ),
-  );
+  const action = readAction();
   const run = action.runs.steps[0];
   assert.equal(run.env.WORKFLOW_REF, `\${{ github.workflow_ref }}`);
   assert.equal(run.env.WINDOW_HOURS, `\${{ inputs.window-hours }}`);
@@ -479,9 +477,6 @@ test("the action passes the caller's workflow ref and the window to the gate, an
 // string the action's default never replaces: empty must mean 1 hour and
 // 15 probe minutes, never 0 (the gate off).
 test("an empty window or probe window is the 1-hour and 15-minute default; 0 stays off", async () => {
-  const {
-    DEFAULT_WINDOW_HOURS,
-  } = require("../actions/check-key-credit/gate.cjs");
   assert.equal(DEFAULT_WINDOW_HOURS, 1);
   for (const [window, skip] of [
     ["", true],
@@ -757,13 +752,7 @@ test("a failed read inside the backed-off window tries the key, never a longer s
 });
 
 test("the action passes reset-at to the gate and says a hand-set key waits out the step", () => {
-  const { parseWorkflow } = require("./workflow-yaml.cjs");
-  const action = parseWorkflow(
-    fs.readFileSync(
-      path.join(__dirname, "..", "actions", "check-key-credit", "action.yml"),
-      "utf8",
-    ),
-  );
+  const action = readAction();
   assert.equal(action.runs.steps[0].env.RESET_AT, `\${{ inputs.reset-at }}`);
   assert.equal(action.inputs["reset-at"].default, "");
   assert.match(action.description, /gh secret set/u);

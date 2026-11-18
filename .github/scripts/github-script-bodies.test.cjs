@@ -39,10 +39,8 @@ function yamlFiles(dir, nameFilter) {
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir, { withFileTypes: true })
-    .flatMap((entry) => {
-      const full = path.join(dir, entry.name);
-      return entry.isDirectory() ? [] : nameFilter(entry.name) ? [full] : [];
-    })
+    .filter((entry) => !entry.isDirectory() && nameFilter(entry.name))
+    .map((entry) => path.join(dir, entry.name))
     .sort();
 }
 

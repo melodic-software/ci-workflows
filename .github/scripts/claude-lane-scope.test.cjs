@@ -9,6 +9,7 @@
 // that decision.
 
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -792,7 +793,6 @@ test("the restack check's git commands see mode and type changes in a blob-less 
   // A real repository: the reviewed head, then three rebases of it onto a
   // base commit that changed only base.txt. One keeps the pull request's
   // file as it was; one makes it executable; one makes it a symlink.
-  const { execFileSync } = require("node:child_process");
   const root = makeTemporaryDirectory("restack-git-");
   const origin = path.join(root, "origin");
   const git = (cwd, ...args) =>
@@ -899,37 +899,37 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     user: { login: BOT },
     body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${sha} -->\n**claude-review** needs no new review of \`${sha}\`: every file in scope matches docs-only-paths.`,
   });
-  const scopeCli = (comments, compares = {}) => {
+  // The environment pr-review-cli.yml's scope step runs with, in a new directory.
+  const cliEnv = () => {
     const directory = makeTemporaryDirectory("scope-cli-");
-    return runScope(cliLane, {
-      env: {
-        GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
-        FILE_LIST: path.join(directory, "files.txt"),
-        DATA_LIST: path.join(directory, "data.txt"),
-        RUNNER_TEMP: directory,
-      },
+    return {
+      GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
+      FILE_LIST: path.join(directory, "files.txt"),
+      DATA_LIST: path.join(directory, "data.txt"),
+      RUNNER_TEMP: directory,
+    };
+  };
+  const scopeCli = (comments, compares = {}) =>
+    runScope(cliLane, {
+      env: cliEnv(),
       prFiles: [file("src/a.js")],
       comments,
       compares,
     });
-  };
   const changed = unmovedBase([
     file("src/a.js", { patch: "@@ -1 +1 @@\n-x\n+y", changes: 2 }),
   ]);
 
   test("pr-review-cli: an output style is an agent instruction, never docs-only", async () => {
-    const directory = makeTemporaryDirectory("scope-cli-");
+    const env = {
+      ...cliEnv(),
+      DOCS_ONLY_PATHS: "**/README.md",
+      EVENT_ACTION: "opened",
+    };
     const decide = async (filenames) =>
       (
         await runScope(cliLane, {
-          env: {
-            GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
-            FILE_LIST: path.join(directory, "files.txt"),
-            DATA_LIST: path.join(directory, "data.txt"),
-            RUNNER_TEMP: directory,
-            DOCS_ONLY_PATHS: "**/README.md",
-            EVENT_ACTION: "opened",
-          },
+          env,
           prFiles: filenames.map((name) => file(name)),
         })
       ).outputs.review;
