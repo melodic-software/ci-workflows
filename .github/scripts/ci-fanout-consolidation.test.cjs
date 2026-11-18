@@ -299,7 +299,35 @@ test("the ci-status contract-only default matches every job gate", () => {
   assert.ok(compared > 0);
 });
 
-test("the ci-status job runs check-contract before the aggregation", () => {
+const ciStatusCompositePath = path.join(
+  repositoryRoot,
+  ".github",
+  "actions",
+  "pr-require-checks/ci-status",
+  "action.yml",
+);
+const ciStatusComposite = fs.readFileSync(ciStatusCompositePath, "utf8");
+const compositeSteps = ciStatusComposite
+  .slice(ciStatusComposite.search(/^ {2}steps:$/mu))
+  .split(/^ {4}- /mu)
+  .slice(1);
+const compositeStep = (uses) => {
+  const step = compositeSteps.find((candidate) =>
+    candidate.includes(`uses: $/.github/actions/pr-require-checks/${uses}\n`),
+  );
+  assert.ok(step !== undefined, `the ci-status composite has no ${uses} step`);
+  return step;
+};
+const foldedValue = (block, key) => {
+  const match = new RegExp(
+    `^ +${key}: >-\\n(?<value>(?: {10}.*\\n)+)`,
+    "mu",
+  ).exec(block);
+  assert.ok(match !== null, `no folded ${key}`);
+  return match.groups.value;
+};
+
+test("the ci-status job runs the ci-status composite from this commit", () => {
   const ciStatusJob = ciWorkflow.slice(ciWorkflow.search(/^ {2}ci-status:$/mu));
   assert.match(ciStatusJob, /^ {6}statuses: write$/mu);
   assert.match(ciStatusJob, /^ {6}pull-requests: write$/mu);
@@ -307,52 +335,43 @@ test("the ci-status job runs check-contract before the aggregation", () => {
   // `rerun-contract-only-siblings` re-runs the red contract-only ones; write
   // covers the read, and without the scope the Actions calls 403.
   assert.match(ciStatusJob, /^ {6}actions: write$/mu);
-  const contractStep = ciStatusJob.indexOf(
-    "$/.github/actions/pr-require-checks/check-contract",
-  );
-  const aggregateStep = ciStatusJob.indexOf(
-    "$/.github/actions/pr-require-checks/aggregate-results",
-  );
-  assert.ok(contractStep !== -1 && aggregateStep !== -1);
-  assert.ok(contractStep < aggregateStep);
-  // `!cancelled()` so a failing contract step does not skip the status write.
+  // `$/`, not a SHA pin: this repository's pull requests test the composite
+  // at the commit under test.
   assert.match(
-    ciStatusJob.slice(contractStep),
-    /^ {8}if: \$\{\{ !cancelled\(\) \}\}$/mu,
+    ciStatusJob,
+    /^ {8}uses: \$\/\.github\/actions\/pr-require-checks\/ci-status$/mu,
   );
-
-  // The wait ceiling must sit at least 60 seconds below the job budget, or a
-  // job timeout preempts the fail-closed error and the run reports as cancelled
-  // rather than telling the reader to re-run the full workflow.
-  const timeoutMinutes = Number(
-    /^ {4}timeout-minutes: (?<minutes>\d+)$/mu.exec(ciStatusJob)?.groups
-      ?.minutes,
+  assert.doesNotMatch(
+    ciStatusJob,
+    /pr-require-checks\/(?:check-contract|aggregate-results)/u,
   );
-  const waitSeconds = Number(
-    /^ {10}carry-forward-wait-seconds: '(?<seconds>\d+)'$/mu.exec(ciStatusJob)
-      ?.groups?.seconds,
-  );
-  assert.ok(
-    Number.isInteger(timeoutMinutes),
-    "ci-status has no timeout-minutes",
-  );
-  assert.ok(
-    Number.isInteger(waitSeconds),
-    "ci-status passes no explicit carry-forward-wait-seconds",
-  );
-  assert.ok(
-    waitSeconds <= timeoutMinutes * 60 - 60,
-    `carry-forward-wait-seconds ${waitSeconds} is not at least 60s below timeout-minutes ${timeoutMinutes}`,
-  );
+  // Change-gated lanes skip on a full run, so a skip passes here; the
+  // composite's default is `fail`.
+  assert.match(ciStatusJob, /^ {10}treat-skipped-as: pass$/mu);
+  // The step-name lookup matches the full run's writer step by name, so the
+  // step keeps the name its full runs wrote under.
+  const stepName =
+    /^ {6}- name: (?<name>.+)\n {8}uses: \$\/\.github\/actions\/pr-require-checks\/ci-status$/mu.exec(
+      ciStatusJob,
+    )?.groups?.name;
+  assert.equal(stepName, "Aggregate lane results");
+  assert.match(ciStatusJob, new RegExp(`^ {10}step-name: ${stepName}$`, "mu"));
 
   // A contract-only run holds for an in-flight full run under a ceiling, and
   // the full run re-runs any red contract-only sibling on success. The budget
   // holds the hold plus the job's other waits (two 60 s rate-limit waits and
   // the 120 s own-job lookup), so the timeout cannot preempt the ceiling's red.
+  const timeoutMinutes = Number(
+    /^ {4}timeout-minutes: (?<minutes>\d+)$/mu.exec(ciStatusJob)?.groups
+      ?.minutes,
+  );
+  assert.ok(
+    Number.isInteger(timeoutMinutes),
+    "ci-status has no timeout-minutes",
+  );
   const holdSeconds = Number(
-    /^ {10}yield-wait-seconds: .*'(?<seconds>[1-9]\d*)' \}\}$/mu.exec(
-      ciStatusJob,
-    )?.groups?.seconds,
+    /^ {10}yield-wait-seconds: '(?<seconds>[1-9]\d*)'$/mu.exec(ciStatusJob)
+      ?.groups?.seconds,
   );
   assert.ok(
     Number.isInteger(holdSeconds),
@@ -362,9 +381,114 @@ test("the ci-status job runs check-contract before the aggregation", () => {
     holdSeconds + 240 <= timeoutMinutes * 60,
     `yield-wait-seconds ${holdSeconds} leaves too little of timeout-minutes ${timeoutMinutes}`,
   );
-  assert.equal(waitSeconds, 0);
-  assert.match(ciStatusJob, /^ {10}yield-to-full-run: 'true'$/mu);
-  assert.match(ciStatusJob, /^ {10}rerun-contract-only-siblings: 'true'$/mu);
+});
+
+test("the ci-status composite runs the contract, then the draft policy, then the aggregation", () => {
+  const contract = ciStatusComposite.indexOf(
+    "uses: $/.github/actions/pr-require-checks/check-contract\n",
+  );
+  const draft = ciStatusComposite.indexOf(
+    'run: bash "$GITHUB_ACTION_PATH/draft.sh"',
+  );
+  const aggregate = ciStatusComposite.indexOf(
+    "uses: $/.github/actions/pr-require-checks/aggregate-results\n",
+  );
+  assert.ok(contract !== -1 && draft !== -1 && aggregate !== -1);
+  assert.ok(contract < draft && draft < aggregate);
+
+  // The contract and draft steps keep the default `success()`: the draft step
+  // has nothing to add after a failed contract.
+  assert.doesNotMatch(compositeStep("check-contract"), /^ {6}if:/mu);
+  // `!cancelled()` so a failed contract or draft step does not skip the
+  // `ci-lanes` status write the next contract-only run reads back.
+  const aggregateStep = compositeStep("aggregate-results");
+  assert.match(aggregateStep, /^ {6}if: \$\{\{ !cancelled\(\) \}\}$/mu);
+  // Every caller set these; a wait of `0` is what the hold replaces.
+  assert.match(aggregateStep, /^ {8}yield-to-full-run: 'true'$/mu);
+  assert.match(aggregateStep, /^ {8}carry-forward-wait-seconds: '0'$/mu);
+  assert.match(
+    ciStatusComposite,
+    /^ {2}rerun-contract-only-siblings:\n(?: {4}.*\n)*? {4}default: 'true'$/mu,
+  );
+  assert.match(
+    ciStatusComposite,
+    /^ {2}treat-skipped-as:\n(?: {4}.*\n)*? {4}default: fail$/mu,
+  );
+  assert.match(
+    ciStatusComposite,
+    /^ {2}draft:\n(?: {4}.*\n)*? {4}default: allow$/mu,
+  );
+});
+
+test("the ci-status composite's contract-only copies match the aggregation default", () => {
+  // The draft step's live read and the hold drop both key on the predicate the
+  // lanes gate on; a drifted copy would read the live draft state on a full
+  // run, or hold a contract-only run that cannot pass.
+  const draftStep = compositeSteps.find((step) => step.includes("draft.sh"));
+  assert.ok(draftStep !== undefined);
+  assert.equal(
+    normalizeExpression(foldedValue(draftStep, "CONTRACT_ONLY")),
+    normalizeExpression(CONTRACT_ONLY_PREDICATE),
+  );
+  const hold = normalizeExpression(
+    foldedValue(compositeStep("aggregate-results"), "yield-wait-seconds"),
+  );
+  assert.ok(
+    hold.includes(`(${normalizeExpression(CONTRACT_ONLY_PREDICATE)})`),
+    `the hold drop does not use the contract-only predicate: ${hold}`,
+  );
+});
+
+test("the ci-status composite drops the hold only on a failed contract-only run", () => {
+  const hold = foldedValue(
+    compositeStep("aggregate-results"),
+    "yield-wait-seconds",
+  );
+  const event = (action) => ({
+    action,
+    pull_request: { head: { repo: { full_name: "o/r" } } },
+  });
+  const holdFor = ({ action, jobStatus = "success", contract, draft }) =>
+    evaluate(hold, {
+      github: { repository: "o/r", event: event(action) },
+      job: { status: jobStatus },
+      steps: {
+        contract: { outcome: contract },
+        draft: { outcome: draft },
+      },
+      inputs: { "yield-wait-seconds": "420" },
+    });
+  // A failed contract on a label flip cannot pass: no hold.
+  assert.equal(
+    holdFor({ action: "labeled", contract: "failure", draft: "skipped" }),
+    "0",
+  );
+  // A refused draft on a label flip cannot pass either.
+  assert.equal(
+    holdFor({ action: "unlabeled", contract: "success", draft: "failure" }),
+    "0",
+  );
+  // A caller's own earlier step failed the job.
+  assert.equal(
+    holdFor({
+      action: "edited",
+      jobStatus: "failure",
+      contract: "success",
+      draft: "success",
+    }),
+    "0",
+  );
+  // A passing contract-only run holds for the full run.
+  assert.equal(
+    holdFor({ action: "labeled", contract: "success", draft: "success" }),
+    "420",
+  );
+  // A full run keeps its value constant: that value is what skips
+  // `rerun-wait-seconds`.
+  assert.equal(
+    holdFor({ action: "synchronize", contract: "failure", draft: "skipped" }),
+    "420",
+  );
 });
 
 test("pr-require-checks.yml consolidates the hygiene composites into the checks reusable", () => {
