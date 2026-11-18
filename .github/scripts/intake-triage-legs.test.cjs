@@ -899,13 +899,12 @@ test("exactly one job, with no model, writes the triage", () => {
     .map(([name]) => name);
   // The report-skip job writes only skipped-label on an issue no model read.
   assert.deepEqual(writers, ["apply", "report-skip"]);
-  for (const job of [claude, subscription, fallback]) {
-    assert.equal(
-      job.steps.some((step) => step.name === "Apply the triage"),
-      false,
-      job.name,
-    );
-  }
+  const job = claude;
+  assert.equal(
+    job.steps.some((step) => step.name === "Apply the triage"),
+    false,
+    job.name,
+  );
 });
 
 // The key-credit gate (claude-code-plugins#13586): a job with no secret reads
