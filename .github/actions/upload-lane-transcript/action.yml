@@ -18,7 +18,8 @@ description: >
   as `otel.jsonl.gz.sealed`, scanned and sealed the same way under the payload
   name `otel.jsonl.gz` and bound to the same run and job. Telemetry that fails
   its scan, cannot be sealed, or would take the artifact past the puller's size
-  limit is left out with a warning, and the transcript still uploads.
+  limit is left out with an annotation saying so, and the transcript still
+  uploads.
   Needs node on PATH.
 
 inputs:
@@ -73,6 +74,7 @@ runs:
       shell: bash
       env:
         SCAN_PATHS: ${{ inputs.otel-file }}
+        SCAN_WITHHOLDS: the telemetry is left out and the transcript still uploads
       run: node "$GITHUB_ACTION_PATH/../scan-upload/scan.cjs"
 
     - name: Seal the telemetry

@@ -376,3 +376,100 @@ test("telemetry steps run only after the transcript sealed, and neither can fail
   assert.equal(ACTION.inputs["otel-file"].required, false);
   assert.equal(ACTION.inputs["otel-file"].default, "");
 });
+
+// Built at run time: a GitHub token prefix and 36 letters spelling FAKE, never
+// a live token.
+const PLANTED = ["gh", "p_", "FAKE".repeat(9)].join("");
+const LEFT_OUT = "the telemetry is left out and the transcript still uploads";
+
+// Runs scan-upload over a file holding the planted credential, against a
+// stand-in gate with scanLeak's return shape, or `gate` when given.
+async function scanHit(extraEnv, gate) {
+  const { main } = require("../actions/scan-upload/scan.cjs");
+  const dir = makeTemporaryDirectory("scan-otel-");
+  const standIn = path.join(dir, "gate.mjs");
+  fs.writeFileSync(
+    standIn,
+    'export const scanLeak = (bytes) => (Buffer.from(bytes).includes("FAKE".repeat(9)) ? { block: "GitHub token", credential: true } : {});\n',
+  );
+  const file = path.join(dir, "otel.jsonl");
+  fs.writeFileSync(file, `${JSON.stringify({ note: PLANTED })}\n`);
+  const output = path.join(dir, "github-output");
+  fs.writeFileSync(output, "");
+  const write = process.stdout.write;
+  let printed = "";
+  process.stdout.write = (chunk) => {
+    printed += chunk;
+    return true;
+  };
+  try {
+    const code = await main(
+      { SCAN_PATHS: file, GITHUB_OUTPUT: output, ...extraEnv },
+      gate ?? standIn,
+    );
+    return { code, printed, outputs: fs.readFileSync(output, "utf8") };
+  } finally {
+    process.stdout.write = write;
+  }
+}
+
+const telemetryScanEnv = () => {
+  const { SCAN_PATHS: _paths, ...env } = ACTION.runs.steps.find(
+    (s) => s.id === "scan-otel",
+  ).env;
+  return env;
+};
+
+test("a telemetry scan hit says the transcript still uploads, and to rotate the credential", async () => {
+  const { code, printed, outputs } = await scanHit(telemetryScanEnv());
+  assert.equal(code, 1);
+  assert.equal(outputs, "", "no clean output, so the telemetry is not sealed");
+  assert.equal(
+    printed,
+    `::error::scan-upload: GitHub token; ${LEFT_OUT}. Rotate this credential\n`,
+  );
+  assert.equal(printed.includes("nothing is uploaded"), false);
+  assert.equal(printed.includes(PLANTED), false);
+});
+
+test("a telemetry scan that cannot finish says the transcript still uploads", async () => {
+  const { code, printed, outputs } = await scanHit(
+    telemetryScanEnv(),
+    path.join(makeTemporaryDirectory("scan-otel-absent-"), "absent.mjs"),
+  );
+  assert.equal(code, 1);
+  assert.equal(outputs, "");
+  assert.match(
+    printed,
+    new RegExp(
+      `^::error::scan-upload: no finished scan \\(\\w+\\); ${LEFT_OUT}\\n$`,
+      "u",
+    ),
+  );
+  assert.equal(printed.includes("nothing is uploaded"), false);
+});
+
+test("every other scan keeps the default message", async () => {
+  const hit = await scanHit({});
+  assert.equal(
+    hit.printed,
+    "::error::scan-upload: GitHub token; nothing is uploaded. Rotate this credential\n",
+  );
+  const unfinished = await scanHit(
+    {},
+    path.join(makeTemporaryDirectory("scan-default-absent-"), "absent.mjs"),
+  );
+  assert.match(
+    unfinished.printed,
+    /^::error::scan-upload: no finished scan \(\w+\); nothing is uploaded\n$/u,
+  );
+  const transcriptScan = ACTION.runs.steps.find((s) => s.id === "scan");
+  assert.deepEqual(Object.keys(transcriptScan.env), ["SCAN_PATHS"]);
+  const scanUpload = parseWorkflow(
+    fs.readFileSync(
+      path.join(__dirname, "../actions/scan-upload/action.yml"),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(Object.keys(scanUpload.runs.steps[0].env), ["SCAN_PATHS"]);
+});
