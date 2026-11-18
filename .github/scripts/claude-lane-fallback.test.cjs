@@ -90,6 +90,13 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
   const byId = (id) => steps.find((step) => step.id === id);
   const first = byId("claude-review");
   const budget = first["timeout-minutes"];
+  // The first-attempt check's script on one execution file.
+  const checkFirst = (executionFile, startedAt) =>
+    runCheck(byId("first-outcome").with.script, {
+      EXECUTION_FILE: executionFile,
+      STARTED_AT: String(startedAt),
+      BUDGET_MINUTES: String(budget),
+    });
 
   test(`${file}: the fallback token is an optional secret beside the required one`, () => {
     const secrets = workflow.on.workflow_call.secrets;
@@ -208,13 +215,9 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
         else fs.writeFileSync(executionFile, JSON.stringify(payload));
         const startedAt =
           Math.floor(Date.now() / 1000) - (timedOut ? budget * 60 + 5 : 5);
-        const { outputs, warnings } = await runCheck(
-          byId("first-outcome").with.script,
-          {
-            EXECUTION_FILE: executionFile,
-            STARTED_AT: String(startedAt),
-            BUDGET_MINUTES: String(budget),
-          },
+        const { outputs, warnings } = await checkFirst(
+          executionFile,
+          startedAt,
         );
         const expected =
           classifyExecutionFile(executionFile, { timedOut }).failureClass ===
@@ -229,11 +232,10 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
         for (const warning of warnings) assert.doesNotMatch(warning, /class=/u);
       }
     }
-    const missing = await runCheck(byId("first-outcome").with.script, {
-      EXECUTION_FILE: path.join(directory, "absent.json"),
-      STARTED_AT: String(Math.floor(Date.now() / 1000)),
-      BUDGET_MINUTES: String(budget),
-    });
+    const missing = await checkFirst(
+      path.join(directory, "absent.json"),
+      Math.floor(Date.now() / 1000),
+    );
     assert.equal(missing.outputs["rate-limit"], "false");
   });
 
@@ -247,11 +249,7 @@ for (const file of ["pr-review.yml", "pr-review-security.yml"]) {
     const run = async (messages) => {
       const executionFile = path.join(directory, "run.json");
       fs.writeFileSync(executionFile, JSON.stringify(messages));
-      return runCheck(byId("first-outcome").with.script, {
-        EXECUTION_FILE: executionFile,
-        STARTED_AT: String(Math.floor(Date.now() / 1000) - 5),
-        BUDGET_MINUTES: String(budget),
-      });
+      return checkFirst(executionFile, Math.floor(Date.now() / 1000) - 5);
     };
     const posted = await run([
       toolUse("mcp__github_inline_comment__create_inline_comment"),

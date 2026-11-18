@@ -304,20 +304,25 @@ function fixture({
   };
 }
 
+// Runs one of the action's scripts in the fixture target, base to head.
+function spawnScript(fx, script, overrides = {}) {
+  return spawnSync("bash", [path.join(actionDir, script)], {
+    cwd: fx.target,
+    env: {
+      ...gitEnv,
+      REPOSITORY: TARGET,
+      BASE_REF: fx.base,
+      HEAD_REF: fx.head,
+      STANDARDS_ROOT: fx.standards,
+      ...overrides,
+    },
+    encoding: "utf8",
+  });
+}
+
 function runScript(script, fx, overrides = {}) {
   try {
-    const result = spawnSync("bash", [path.join(actionDir, script)], {
-      cwd: fx.target,
-      env: {
-        ...gitEnv,
-        REPOSITORY: TARGET,
-        BASE_REF: fx.base,
-        HEAD_REF: fx.head,
-        STANDARDS_ROOT: fx.standards,
-        ...overrides,
-      },
-      encoding: "utf8",
-    });
+    const result = spawnScript(fx, script, overrides);
     return { ...result, worktrees: git(fx.target, "worktree", "list") };
   } finally {
     fs.rmSync(fx.dir, { recursive: true, force: true });
@@ -663,19 +668,6 @@ async function runGroup(fx, { number, ...fake }) {
       this.failed = message;
     },
   };
-  const env = {
-    ...gitEnv,
-    REPOSITORY: TARGET,
-    BASE_REF: fx.base,
-    HEAD_REF: fx.head,
-    STANDARDS_ROOT: fx.standards,
-  };
-  const script = (name, extra = {}) =>
-    spawnSync("bash", [path.join(actionDir, name)], {
-      cwd: fx.target,
-      env: { ...env, ...extra },
-      encoding: "utf8",
-    });
   try {
     const mode = await resolveMergeGroup({
       github: groupGithub(fake),
@@ -690,11 +682,11 @@ async function runGroup(fx, { number, ...fake }) {
       pathsDir,
     });
     const results = [];
-    if (mode === "sync") results.push(script("verify-sync.sh"));
+    if (mode === "sync") results.push(spawnScript(fx, "verify-sync.sh"));
     if (mode === "hand-edit") {
       for (const file of fs.readdirSync(pathsDir)) {
         results.push(
-          script("run.sh", {
+          spawnScript(fx, "run.sh", {
             CHANGED_PATHS_FILE: path.join(pathsDir, file),
             SUBJECT: `Pull request #${file.slice(3)}`,
           }),
@@ -793,17 +785,7 @@ test("merge group: a sync PR whose commits are not the App's fails", async () =>
 test("merge group: a hand-edit PR touching a managed path fails", async () => {
   const fx = fixture();
   // What the guard did before merge-group mode: head-ref only, an empty diff.
-  const before = spawnSync("bash", [path.join(actionDir, "run.sh")], {
-    cwd: fx.target,
-    env: {
-      ...gitEnv,
-      REPOSITORY: TARGET,
-      BASE_REF: fx.head,
-      HEAD_REF: fx.head,
-      STANDARDS_ROOT: fx.standards,
-    },
-    encoding: "utf8",
-  });
+  const before = spawnScript(fx, "run.sh", { BASE_REF: fx.head });
   assert.equal(before.status, 0, before.stderr);
   const result = await runGroup(fx, {
     number: 7,

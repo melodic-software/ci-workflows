@@ -59,6 +59,24 @@ const lanes = ["pr-review.yml", "pr-review-security.yml"].map((file) => {
 });
 const [codeLane, securityLane] = lanes;
 
+// Sets each of `values` in process.env (undefined unsets it) for the run of
+// `body`, then restores what was there.
+async function withEnv(values, body) {
+  const assign = (entries) => {
+    for (const [key, value] of entries) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  const saved = Object.keys(values).map((key) => [key, process.env[key]]);
+  assign(Object.entries(values));
+  try {
+    await body();
+  } finally {
+    assign(saved);
+  }
+}
+
 async function runGithubScript(script, values, github) {
   const outputs = {};
   const messages = [];
@@ -70,15 +88,8 @@ async function runGithubScript(script, values, github) {
     info: (message) => messages.push(message),
     warning: (message) => messages.push(`warning: ${message}`),
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((key) => [key, process.env[key]]),
-  );
-  for (const [key, value] of Object.entries(values)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    await new AsyncFunction("require", "github", "context", "core", script)(
+  await withEnv(values, () =>
+    new AsyncFunction("require", "github", "context", "core", script)(
       require,
       {
         paginate: async (method, params) => (await method(params)).data,
@@ -87,13 +98,8 @@ async function runGithubScript(script, values, github) {
       },
       { repo: { owner: "o", repo: "r" } },
       core,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+    ),
+  );
   return { outputs, messages };
 }
 
@@ -198,33 +204,24 @@ async function runComposite(env) {
     COMPLETION: "",
     ...env,
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((key) => [key, process.env[key]]),
-  );
-  Object.assign(process.env, values);
   const outputs = {};
   const errors = [];
   const warnings = [];
-  try {
-    const core = {
-      setOutput: (key, value) => (outputs[key] = value),
-      error: (message) => errors.push(message),
-      warning: (message) => warnings.push(message),
-      info: () => {},
-      notice: () => {},
-      setFailed: (message) => errors.push(message),
-    };
-    await new AsyncFunction("core", "require", "process", compositeScript())(
+  const core = {
+    setOutput: (key, value) => (outputs[key] = value),
+    error: (message) => errors.push(message),
+    warning: (message) => warnings.push(message),
+    info: () => {},
+    notice: () => {},
+    setFailed: (message) => errors.push(message),
+  };
+  await withEnv(values, () =>
+    new AsyncFunction("core", "require", "process", compositeScript())(
       core,
       require,
       process,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+    ),
+  );
   return { outputs, errors, warnings };
 }
 
@@ -672,9 +669,7 @@ test("a missing or malformed findings count concludes incomplete", async () => {
     { findings: 1.5 },
     { findings: "3" },
   ]) {
-    const { outputs } = await verify(codeLane, {
-      structured,
-    });
+    const { outputs } = await verify(codeLane, { structured });
     assert.notEqual(outputs.verdict, "complete", JSON.stringify(structured));
     assert.ok(outputs.verdict, "an incomplete verdict names its reason");
   }
@@ -684,9 +679,7 @@ test("an unknown start time or an API failure concludes incomplete", async () =>
   for (const options of [{ startedAt: "" }, { fail: true }]) {
     let outputs = {};
     try {
-      ({ outputs } = await verify(codeLane, {
-        ...options,
-      }));
+      ({ outputs } = await verify(codeLane, options));
     } catch {
       // The step runs with continue-on-error; a throw leaves no verdict.
     }
@@ -753,6 +746,13 @@ const executionFile = (text) => {
 };
 const diffPath = (name) => `/runner/work/r/r/.claude-lane/${name}.diff`;
 const clean = { structured: { findings: 0 } };
+// A clean review whose execution file holds `messages`.
+const verifyRun = (lane, messages, options = {}) =>
+  verify(lane, {
+    ...clean,
+    ...options,
+    executionFile: executionFile(JSON.stringify(messages)),
+  });
 const warnings = (messages) =>
   messages
     .filter((line) => line.startsWith("warning: "))
@@ -803,10 +803,7 @@ for (const lane of lanes) {
       ],
     ];
     for (const messages of blind) {
-      const { outputs } = await verify(lane, {
-        ...clean,
-        executionFile: executionFile(JSON.stringify(messages)),
-      });
+      const { outputs } = await verifyRun(lane, messages);
       assert.match(outputs.verdict, /the sandbox could not start/u);
       assert.ok(outputs.verdict.endsWith(`sandbox error: ${BWRAP}`));
       assert.equal(outputs.findings, undefined);
@@ -826,17 +823,12 @@ for (const lane of lanes) {
       ],
       [long, long.slice(0, 300)],
     ]) {
-      const { outputs, messages } = await verify(lane, {
-        ...clean,
-        executionFile: executionFile(
-          JSON.stringify([
-            toolUse("b1", "Bash", { command: "ls" }),
-            toolResult("b1", content, true),
-            toolUse("r1", "Read", { file_path: diffPath("pr") }),
-            toolResult("r1", "@@ -1 +1 @@", false),
-          ]),
-        ),
-      });
+      const { outputs, messages } = await verifyRun(lane, [
+        toolUse("b1", "Bash", { command: "ls" }),
+        toolResult("b1", content, true),
+        toolUse("r1", "Read", { file_path: diffPath("pr") }),
+        toolResult("r1", "@@ -1 +1 @@", false),
+      ]);
       assert.equal(outputs.verdict, "complete");
       assert.deepEqual(warnings(messages), [deadShell(line)]);
     }
@@ -848,17 +840,15 @@ for (const lane of lanes) {
       ["incremental", diffPath("incremental")],
       ["whole", ".claude-lane/pr.diff"],
     ]) {
-      const { outputs, messages } = await verify(lane, {
-        ...clean,
-        scope,
-        executionFile: executionFile(
-          JSON.stringify([
-            ...blindShell,
-            toolUse("r1", "Read", { file_path: filePath }),
-            toolResult("r1", "@@ -1 +1 @@", false),
-          ]),
-        ),
-      });
+      const { outputs, messages } = await verifyRun(
+        lane,
+        [
+          ...blindShell,
+          toolUse("r1", "Read", { file_path: filePath }),
+          toolResult("r1", "@@ -1 +1 @@", false),
+        ],
+        { scope },
+      );
       assert.equal(outputs.verdict, "complete");
       assert.deepEqual(warnings(messages), [DEAD_SHELL]);
     }
@@ -891,10 +881,7 @@ for (const lane of lanes) {
       [],
     ];
     for (const messages of quiet) {
-      const { outputs, messages: logged } = await verify(lane, {
-        ...clean,
-        executionFile: executionFile(JSON.stringify(messages)),
-      });
+      const { outputs, messages: logged } = await verifyRun(lane, messages);
       assert.equal(outputs.verdict, "complete");
       assert.ok(
         !warnings(logged).some((line) =>
@@ -948,10 +935,7 @@ for (const lane of lanes) {
       ],
     ];
     for (const messages of unseen) {
-      const { outputs, messages: logged } = await verify(lane, {
-        ...clean,
-        executionFile: executionFile(JSON.stringify(messages)),
-      });
+      const { outputs, messages: logged } = await verifyRun(lane, messages);
       assert.equal(outputs.verdict, "complete");
       assert.deepEqual(warnings(logged), [NO_DIFF_ACCESS]);
     }
@@ -983,10 +967,7 @@ for (const lane of lanes) {
       ],
     ];
     for (const messages of seen) {
-      const { outputs, messages: logged } = await verify(lane, {
-        ...clean,
-        executionFile: executionFile(JSON.stringify(messages)),
-      });
+      const { outputs, messages: logged } = await verifyRun(lane, messages);
       assert.equal(outputs.verdict, "complete");
       assert.deepEqual(warnings(logged), []);
     }
@@ -1015,28 +996,18 @@ for (const lane of lanes) {
   });
 
   test(`${lane.lane}: malformed execution-file entries are skipped, not thrown on`, async () => {
-    const { outputs } = await verify(lane, {
-      ...clean,
-      executionFile: executionFile(
-        JSON.stringify([
-          null,
-          1,
-          { message: null },
-          { message: { content: "text" } },
-          { message: { content: [null, 1, { type: "tool_result" }] } },
-        ]),
-      ),
-    });
+    const { outputs } = await verifyRun(lane, [
+      null,
+      1,
+      { message: null },
+      { message: { content: "text" } },
+      { message: { content: [null, 1, { type: "tool_result" }] } },
+    ]);
     assert.equal(outputs.verdict, "complete");
   });
 
   const toolLines = async (messages) =>
-    (
-      await verify(lane, {
-        ...clean,
-        executionFile: executionFile(JSON.stringify(messages)),
-      })
-    ).messages.filter((line) =>
+    (await verifyRun(lane, messages)).messages.filter((line) =>
       / (?:tool|denied tool)=|\.\.\. \d+ more$/u.test(line),
     );
 

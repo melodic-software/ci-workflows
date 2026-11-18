@@ -21,6 +21,12 @@ const INLINE_COMMENT_GRANT =
 const COMPOSED_ARGS = `\${{ steps.compose-args.outputs.args }}`;
 
 const workflowsDirectory = path.join(__dirname, "..", "workflows");
+const readWorkflow = (fileName) =>
+  parseWorkflow(
+    fs.readFileSync(path.join(workflowsDirectory, fileName), "utf8"),
+  );
+const stepsOf = (workflow) =>
+  Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
 
 // The compose run block is expression-free shell (env carries the ${{ }}
 // values), so the append contract is executed here rather than
@@ -64,10 +70,8 @@ function composeArgs(script, baseArgs, pluginCommand, env = {}) {
 }
 
 for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
-  const workflow = parseWorkflow(
-    fs.readFileSync(path.join(workflowsDirectory, fileName), "utf8"),
-  );
-  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+  const workflow = readWorkflow(fileName);
+  const steps = stepsOf(workflow);
   const claudeArgsInput = workflow.on.workflow_call.inputs["claude-args"];
   const composeStep = steps.find((step) => step?.id === "compose-args");
   const pluginCommand =
@@ -271,10 +275,7 @@ for (const fileName of ["pr-review.yml", "pr-review-security.yml"]) {
 }
 
 test("pr-review.yml: both Claude attempts name the description file the job writes", () => {
-  const workflow = parseWorkflow(
-    fs.readFileSync(path.join(workflowsDirectory, "pr-review.yml"), "utf8"),
-  );
-  const steps = Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+  const steps = stepsOf(readWorkflow("pr-review.yml"));
   const writer = steps.find((step) => step?.id === "pr-context");
   assert.ok(writer, "pr-context step not found");
   assert.equal(writer.env.CONTEXT_FILE, ".claude-lane/pr-context.md");
