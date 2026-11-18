@@ -41,8 +41,9 @@ name: PR Review CLI
 # kill-switch: true runs the check-kill-switch job first. It reads the
 # caller's variables: CLAUDE_LANES_DISABLED (org) and
 # CLAUDE_LANES_REPO_DISABLED (repository) each stop the lane unless exactly
-# `false`, unset included, and CLAUDE_REVIEW_DISABLED stops it at `true`. A
-# stop logs a notice and skips check-key-credit and every model job. The
+# `false`, unset included, and the lane's own switch stops it at `true`:
+# CLAUDE_REVIEW_DISABLED for lane code, CLAUDE_SECURITY_REVIEW_DISABLED for
+# lane security; neither stops the other lane. A stop logs a notice and skips check-key-credit and every model job. The
 # default, false, reads no switch.
 #
 # Review level: model, effort and max-turns left empty come from a level in
@@ -317,8 +318,10 @@ on:
         description: >-
           `true` runs the check-kill-switch job first: the CLAUDE_LANES_DISABLED
           and CLAUDE_LANES_REPO_DISABLED variables each stop the lane unless
-          exactly `false`, and CLAUDE_REVIEW_DISABLED stops it at `true`.
-          `false` reads no switch.
+          exactly `false`, and the lane's own switch stops it at `true`
+          (CLAUDE_REVIEW_DISABLED for lane code,
+          CLAUDE_SECURITY_REVIEW_DISABLED for lane security). `false` reads no
+          switch.
         type: boolean
         default: false
       model-args:
@@ -617,8 +620,10 @@ env:
 
 jobs:
   # Only with kill-switch set: the caller's org and repository switches fail
-  # closed (check-kill-switch), and CLAUDE_REVIEW_DISABLED stops the lane only
-  # at `true`. check-key-credit and every model job need proceed exactly
+  # closed (check-kill-switch), and the lane's own switch stops it only at
+  # `true`: CLAUDE_REVIEW_DISABLED for lane code, CLAUDE_SECURITY_REVIEW_DISABLED
+  # for lane security, each read only by its own lane. check-key-credit and
+  # every model job need proceed exactly
   # `true`, so a failed job, which leaves it empty, also stops them. With
   # kill-switch unset this job is skipped and their gates read as before:
   # each opens with a status function.
@@ -631,7 +636,7 @@ jobs:
       contents: read
     cache-mode: none
     outputs:
-      proceed: ${{ steps.kill.outputs.proceed == 'true' && vars.CLAUDE_REVIEW_DISABLED != 'true' && 'true' || 'false' }}
+      proceed: ${{ steps.kill.outputs.proceed == 'true' && !(inputs.lane == 'security' && vars.CLAUDE_SECURITY_REVIEW_DISABLED == 'true' || inputs.lane != 'security' && vars.CLAUDE_REVIEW_DISABLED == 'true') && 'true' || 'false' }}
     steps:
       - name: Check the kill switch
         id: kill
@@ -643,15 +648,22 @@ jobs:
           repo-value: ${{ vars.CLAUDE_LANES_REPO_DISABLED }}
 
       - name: Report the kill switch
-        if: steps.kill.outputs.proceed != 'true' || vars.CLAUDE_REVIEW_DISABLED == 'true'
+        if: steps.kill.outputs.proceed != 'true' || inputs.lane == 'security' && vars.CLAUDE_SECURITY_REVIEW_DISABLED == 'true' || inputs.lane != 'security' && vars.CLAUDE_REVIEW_DISABLED == 'true'
         continue-on-error: true
         timeout-minutes: 1
         env:
           REASON: ${{ steps.kill.outputs.reason }}
           CAUSE: ${{ steps.kill.outputs.cause }}
-          LANE_SWITCH: ${{ vars.CLAUDE_REVIEW_DISABLED }}
+          LANE: ${{ inputs.lane }}
+          CODE_SWITCH: ${{ vars.CLAUDE_REVIEW_DISABLED }}
+          SECURITY_SWITCH: ${{ vars.CLAUDE_SECURITY_REVIEW_DISABLED }}
         run: |
-          echo "::notice::a kill switch stops this review (lanes: ${REASON:-unreadable} cause ${CAUSE:-unreadable}, CLAUDE_REVIEW_DISABLED: ${LANE_SWITCH:-unset})"
+          if [ "$LANE" = security ]; then
+            name=CLAUDE_SECURITY_REVIEW_DISABLED review="security review" value=$SECURITY_SWITCH
+          else
+            name=CLAUDE_REVIEW_DISABLED review=review value=$CODE_SWITCH
+          fi
+          echo "::notice::a kill switch stops this $review (lanes: ${REASON:-unreadable} cause ${CAUSE:-unreadable}, $name: ${value:-unset})"
 
       # The job token's api-budget notice. It spends no request.
       - name: Log the API budget

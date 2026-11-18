@@ -7193,40 +7193,81 @@ test("the kill-switch job runs only when the caller sets kill-switch, holds no s
   assert.equal(input.default, false);
 });
 
-test("the kill-switch job proceeds only when both switches proceed and CLAUDE_REVIEW_DISABLED is not true", () => {
+// Each lane's own switch: the variable claude-code-plugins' review callers set.
+const LANE_SWITCHES = [
+  ["code", "CLAUDE_REVIEW_DISABLED", "CLAUDE_SECURITY_REVIEW_DISABLED"],
+  ["security", "CLAUDE_SECURITY_REVIEW_DISABLED", "CLAUDE_REVIEW_DISABLED"],
+];
+
+test("the kill-switch job proceeds only when both switches proceed and the lane's own switch is not true", () => {
   const proceed = workflow.jobs["check-kill-switch"].outputs.proceed;
-  const at = (switches, lane) =>
-    evaluate(proceed, {
-      steps: { kill: { outputs: switches } },
-      vars: lane === undefined ? {} : { CLAUDE_REVIEW_DISABLED: lane },
-    });
-  assert.equal(at({ proceed: "true" }), "true");
-  assert.equal(at({ proceed: "true" }, "false"), "true");
-  assert.equal(at({ proceed: "true" }, ""), "true");
-  assert.equal(at({ proceed: "true" }, "true"), "false");
-  // A switch that stops, or a failed step that left no output.
-  assert.equal(at({ proceed: "false" }), "false");
-  assert.equal(at({}), "false");
-  assert.equal(at({ proceed: "false" }, "false"), "false");
-  // The notice names every stop, and only a stop.
+  for (const [lane, own, other] of LANE_SWITCHES) {
+    const at = (switches, vars = {}) =>
+      evaluate(proceed, {
+        inputs: { lane },
+        steps: { kill: { outputs: switches } },
+        vars,
+      });
+    assert.equal(at({ proceed: "true" }), "true", lane);
+    assert.equal(at({ proceed: "true" }, { [own]: "false" }), "true", lane);
+    assert.equal(at({ proceed: "true" }, { [own]: "" }), "true", lane);
+    assert.equal(at({ proceed: "true" }, { [own]: "true" }), "false", lane);
+    // The other lane's switch does not stop this lane.
+    assert.equal(at({ proceed: "true" }, { [other]: "true" }), "true", lane);
+    // A switch that stops, or a failed step that left no output.
+    assert.equal(at({ proceed: "false" }), "false", lane);
+    assert.equal(at({}), "false", lane);
+    assert.equal(at({ proceed: "false" }, { [own]: "false" }), "false", lane);
+  }
+});
+
+test("the kill-switch notice names every stop, and only a stop, with the lane's own switch", () => {
+  const { spawnSync } = require("node:child_process");
   const report = workflow.jobs["check-kill-switch"].steps.find(
     (s) => s.name === "Report the kill switch",
   );
-  const reports = (switches, lane) =>
-    Boolean(
-      evaluate(report.if, {
-        steps: { kill: { outputs: switches } },
-        vars: { CLAUDE_REVIEW_DISABLED: lane },
-      }),
+  for (const [lane, own, other] of LANE_SWITCHES) {
+    const reports = (switches, vars = {}) =>
+      Boolean(
+        evaluate(report.if, {
+          inputs: { lane },
+          steps: { kill: { outputs: switches } },
+          vars,
+        }),
+      );
+    assert.equal(reports({ proceed: "true" }), false, lane);
+    assert.equal(
+      reports({ proceed: "true" }, { [other]: "true" }),
+      false,
+      lane,
     );
-  assert.equal(reports({ proceed: "true" }, ""), false);
-  assert.equal(reports({ proceed: "false" }, ""), true);
-  assert.equal(reports({}, ""), true);
-  assert.equal(reports({ proceed: "true" }, "true"), true);
-  assert.match(
-    report.run,
-    /^echo "::notice::a kill switch stops this review/mu,
-  );
+    assert.equal(reports({ proceed: "false" }), true, lane);
+    assert.equal(reports({}), true, lane);
+    assert.equal(reports({ proceed: "true" }, { [own]: "true" }), true, lane);
+    const env = {
+      PATH: process.env.PATH,
+      REASON: "ok",
+      CAUSE: "ok",
+      LANE: lane,
+      CODE_SWITCH: lane === "code" ? "true" : "false",
+      SECURITY_SWITCH: lane === "security" ? "true" : "false",
+    };
+    assert.equal(report.env.CODE_SWITCH, `\${{ vars.CLAUDE_REVIEW_DISABLED }}`);
+    assert.equal(
+      report.env.SECURITY_SWITCH,
+      `\${{ vars.CLAUDE_SECURITY_REVIEW_DISABLED }}`,
+    );
+    const result = spawnSync("bash", ["-e", "-c", report.run], {
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const review = lane === "security" ? "security review" : "review";
+    assert.equal(
+      result.stdout,
+      `::notice::a kill switch stops this ${review} (lanes: ok cause ok, ${own}: true)\n`,
+    );
+  }
 });
 
 test("with kill-switch unset or false every gate reads as it did without the switch", () => {
@@ -7305,28 +7346,32 @@ test("with kill-switch set, each switch stops check-key-credit and every model j
   // Each switch, through the action and the job's output, to the key job.
   const { checkKillSwitch } = require("../actions/check-kill-switch/check.cjs");
   const proceed = workflow.jobs["check-kill-switch"].outputs.proceed;
-  for (const [org, repo, lane, runs] of [
-    ["false", "false", "", true],
-    ["true", "false", "", false],
-    ["false", "true", "", false],
-    ["", "", "", false],
-    ["false", "false", "true", false],
-  ]) {
-    const output = evaluate(proceed, {
-      steps: { kill: { outputs: checkKillSwitch(org, repo) } },
-      vars: { CLAUDE_REVIEW_DISABLED: lane },
-    });
-    assert.equal(
-      gate(
-        key.if,
-        PR,
-        { "kill-switch": true },
-        {},
-        { result: "success", outputs: { proceed: output } },
-      ),
-      runs,
-      JSON.stringify({ org, repo, lane }),
-    );
+  for (const [lane, own, other] of LANE_SWITCHES) {
+    for (const [org, repo, vars, runs] of [
+      ["false", "false", {}, true],
+      ["true", "false", {}, false],
+      ["false", "true", {}, false],
+      ["", "", {}, false],
+      ["false", "false", { [own]: "true" }, false],
+      ["false", "false", { [other]: "true" }, true],
+    ]) {
+      const output = evaluate(proceed, {
+        inputs: { lane },
+        steps: { kill: { outputs: checkKillSwitch(org, repo) } },
+        vars,
+      });
+      assert.equal(
+        gate(
+          key.if,
+          PR,
+          { lane, "kill-switch": true },
+          {},
+          { result: "success", outputs: { proceed: output } },
+        ),
+        runs,
+        JSON.stringify({ lane, org, repo, vars }),
+      );
+    }
   }
 });
 

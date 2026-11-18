@@ -1471,7 +1471,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the security model. `kill-switch: true` (default `false`) runs the
   `check-kill-switch` job first, which stops the lane with a notice on the
   caller's `CLAUDE_LANES_DISABLED` or `CLAUDE_LANES_REPO_DISABLED` variable
-  unless exactly `false`, or on `CLAUDE_REVIEW_DISABLED` set to `true`. The
+  unless exactly `false`, or on the lane's own switch set to `true`:
+  `CLAUDE_REVIEW_DISABLED` for `lane: code`, `CLAUDE_SECURITY_REVIEW_DISABLED`
+  for `lane: security`, neither stopping the other lane. The
   `model`, `effort` and `max-turns` inputs default to empty, which takes them
   from a review level: `review-level`, else the caller's `CLAUDE_REVIEW_LEVEL`
   variable, else `standard`, with the caller's `CLAUDE_REVIEW_LEVELS` JSON
