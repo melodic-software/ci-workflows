@@ -778,7 +778,9 @@ consumer to audit it.
   `execution-file-clean`: `true` only when the file read and held no
   credential, `false` on a hit or a missing or unreadable file. Gate any
   upload of it on `execution-file-clean == 'true'`, so an empty value from a
-  step that failed early stays closed. Every log line records the `lane` and
+  step that failed early stays closed. The CLI receives a `TRACEPARENT` under
+  the run attempt's lane-outcome trace id, and the action turns no telemetry
+  on. Every log line records the `lane` and
   the funding `role` whose secrets the caller passed. The secret names are
   always the role's, `<ROLE>_CLAUDE_API_KEY` and
   `<ROLE>_CLAUDE_CODE_OAUTH_TOKEN` with the role upper-snake, or the fixed
@@ -986,7 +988,9 @@ consumer to audit it.
   seals it to the caller's `lane-transcript-public-key` input and uploads only
   the sealed file for 7 days, for claude-code-plugins' transcript puller. An
   empty key skips with a notice (its `action.yml` describes the record and
-  artifact name).
+  artifact name). An optional `otel-file` adds the leg's telemetry to the same
+  artifact as a second sealed file; telemetry that cannot be kept is left out
+  and never costs the transcript.
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.

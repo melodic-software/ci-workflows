@@ -1172,6 +1172,67 @@ test("legEnv removes every workflow file-command variable", async () => {
   );
 });
 
+const TRACE_LEG = { leg: "api-key", name: KEY_NAME, value: KEY };
+const TRACE_CONFIG = { watchdogMaxWaitMs: "60000", lane: "intake" };
+const RUN_42 = {
+  GITHUB_RUN_ID: "42",
+  GITHUB_RUN_ATTEMPT: "1",
+  GITHUB_JOB: "triage",
+};
+
+test("legEnv's TRACEPARENT carries the run attempt's lane-outcome trace id", () => {
+  const env = legEnv(RUN_42, TRACE_LEG, TRACE_CONFIG);
+  assert.equal(
+    env.TRACEPARENT,
+    "00-33284f6935ab289df17507682acc6c66-f2dbb4000de882fa-01",
+    "trace id: printf lane-outcome:42:1 | sha256sum; parent id: printf run-claude-cli:<trace id>:triage:intake:AUTOMATIONS_CLAUDE_API_KEY | sha256sum",
+  );
+  const other = legEnv(
+    { ...RUN_42, GITHUB_RUN_ID: "501" },
+    TRACE_LEG,
+    TRACE_CONFIG,
+  );
+  assert.equal(
+    other.TRACEPARENT.split("-")[1],
+    "c3f85a11a86f557a30cd8b2237437278",
+    "printf lane-outcome:501:1 | sha256sum",
+  );
+});
+
+test("legEnv replaces an inherited trace context with the run's own", () => {
+  const env = legEnv(
+    {
+      ...RUN_42,
+      TRACEPARENT: "00-11111111111111111111111111111111-2222222222222222-01",
+      TRACESTATE: "vendor=inherited",
+    },
+    TRACE_LEG,
+    TRACE_CONFIG,
+  );
+  assert.match(env.TRACEPARENT, /^00-33284f6935ab289df17507682acc6c66-/u);
+  assert.equal("TRACESTATE" in env, false);
+});
+
+test("legEnv sets no TRACEPARENT when the run id or attempt is absent or out of shape", () => {
+  for (const run of [
+    {},
+    { GITHUB_RUN_ID: "42" },
+    { GITHUB_RUN_ATTEMPT: "1" },
+    { GITHUB_RUN_ID: "not-a-run", GITHUB_RUN_ATTEMPT: "1" },
+    { GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "0" },
+  ]) {
+    const env = legEnv(
+      {
+        ...run,
+        TRACEPARENT: "00-11111111111111111111111111111111-2222222222222222-01",
+      },
+      TRACE_LEG,
+      TRACE_CONFIG,
+    );
+    assert.equal("TRACEPARENT" in env, false, JSON.stringify(run));
+  }
+});
+
 test("a leg sees no file-command path and what it appends to GITHUB_ENV or GITHUB_PATH is cut off", async () => {
   const dir = path.join(root, "file-commands");
   fs.mkdirSync(dir);

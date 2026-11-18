@@ -98,6 +98,7 @@ const {
   rateLimitWindows,
   readMessages,
   readRunRecord,
+  runContext,
 } = require("../report-lane-outcome/classify.cjs");
 const {
   resolveNpmToolVersion,
@@ -457,12 +458,38 @@ function resolveCliVersion(input, npmView) {
   return version;
 }
 
+// The leg's W3C trace context, under the run attempt's lane-outcome trace id;
+// null when the run id or attempt is absent or out of shape. The parent id is
+// this leg's own: the lane-outcome spanId hashes report-lane-outcome's lane-id,
+// which this action never receives. Flag 01 (sampled) keeps the leg's spans
+// under a parent-based sampler.
+function traceParent(baseEnv, leg, config) {
+  const { traceId } = runContext({
+    runId: baseEnv.GITHUB_RUN_ID,
+    runAttempt: baseEnv.GITHUB_RUN_ATTEMPT,
+  });
+  if (traceId === null) return null;
+  const parentId = crypto
+    .createHash("sha256")
+    .update(
+      `run-claude-cli:${traceId}:${baseEnv.GITHUB_JOB}:${config.lane}:${leg.name}`,
+    )
+    .digest("hex")
+    .slice(0, 16);
+  return `00-${traceId}-${parentId}-01`;
+}
+
 // The CLI environment for the leg: every credential and file-command
-// variable removed, then only the leg's credential set.
+// variable and any inherited trace context removed, then only the leg's
+// credential and the run's trace context set.
 function legEnv(baseEnv, leg, config) {
   const env = { ...baseEnv };
   for (const name of CREDENTIAL_VARIABLES) delete env[name];
   for (const name of FILE_COMMAND_VARIABLES) delete env[name];
+  delete env.TRACEPARENT;
+  delete env.TRACESTATE;
+  const traceparent = traceParent(baseEnv, leg, config);
+  if (traceparent !== null) env.TRACEPARENT = traceparent;
   if (leg.leg === "api-key") env.ANTHROPIC_API_KEY = leg.value;
   else env.CLAUDE_CODE_OAUTH_TOKEN = leg.value;
   env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1";

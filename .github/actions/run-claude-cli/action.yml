@@ -55,6 +55,8 @@ description: >-
   job runs instead, or, with `handoff-only`, that no further leg runs.
   Unless `live-log` is `false`, the step log shows the agent's text and
   tool calls as they arrive, never a tool result.
+  The CLI receives a `TRACEPARENT` under the run attempt's lane-outcome trace
+  id (docs/lane-outcome.md, Run context); this action turns no telemetry on.
   Uploading the log is the caller's choice. The step fails, after writing its outputs,
   whenever lane-class is not empty.
 
