@@ -653,6 +653,15 @@ jobs:
         run: |
           echo "::notice::a kill switch stops this review (lanes: ${REASON:-unreadable} cause ${CAUSE:-unreadable}, CLAUDE_REVIEW_DISABLED: ${LANE_SWITCH:-unset})"
 
+      # The job token's api-budget notice. It spends no request.
+      - name: Log the API budget
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/report-api-budget
+        with:
+          tokens: github-token
+
   # A workflow_run or workflow_dispatch caller's pull request (pr-number
   # set): one pulls.get with
   # pull-requests: read and no secret. Its outputs are the facts every
