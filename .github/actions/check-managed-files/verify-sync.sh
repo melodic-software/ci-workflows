@@ -69,18 +69,14 @@ trap cleanup EXIT
 problems=()
 
 # NUL-separated output read with `mapfile -d ''`, so no byte in a path can
-# shift the status/path pairing.
-git diff --name-status -z --find-renames "$BASE_REF...$HEAD_REF" >"$scratch/diff" ||
+# shift the status/path pairing. --no-renames reports a move as its deletion
+# and its addition, so each path gets its own check.
+git diff --name-status -z --no-renames "$BASE_REF...$HEAD_REF" >"$scratch/diff" ||
   fail "could not diff $BASE_REF...$HEAD_REF"
 mapfile -d '' -t diff_fields <"$scratch/diff"
 i=0
 while ((i < ${#diff_fields[@]})); do
   status="${diff_fields[i]}"
-  if [[ "$status" == R* || "$status" == C* ]]; then
-    problems+=("${diff_fields[i + 1]} -> ${diff_fields[i + 2]}: change type $status; sync never renames or copies")
-    ((i += 3))
-    continue
-  fi
   path="${diff_fields[i + 1]}"
   ((i += 2))
   case "$status" in
