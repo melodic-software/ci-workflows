@@ -12,15 +12,17 @@ const {
 } = require("./resolve-npm-tool-version.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
-function writePackage(dir, manifest) {
-  const file = path.join(dir, "package.json");
+function writePackage(manifest) {
+  const file = path.join(
+    makeTemporaryDirectory("resolve-npm-"),
+    "package.json",
+  );
   fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return file;
 }
 
 test("explicit exact input wins over package.json and fallback", () => {
-  const dir = makeTemporaryDirectory("resolve-npm-");
-  const packageJsonPath = writePackage(dir, {
+  const packageJsonPath = writePackage({
     devDependencies: { "@biomejs/biome": "2.5.6" },
   });
   assert.deepEqual(
@@ -35,8 +37,7 @@ test("explicit exact input wins over package.json and fallback", () => {
 });
 
 test("exact package.json pin wins over fallback", () => {
-  const dir = makeTemporaryDirectory("resolve-npm-");
-  const packageJsonPath = writePackage(dir, {
+  const packageJsonPath = writePackage({
     dependencies: { "@biomejs/biome": "2.5.6" },
   });
   assert.deepEqual(
@@ -66,8 +67,7 @@ test("absent package.json uses fallback", () => {
 });
 
 test("absent package entry uses fallback", () => {
-  const dir = makeTemporaryDirectory("resolve-npm-");
-  const packageJsonPath = writePackage(dir, {
+  const packageJsonPath = writePackage({
     devDependencies: { typescript: "5.9.3" },
   });
   assert.deepEqual(
@@ -82,8 +82,7 @@ test("absent package entry uses fallback", () => {
 });
 
 test("ranged package.json pin fails closed", () => {
-  const dir = makeTemporaryDirectory("resolve-npm-");
-  const packageJsonPath = writePackage(dir, {
+  const packageJsonPath = writePackage({
     devDependencies: { "@biomejs/biome": "^2.5.6" },
   });
   assert.throws(
@@ -101,8 +100,7 @@ test("ranged package.json pin fails closed", () => {
 });
 
 test("conflicting dependency section pins fail closed", () => {
-  const dir = makeTemporaryDirectory("resolve-npm-");
-  const packageJsonPath = writePackage(dir, {
+  const packageJsonPath = writePackage({
     dependencies: { "@biomejs/biome": "2.5.4" },
     devDependencies: { "@biomejs/biome": "2.5.6" },
   });

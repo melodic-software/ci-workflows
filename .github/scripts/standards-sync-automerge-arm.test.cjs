@@ -93,6 +93,15 @@ function mutationCalls(graphqlCalls) {
   );
 }
 
+function disarmCalls(graphqlCalls) {
+  return graphqlCalls.filter((call) =>
+    /disablePullRequestAutoMerge/u.test(call.query),
+  );
+}
+
+// A PR whose auto-merge is armed now.
+const armed = { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } };
+
 async function runArming({
   owner = "melodic-software",
   repo = "dotfiles",
@@ -214,12 +223,6 @@ test("arms auto-merge with the target PR's node id and squash merge method", asy
   assert.ok(infos.some((message) => message.includes("Armed auto-merge")));
 });
 
-function disarmCalls(graphqlCalls) {
-  return graphqlCalls.filter((call) =>
-    /disablePullRequestAutoMerge/u.test(call.query),
-  );
-}
-
 const newHead = "2222222222222222222222222222222222222222";
 
 test("the workflow hands the arming step the PR operation and head sha", () => {
@@ -248,7 +251,7 @@ test("a newly created PR is armed at the head the sync pushed", async () => {
 
 test("a currently armed PR with an unchanged head is left alone", async () => {
   const { graphqlCalls, infos, warnings } = await runArming({
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
   });
   assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(disarmCalls(graphqlCalls).length, 0);
@@ -270,10 +273,7 @@ test("an armed PR whose head the sync replaced is disarmed, then re-armed at the
   const { graphqlCalls, warnings } = await runArming({
     operation: "updated",
     headSha: newHead,
-    pullRequest: {
-      autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" },
-      wasEverArmed: true,
-    },
+    pullRequest: { ...armed, wasEverArmed: true },
   });
   assert.equal(warnings.length, 0);
   const disarmIndex = graphqlCalls.findIndex((call) =>
@@ -302,7 +302,7 @@ test("a failed re-arm after this run disarmed the PR fails the step", async () =
   const { graphqlCalls, warnings, failures } = await runArming({
     operation: "updated",
     headSha: newHead,
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
     graphqlError: new Error("Head sha did not match"),
   });
   assert.equal(disarmCalls(graphqlCalls).length, 1);
@@ -327,7 +327,7 @@ test("a PR with no reported head oid warns and never arms or disarms", async () 
     operation: "updated",
     headSha: newHead,
     headRefOids: [null],
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
   });
   assert.equal(mutationCalls(graphqlCalls).length, 0);
   assert.equal(disarmCalls(graphqlCalls).length, 0);
@@ -349,7 +349,7 @@ test("a PR whose reported head is not the sync's commit is armed at the reported
     operation: "updated",
     headSha: newHead,
     headRefOids: [foreignHead],
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
   });
   assert.equal(failures.length, 0);
   assert.equal(warnings.length, 0);
@@ -364,7 +364,7 @@ test("a head-oid mismatch re-reads the head once and re-arms at the new head", a
     operation: "updated",
     headSha: newHead,
     headRefOids: [newHead, laterHead],
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
     armErrors: [headMismatchError()],
   });
   assert.equal(failures.length, 0);
@@ -383,7 +383,7 @@ test("a second head-oid mismatch after this run disarmed the PR fails the step",
     operation: "updated",
     headSha: newHead,
     headRefOids: [newHead, laterHead],
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
     armErrors: [headMismatchError(), headMismatchError()],
   });
   assert.equal(mutationCalls(graphqlCalls).length, 2, "exactly one retry");
@@ -409,7 +409,7 @@ test("any other arm error is not retried", async () => {
   const { graphqlCalls, failures } = await runArming({
     operation: "updated",
     headSha: newHead,
-    pullRequest: { autoMergeRequest: { enabledAt: "2026-07-22T00:00:00Z" } },
+    pullRequest: armed,
     armErrors: [new Error("Head sha did not match")],
   });
   assert.equal(mutationCalls(graphqlCalls).length, 1);

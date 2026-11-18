@@ -40,6 +40,15 @@ const applyHold = require(
 );
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const stepId = (job, id) => job.steps.find((s) => s.id === id);
+const CONTEXT = { repo: { owner: "o", repo: "r" } };
+// A github-script step's script, run with this client and core.
+const runScript = (script, github, core, load = require) =>
+  new AsyncFunction("require", "github", "context", "core", script)(
+    load,
+    github,
+    CONTEXT,
+    core,
+  );
 
 const HEAD = "a".repeat(40);
 const LAST = "b".repeat(40);
@@ -325,19 +334,7 @@ async function spend({
       GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       RUNNER_TEMP: dir,
     },
-    () =>
-      new AsyncFunction(
-        "require",
-        "github",
-        "context",
-        "core",
-        scope.with.script,
-      )(
-        require,
-        api.github,
-        { repo: { owner: "o", repo: "r" } },
-        quietCore(scopeOutputs),
-      ),
+    () => runScript(scope.with.script, api.github, quietCore(scopeOutputs)),
   );
   const gh =
     scopeOutputs.review === "false"
@@ -388,17 +385,11 @@ async function spend({
   const gateOutputs = {};
   api.newClient();
   await withEnv({ RUNNER_TEMP: dir }, () =>
-    new AsyncFunction(
-      "require",
-      "github",
-      "context",
-      "core",
+    runScript(
       gateStep.with.script,
-    )(
-      fakeGit,
       api.github,
-      { repo: { owner: "o", repo: "r" } },
       quietCore(gateOutputs),
+      fakeGit,
     ),
   );
   const statusContexts = {
@@ -421,7 +412,6 @@ async function spend({
   statusContexts.steps.handoffs = { outputs: handoffs };
   const named = (name) => status.steps.find((s) => s.name === name);
   const runner = (s) => renderEnv(s, statusContexts);
-  const context = { repo: { owner: "o", repo: "r" } };
   // Each composite's own github-script step, with the env the workflow
   // passes it.
   const composite = async (s, core) => {
@@ -432,13 +422,7 @@ async function spend({
     api.newClient();
     await withEnv(
       { ...runner(s), ACTION_PATH: path.join(ROOT, action), RUNNER_TEMP: dir },
-      () =>
-        new AsyncFunction("require", "github", "context", "core", script)(
-          require,
-          api.github,
-          context,
-          core,
-        ),
+      () => runScript(script, api.github, core),
     );
   };
   await composite(named("Publish the review"), quietCore());
@@ -494,17 +478,22 @@ const marker = {
   ].join("\n"),
 };
 
+// The compare scope reads for the pull request's merge base.
+const BASE_COMPARE = {
+  [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
+};
+
 const SHAPES = {
   "a whole review with an inline comment": {
     action: "opened",
     prFiles: [A],
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
     review: INLINE,
   },
   "a whole review with no inline comment": {
     action: "opened",
     prFiles: [A],
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
     review: NONE,
   },
   "an incremental review with an inline comment": {
@@ -512,7 +501,7 @@ const SHAPES = {
     prFiles: [A],
     comments: [marker],
     compares: {
-      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
+      ...BASE_COMPARE,
       [`${LAST}...${HEAD}`]: { status: "ahead", files: [A] },
       [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
     },
@@ -536,13 +525,13 @@ const SHAPES = {
   "a whole review that changes a hold-paths file and holds nothing": {
     action: "opened",
     prFiles: [A, CODEOWNERS],
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
     review: INLINE,
   },
   "a whole review that returns a critical-security hold": {
     action: "opened",
     prFiles: [A, CODEOWNERS],
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
     review: {
       ...INLINE,
       hold: { criteria: ["critical-security"], reason: "A CRITICAL finding." },
@@ -698,7 +687,7 @@ test("the hold reads no file list, with or without the scope list", async () => 
     const outputs = {};
     await applyHold.run({
       github: api.github,
-      context: { repo: { owner: "o", repo: "r" } },
+      context: CONTEXT,
       core: quietCore(outputs),
       env: {
         HOLD_LABEL: "needs-human",
@@ -728,7 +717,7 @@ test("the scope step passes on no file list larger than one environment string",
   const outputs = {};
   const api = fakeApi({
     prFiles: big,
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
   });
   const scope = stepId(key, "scope");
   await withEnv(
@@ -743,19 +732,7 @@ test("the scope step passes on no file list larger than one environment string",
       DIFF_FILE: path.join(makeTemporaryDirectory("scope-big-"), "x.diff"),
       GIT_TOKEN: "t",
     },
-    () =>
-      new AsyncFunction(
-        "require",
-        "github",
-        "context",
-        "core",
-        scope.with.script,
-      )(
-        require,
-        api.github,
-        { repo: { owner: "o", repo: "r" } },
-        quietCore(outputs),
-      ),
+    () => runScript(scope.with.script, api.github, quietCore(outputs)),
   );
   assert.equal(outputs.review, "true");
   assert.equal(outputs["pr-files"], undefined);
@@ -819,7 +796,7 @@ test("a push after a partial review reviews the whole pull request", async () =>
     action: "synchronize",
     prFiles: [A],
     comments: [partial],
-    compares: { [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } } },
+    compares: BASE_COMPARE,
     review: NONE,
   });
   assert.equal(keyOutputs.scope, "whole");

@@ -8,6 +8,8 @@
 // failure, timed_out, cancelled, action_required, startup_failure or stale.
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -31,6 +33,51 @@ const {
 } = workflow.jobs;
 const step = (job, id) => job.steps.find((s) => s.id === id);
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+
+// A github-script step's script, run with `values` in its env (and from
+// `cwd` when given) and `args` as its named parameters; the env and working
+// directory are restored after. Returns the script's return value.
+async function runScript(script, values, args, cwd) {
+  const saved = Object.fromEntries(
+    Object.keys(values).map((k) => [k, process.env[k]]),
+  );
+  const before = process.cwd();
+  Object.assign(process.env, values);
+  if (cwd) process.chdir(cwd);
+  try {
+    return await new AsyncFunction(...Object.keys(args), script)(
+      ...Object.values(args),
+    );
+  } finally {
+    if (cwd) process.chdir(before);
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+// git in `cwd`, failing the test on a non-zero exit; its trimmed stdout.
+const git = (cwd, ...args) => {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+};
+// `text` at `file` under `root`, its directories made.
+const writeAt = (root, file, text) => {
+  fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+  fs.writeFileSync(path.join(root, file), text);
+};
+// An empty repository on main at origin/ in a new temporary directory.
+function originRepo(prefix) {
+  const dir = makeTemporaryDirectory(prefix);
+  const origin = path.join(dir, "origin");
+  fs.mkdirSync(origin);
+  git(origin, "init", "--quiet", "--initial-branch=main");
+  git(origin, "config", "user.email", "t@example.com");
+  git(origin, "config", "user.name", "t");
+  return { dir, origin };
+}
 
 // The shared credential step (select-model-credential), called as the leg
 // jobs call it: `decide` is a leg job's first call, `handedOn` the job
@@ -342,19 +389,7 @@ test("the status job counts the fallback leg when it ran, else the subscription 
         outputs[k] = v;
       },
     };
-    const saved = { ...process.env };
-    Object.assign(process.env, env);
-    try {
-      await new AsyncFunction("require", "core", pick.with.script)(
-        require,
-        core,
-      );
-    } finally {
-      for (const k of Object.keys(env)) {
-        if (k in saved) process.env[k] = saved[k];
-        else delete process.env[k];
-      }
-    }
+    await runScript(pick.with.script, env, { require, core });
     return outputs;
   };
   const legs = {
@@ -468,20 +503,7 @@ test("after a key-credit skip, publish reads the counted token leg's success, no
         outputs[k] = v == null ? "" : String(v);
       },
     };
-    const saved = { ...process.env };
-    Object.assign(process.env, env);
-    let returned;
-    try {
-      returned = await new AsyncFunction("require", "core", pick.with.script)(
-        require,
-        core,
-      );
-    } finally {
-      for (const k of Object.keys(env)) {
-        if (k in saved) process.env[k] = saved[k];
-        else delete process.env[k];
-      }
-    }
+    const returned = await runScript(pick.with.script, env, { require, core });
     core.setOutput("result", JSON.stringify(returned));
     for (const name of ["Publish the review", "Apply the hold"]) {
       const stepEnv = status.steps.find((s) => s.name === name).env;
@@ -1303,7 +1325,6 @@ test("after a credit skip the status job runs and reads the subscription job's s
 
 test("the status job takes the last summary from the subscription leg when the key leg left none", async () => {
   const dir = makeTemporaryDirectory("pr-review-cli-handoffs-");
-  const crypto = require("node:crypto");
   const write = (leg, data) => {
     const bytes = Buffer.from(JSON.stringify(data));
     fs.writeFileSync(path.join(dir, `${leg}.json`), bytes);
@@ -1318,24 +1339,11 @@ test("the status job takes the last summary from the subscription leg when the k
       },
       warning: () => {},
     };
-    const saved = { ...process.env };
-    Object.assign(process.env, {
-      HANDOFF_DIR: dir,
-      KEY_SHA256: "",
-      SUB_SHA256: "",
-      ...env,
-    });
-    try {
-      await new AsyncFunction("require", "core", check.with.script)(
-        require,
-        core,
-      );
-    } finally {
-      for (const k of ["HANDOFF_DIR", "KEY_SHA256", "SUB_SHA256"]) {
-        if (k in saved) process.env[k] = saved[k];
-        else delete process.env[k];
-      }
-    }
+    await runScript(
+      check.with.script,
+      { HANDOFF_DIR: dir, KEY_SHA256: "", SUB_SHA256: "", ...env },
+      { require, core },
+    );
     return outputs;
   };
   const sub = write("review-subscription", { "last-summary": "from sub" });
@@ -1816,7 +1824,6 @@ test("the PR context drops AI attribution lines from the description, filtered b
     ],
     ["filter before cap", `${long}\n${ATTRIBUTION}\ntail`, `${long}\ntail`],
   ];
-  const { spawnSync } = require("node:child_process");
   for (const job of [key, subscription, fallback]) {
     for (const [name, body, expected] of cases) {
       const dir = makeTemporaryDirectory("pr-review-cli-pr-context-");
@@ -1892,30 +1899,18 @@ async function extract(files, env = {}, job = key) {
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     ...env,
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
-  Object.assign(process.env, values);
   const summary = { addRaw: () => summary, write: async () => {} };
-  try {
-    await new AsyncFunction(
-      "require",
-      "core",
-      step(job, "extract").with.script,
-    )(require, {
+  await runScript(step(job, "extract").with.script, values, {
+    require,
+    core: {
       setOutput: (k, v) => {
         outputs[k] = v;
       },
       info: () => {},
       warning: (message) => warnings.push(message),
       summary,
-    });
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+    },
+  });
   return Object.assign(outputs, { warnings });
 }
 
@@ -2219,29 +2214,17 @@ async function composeOutputs(env, job = key) {
     LEG_MINUTES: "13",
     ...env,
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
-  Object.assign(process.env, values);
-  try {
-    await new AsyncFunction(
-      "require",
-      "core",
-      step(job, "compose").with.script,
-    )(require, {
+  await runScript(step(job, "compose").with.script, values, {
+    require,
+    core: {
       setOutput: (k, v) => {
         outputs[k] = v;
       },
       setFailed: (m) => {
         throw new Error(m);
       },
-    });
-  } finally {
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+    },
+  });
   return outputs;
 }
 
@@ -2407,19 +2390,8 @@ test("the review leaves each leg as an artifact named for the run, head and leg,
 // changed resolved URL in one would otherwise reach the reviewer as
 // "Binary files differ".
 test("the full diff shows text the base or head marks -diff or binary, or hides behind a NUL byte, in both lanes", () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
   for (const job of [key, subscription]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-full-diff-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
+    const { dir, origin } = originRepo("pr-review-cli-full-diff-");
     const lockAttributes =
       "package-lock.json -diff\npackages.lock.json -diff\n*.lock -diff\n";
     const lock = (url) =>
@@ -2775,60 +2747,45 @@ test("the workflow names one sensitive list and one file cap, which no job or st
 });
 
 test("the full-diff step groups identical modifications, and identical additions apart, never a hold-paths match, in every leg", () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const write = (root, file, text) => {
-    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-    fs.writeFileSync(path.join(root, file), text);
-  };
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-identical-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
+    const { dir, origin } = originRepo("pr-review-cli-identical-");
     // a, b and c make one identical change; .github/CODEOWNERS, d (made
     // executable) and 0/package.json (a sensitive path that sorts first) make
     // it too but must not join. x and y converge on one post-image from
     // different pre-images, as do control.yml and aaa.txt truncated to empty.
     for (const p of ["a", "b", "c", "d"])
-      write(origin, `${p}/lib.mjs`, "old\n");
-    write(origin, ".github/CODEOWNERS", "old\n");
-    write(origin, "0/package.json", "old\n");
-    write(origin, "gone.mjs", "old\n");
-    write(origin, "x.js", "timeout = 10\n");
-    write(origin, "y.js", "timeout = 300\n");
-    write(origin, "aaa.txt", "harmless\n");
-    write(origin, "control.yml", "kill-switch: on\n");
+      writeAt(origin, `${p}/lib.mjs`, "old\n");
+    writeAt(origin, ".github/CODEOWNERS", "old\n");
+    writeAt(origin, "0/package.json", "old\n");
+    writeAt(origin, "gone.mjs", "old\n");
+    writeAt(origin, "x.js", "timeout = 10\n");
+    writeAt(origin, "y.js", "timeout = 300\n");
+    writeAt(origin, "aaa.txt", "harmless\n");
+    writeAt(origin, "control.yml", "kill-switch: on\n");
     git(origin, "add", ".");
     git(origin, "commit", "--quiet", "-m", "base");
     const base = git(origin, "rev-parse", "HEAD");
     for (const p of ["a", "b", "c", "d"])
-      write(origin, `${p}/lib.mjs`, "synced\n");
-    write(origin, ".github/CODEOWNERS", "synced\n");
-    write(origin, "0/package.json", "synced\n");
+      writeAt(origin, `${p}/lib.mjs`, "synced\n");
+    writeAt(origin, ".github/CODEOWNERS", "synced\n");
+    writeAt(origin, "0/package.json", "synced\n");
     fs.rmSync(path.join(origin, "gone.mjs"));
     // added.mjs and added2.mjs add the same file, which joins no modification;
     // run.sh adds it executable, so it joins neither, and bin/tool-a and
     // bin/tool-b add it executable at paths no glob lists, which never group.
-    write(origin, "added.mjs", "synced\n");
-    write(origin, "added2.mjs", "synced\n");
-    write(origin, "run.sh", "synced\n");
-    write(origin, "bin/tool-a", "synced\n");
-    write(origin, "bin/tool-b", "synced\n");
+    writeAt(origin, "added.mjs", "synced\n");
+    writeAt(origin, "added2.mjs", "synced\n");
+    writeAt(origin, "run.sh", "synced\n");
+    writeAt(origin, "bin/tool-a", "synced\n");
+    writeAt(origin, "bin/tool-b", "synced\n");
     // The same addition at a sensitive path joins no group, whatever sorts
     // first.
     for (const sensitive of SENSITIVE_ADDITIONS)
-      write(origin, sensitive, "synced\n");
-    write(origin, "x.js", "timeout = 20\n");
-    write(origin, "y.js", "timeout = 20\n");
-    write(origin, "aaa.txt", "");
-    write(origin, "control.yml", "");
+      writeAt(origin, sensitive, "synced\n");
+    writeAt(origin, "x.js", "timeout = 20\n");
+    writeAt(origin, "y.js", "timeout = 20\n");
+    writeAt(origin, "aaa.txt", "");
+    writeAt(origin, "control.yml", "");
     git(origin, "add", "-A");
     git(
       origin,
@@ -2914,7 +2871,7 @@ test("the full-diff step groups identical modifications, and identical additions
     );
     // A file the head planted at the path groups nothing and is left as is.
     const planted = run((work) =>
-      write(work, ".claude-lane/identical.txt", "x\n"),
+      writeAt(work, ".claude-lane/identical.txt", "x\n"),
     );
     assert.match(planted.out, /^copies=0$/mu);
     assert.equal(
@@ -2931,16 +2888,6 @@ test("the full-diff step groups identical modifications, and identical additions
 // with the other copies of its source despite its mode or a SENSITIVE_PATHS
 // match; claude-code-plugins#12354 changes 20 such hook-utils.sh copies.
 test("the full-diff step groups identical copies the base branch declares generated, and only those, in every leg", () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const write = (root, file, text) => {
-    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-    fs.writeFileSync(path.join(root, file), text);
-  };
   const copy = (p) => `plugins/${p}/hooks/hook-utils.sh`;
   // p, q, r and h are declared at the base; u and v only at the head; w is
   // declared but stays a regular file while the others are executable. x and
@@ -2952,23 +2899,18 @@ test("the full-diff step groups identical copies the base branch declares genera
     `# <canonical> <copy>\n${names.map((p) => `lib/hook-utils.sh ${copy(p)}`).join("\n")}\n` +
     `lib/other.sh ${copy("x")}\nlib/other.sh ${copy("y")}\nlib/doc.txt docs/a.txt\n`;
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-generated-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
+    const { dir, origin } = originRepo("pr-review-cli-generated-");
     const tree = (version, names) => {
-      write(origin, "lib/hook-utils.sh", `${version}\n`);
-      write(origin, "lib/other.sh", `other ${version}\n`);
-      write(origin, "lib/doc.txt", `doc source ${version}\n`);
+      writeAt(origin, "lib/hook-utils.sh", `${version}\n`);
+      writeAt(origin, "lib/other.sh", `other ${version}\n`);
+      writeAt(origin, "lib/doc.txt", `doc source ${version}\n`);
       for (const p of [...declared, "u", "v", "x", "y"])
-        write(origin, copy(p), `# GENERATED\n${version}\n`);
+        writeAt(origin, copy(p), `# GENERATED\n${version}\n`);
       for (const p of ["docs/a.txt", "docs/b.txt"])
-        write(origin, p, `doc ${version}\n`);
+        writeAt(origin, p, `doc ${version}\n`);
       for (const p of ["bin/tool-a", "bin/tool-b"])
-        write(origin, p, `${version}\n`);
-      write(origin, "scripts/shared-copies.txt", map(names));
+        writeAt(origin, p, `${version}\n`);
+      writeAt(origin, "scripts/shared-copies.txt", map(names));
       git(origin, "add", "-A");
       git(
         origin,
@@ -3048,25 +2990,14 @@ test("the full-diff step groups identical copies the base branch declares genera
 // generated-copies file at each; `executable` paths are mode 755 at both.
 // Returns the identical-files list (or undefined) and the step's outputs.
 function headCopiesRun(job, { base, added, baseMap, headMap, executable }) {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const write = (root, file, text) => {
-    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-    fs.writeFileSync(path.join(root, file), text);
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-head-generated-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
+  const { dir, origin } = originRepo("pr-review-cli-head-generated-");
   const commit = (files, map) => {
-    for (const [p, text] of Object.entries(files)) write(origin, p, text);
-    write(origin, "scripts/shared-copies.txt", `# <canonical> <copy>\n${map}`);
+    for (const [p, text] of Object.entries(files)) writeAt(origin, p, text);
+    writeAt(
+      origin,
+      "scripts/shared-copies.txt",
+      `# <canonical> <copy>\n${map}`,
+    );
     git(origin, "add", "-A");
     const modes = executable.filter((p) => fs.existsSync(path.join(origin, p)));
     if (modes.length) git(origin, "update-index", "--chmod=+x", ...modes);
@@ -3236,18 +3167,7 @@ test("the full-diff step reads in full a matching copy only the head declares at
 // extract steps run in order on one git fixture of a base, a reviewed head and
 // a pushed head.
 function incrementalCopiesFixture() {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-incremental-copies-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
+  const { dir, origin } = originRepo("pr-review-cli-incremental-copies-");
   const copy = (name) => `plugins/${name}/hooks/hook-utils.sh`;
   const copies = Array.from({ length: 19 }, (_, i) =>
     copy(`p${String(i).padStart(2, "0")}`),
@@ -3262,10 +3182,8 @@ function incrementalCopiesFixture() {
   // Each commit writes the files given, from the base's tree.
   const commit = (parent, files) => {
     if (parent) git(origin, "checkout", "--quiet", "--detach", parent);
-    for (const [file, text] of Object.entries(files)) {
-      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-      fs.writeFileSync(path.join(origin, file), text);
-    }
+    for (const [file, text] of Object.entries(files))
+      writeAt(origin, file, text);
     git(origin, "add", "-A");
     git(origin, "update-index", "--chmod=+x", ...executable);
     git(origin, "commit", "--quiet", "-m", "c");
@@ -3331,7 +3249,6 @@ async function incrementalReview(
   filesRead,
   change = {},
 ) {
-  const { spawnSync } = require("node:child_process");
   const work = fixture.clone();
   const scopeStep = step(job, "scope");
   const fullDiff = step(job, "full-diff");
@@ -3390,24 +3307,14 @@ async function incrementalReview(
     GITHUB_SERVER_URL: "https://github.invalid",
     RUNNER_TEMP: work,
   };
-  const saved = Object.fromEntries(
-    Object.keys(values).map((k) => [k, process.env[k]]),
-  );
-  const cwd = process.cwd();
-  Object.assign(process.env, values);
-  process.chdir(work);
-  try {
-    await new AsyncFunction(
-      "require",
-      "github",
-      "context",
-      "core",
-      scopeStep.with.script,
-    )(
+  await runScript(
+    scopeStep.with.script,
+    values,
+    {
       require,
       github,
-      { repo: { owner: "o", repo: "r" } },
-      {
+      context: { repo: { owner: "o", repo: "r" } },
+      core: {
         setSecret: () => {},
         setOutput: (k, v) => {
           scope[k] = v;
@@ -3415,14 +3322,9 @@ async function incrementalReview(
         info: () => {},
         warning: (message) => assert.fail(message),
       },
-    );
-  } finally {
-    process.chdir(cwd);
-    for (const [k, v] of Object.entries(saved)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+    },
+    work,
+  );
   assert.equal(scope.scope, "incremental", job.name);
   // The full-diff step, with the scope step's outputs as the workflow wires them.
   const output = `${work}.full-diff.out`;
@@ -3803,24 +3705,20 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
   );
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
-  const result = require("node:child_process").spawnSync(
-    "bash",
-    ["-e", "-c", step(key, "full-diff").run],
-    {
-      cwd: dir,
-      encoding: "utf8",
-      env: {
-        PATH: `${bin}:${process.env.PATH}`,
-        GH_TOKEN: "t",
-        MERGE_BASE: "b".repeat(40),
-        HEAD_SHA: "a".repeat(40),
-        DIFF_FILE: ".claude-lane/pr.diff",
-        FILE_LIST: ".claude-lane/files.txt",
-        GITHUB_OUTPUT: output,
-        GITHUB_SERVER_URL: "https://github.com",
-      },
+  const result = spawnSync("bash", ["-e", "-c", step(key, "full-diff").run], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      GH_TOKEN: "t",
+      MERGE_BASE: "b".repeat(40),
+      HEAD_SHA: "a".repeat(40),
+      DIFF_FILE: ".claude-lane/pr.diff",
+      FILE_LIST: ".claude-lane/files.txt",
+      GITHUB_OUTPUT: output,
+      GITHUB_SERVER_URL: "https://github.com",
     },
-  );
+  });
   assert.notEqual(result.status, 0);
   assert.doesNotMatch(fs.readFileSync(output, "utf8"), /written=true/u);
 });
@@ -3862,28 +3760,24 @@ function split(env = {}, prepare = () => {}) {
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
   const s = step(key, "split");
-  const result = require("node:child_process").spawnSync(
-    "bash",
-    ["-e", "-c", s.run],
-    {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        SOURCE: source,
-        SCOPE_DIFF: ".claude-lane/pr.diff",
-        SCOPE_BYTES: "700000",
-        CHUNK_DIR: s.env.CHUNK_DIR,
-        READ_BUDGET: workflow.env.READ_BUDGET,
-        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
-        MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
-        SCOPE: "whole",
-        COPIES: "0",
-        GITHUB_OUTPUT: output,
-        ...env,
-      },
+  const result = spawnSync("bash", ["-e", "-c", s.run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      SOURCE: source,
+      SCOPE_DIFF: ".claude-lane/pr.diff",
+      SCOPE_BYTES: "700000",
+      CHUNK_DIR: s.env.CHUNK_DIR,
+      READ_BUDGET: workflow.env.READ_BUDGET,
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+      MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
+      SCOPE: "whole",
+      COPIES: "0",
+      GITHUB_OUTPUT: output,
+      ...env,
     },
-  );
+  });
   return {
     status: result.status,
     out: fs.readFileSync(output, "utf8"),
@@ -4222,26 +4116,12 @@ test("one review of more files that are not copies than the cap is partial", asy
 // MAX_CHUNK_FILES, and a review that reads every file of every chunk is
 // complete.
 test("a diff of many small added files, some identical, is chunked without its copies and read whole", async () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-many-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
+  const { dir, origin } = originRepo("pr-review-cli-many-");
   fs.writeFileSync(path.join(origin, "README.md"), "base\n");
   git(origin, "add", ".");
   git(origin, "commit", "--quiet", "-m", "base");
   const base = git(origin, "rev-parse", "HEAD");
-  const add = (file, text) => {
-    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-    fs.writeFileSync(path.join(origin, file), text);
-  };
+  const add = (file, text) => writeAt(origin, file, text);
   // 30 cases of 5 distinct files, and two samples repeated in 30 and 21
   // cases: 201 files, 152 distinct, 49 copies.
   for (let c = 0; c < 30; c++) {
@@ -4271,29 +4151,7 @@ test("a diff of many small added files, some identical, is chunked without its c
   const head = git(origin, "rev-parse", "HEAD");
   const work = path.join(dir, "work");
   git(dir, "clone", "--quiet", origin, work);
-  const run = (id, env) => {
-    const output = path.join(dir, `${id}.out`);
-    fs.writeFileSync(output, "");
-    const result = spawnSync("bash", ["-e", "-c", step(key, id).run], {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        HOME: dir,
-        GITHUB_OUTPUT: output,
-        ...workflow.env,
-        ...env,
-      },
-    });
-    assert.equal(result.status, 0, result.stderr);
-    return Object.fromEntries(
-      fs
-        .readFileSync(output, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => line.split(/=(.*)/su).slice(0, 2)),
-    );
-  };
+  const run = (id, env) => runLegStep({ dir }, work, key, id, env).out;
   const fullDiff = run("full-diff", {
     GH_TOKEN: "test-token",
     GITHUB_SERVER_URL: "https://github.invalid",
@@ -4311,27 +4169,7 @@ test("a diff of many small added files, some identical, is chunked without its c
   );
   // A stand-in for split-diff.py that honors max-bytes, max-chunks and the
   // seventh argument, max-files, as the real one does.
-  const source = path.join(dir, "source");
-  const script = path.join(source, ".github/scripts/pr-review-main");
-  fs.mkdirSync(script, { recursive: true });
-  fs.writeFileSync(
-    path.join(script, "split-diff.py"),
-    [
-      "import sys",
-      "from pathlib import Path",
-      "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
-      "max_files = int(sys.argv[7])",
-      "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
-      "chunks = []",
-      "for u in units:",
-      "    if not chunks or len(''.join(chunks[-1])) + len(u) > max_bytes or len(chunks[-1]) >= max_files:",
-      "        chunks.append([])",
-      "    chunks[-1].append(u)",
-      "if len(chunks) > max_chunks: sys.exit(3)",
-      "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
-      "",
-    ].join("\n"),
-  );
+  const source = standInSplitter(dir);
   const s = step(key, "split");
   const cut = run("split", {
     SOURCE: source,
@@ -4424,23 +4262,9 @@ test("a diff of many small added files, some identical, is chunked without its c
 // workflow must be reviewed at its own path, never credited as a copy of the
 // fixture. A type change rides along: two sections of one file.
 test("an added workflow identical to a fixture is reviewed in a chunk, not credited as a copy, in every leg", async () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-sensitive-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
-    const add = (file, text) => {
-      fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-      fs.writeFileSync(path.join(origin, file), text);
-    };
+    const { dir, origin } = originRepo("pr-review-cli-sensitive-");
+    const add = (file, text) => writeAt(origin, file, text);
     add("README.md", "base\n");
     add("link", "a regular file\n");
     git(origin, "add", ".");
@@ -4460,29 +4284,7 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
     const head = git(origin, "rev-parse", "HEAD");
     const work = path.join(dir, "work");
     git(dir, "clone", "--quiet", origin, work);
-    const run = (id, env) => {
-      const output = path.join(dir, `${id}.out`);
-      fs.writeFileSync(output, "");
-      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
-        cwd: work,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          HOME: dir,
-          GITHUB_OUTPUT: output,
-          ...workflow.env,
-          ...env,
-        },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      return Object.fromEntries(
-        fs
-          .readFileSync(output, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
-      );
-    };
+    const run = (id, env) => runLegStep({ dir }, work, job, id, env).out;
     const fullDiff = run("full-diff", {
       GH_TOKEN: "test-token",
       GITHUB_SERVER_URL: "https://github.invalid",
@@ -4500,27 +4302,7 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
       "docs/a.md\tdocs/b.md\n",
     );
     // The many-files test's stand-in for split-diff.py, which honors the cap.
-    const source = path.join(dir, "source");
-    const script = path.join(source, ".github/scripts/pr-review-main");
-    fs.mkdirSync(script, { recursive: true });
-    fs.writeFileSync(
-      path.join(script, "split-diff.py"),
-      [
-        "import sys",
-        "from pathlib import Path",
-        "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
-        "max_files = int(sys.argv[7])",
-        "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
-        "chunks = []",
-        "for u in units:",
-        "    if not chunks or len(''.join(chunks[-1])) + len(u) > max_bytes or len(chunks[-1]) >= max_files:",
-        "        chunks.append([])",
-        "    chunks[-1].append(u)",
-        "if len(chunks) > max_chunks: sys.exit(3)",
-        "for k, c in enumerate(chunks, 1): (out / f'chunk-{k}.patch').write_text(''.join(c))",
-        "",
-      ].join("\n"),
-    );
+    const source = standInSplitter(dir);
     const s = step(job, "split");
     const cut = run("split", {
       SOURCE: source,
@@ -4578,19 +4360,8 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
 // split step's per chunk, so the chunk sum still matches it. A type change
 // (a deleted and a new section of one path) still counts once.
 test("a whole-file deletion counts in no file total, so a review of the rest is complete, in every leg", async () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-deleted-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
+    const { dir, origin } = originRepo("pr-review-cli-deleted-");
     for (const name of ["gone1.js", "gone2.js", "gone3.js"])
       fs.writeFileSync(path.join(origin, name), `${name}\n`);
     fs.writeFileSync(path.join(origin, "keep.js"), "base\n");
@@ -4615,29 +4386,7 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
       path.join(dir, "outside.txt"),
       path.join(work, ".claude-lane/files.txt"),
     );
-    const run = (id, env) => {
-      const output = path.join(dir, `${id}.out`);
-      fs.writeFileSync(output, "");
-      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
-        cwd: work,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          HOME: dir,
-          GITHUB_OUTPUT: output,
-          ...workflow.env,
-          ...env,
-        },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      return Object.fromEntries(
-        fs
-          .readFileSync(output, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
-      );
-    };
+    const run = (id, env) => runLegStep({ dir }, work, job, id, env).out;
     const fullDiff = run("full-diff", {
       GH_TOKEN: "test-token",
       GITHUB_SERVER_URL: "https://github.invalid",
@@ -4738,19 +4487,8 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
 // but not in its size, so the split step leaves it whole and the extract step
 // finds it within the budget; a changed file left unread still fails.
 test("a whole-file deletion counts in no diff size, so deletions alone put no review over the budget, in every leg", async () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
   for (const job of [key, subscription, fallback]) {
-    const dir = makeTemporaryDirectory("pr-review-cli-deleted-bytes-");
-    const origin = path.join(dir, "origin");
-    fs.mkdirSync(origin);
-    git(origin, "init", "--quiet", "--initial-branch=main");
-    git(origin, "config", "user.email", "t@example.com");
-    git(origin, "config", "user.name", "t");
+    const { dir, origin } = originRepo("pr-review-cli-deleted-bytes-");
     // 400000 bytes of binary fixture, more than one read budget (300000).
     fs.writeFileSync(path.join(origin, "crop.png"), Buffer.alloc(400000, 0));
     for (const name of ["case1.md", "case2.md"])
@@ -4767,29 +4505,7 @@ test("a whole-file deletion counts in no diff size, so deletions alone put no re
     const head = git(origin, "rev-parse", "HEAD");
     const work = path.join(dir, "work");
     git(dir, "clone", "--quiet", origin, work);
-    const run = (id, env) => {
-      const output = path.join(dir, `${id}.out`);
-      fs.writeFileSync(output, "");
-      const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
-        cwd: work,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          HOME: dir,
-          GITHUB_OUTPUT: output,
-          ...workflow.env,
-          ...env,
-        },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      return Object.fromEntries(
-        fs
-          .readFileSync(output, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => line.split(/=(.*)/su).slice(0, 2)),
-      );
-    };
+    const run = (id, env) => runLegStep({ dir }, work, job, id, env).out;
     const fullDiff = run("full-diff", {
       GH_TOKEN: "test-token",
       GITHUB_SERVER_URL: "https://github.invalid",
@@ -4925,36 +4641,19 @@ test("an incremental review leaves a file the push deleted out of its file count
       GITHUB_SERVER_URL: "https://github.invalid",
       RUNNER_TEMP: dir,
     };
-    const saved = Object.fromEntries(
-      Object.keys(values).map((k) => [k, process.env[k]]),
-    );
-    Object.assign(process.env, values);
-    try {
-      await new AsyncFunction(
-        "require",
-        "github",
-        "context",
-        "core",
-        step(job, "scope").with.script,
-      )(
-        require,
-        github,
-        { repo: { owner: "o", repo: "r" } },
-        {
-          setSecret: () => {},
-          setOutput: (k, v) => {
-            outputs[k] = v;
-          },
-          info: () => {},
-          warning: (message) => assert.fail(message),
+    await runScript(step(job, "scope").with.script, values, {
+      require,
+      github,
+      context: { repo: { owner: "o", repo: "r" } },
+      core: {
+        setSecret: () => {},
+        setOutput: (k, v) => {
+          outputs[k] = v;
         },
-      );
-    } finally {
-      for (const [k, v] of Object.entries(saved)) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
+        info: () => {},
+        warning: (message) => assert.fail(message),
+      },
+    });
     assert.equal(outputs.scope, "incremental", job.name);
     assert.equal(outputs.files, "1", job.name);
     // The list the model counts against holds a.js alone, and the note names it.
@@ -4988,27 +4687,23 @@ test("an incremental review leaves a file the push deleted out of its file count
     const output = path.join(dir, "split.out");
     fs.writeFileSync(output, "");
     const s = step(job, "split");
-    const result = require("node:child_process").spawnSync(
-      "bash",
-      ["-e", "-c", s.run],
-      {
-        cwd: work,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          GITHUB_OUTPUT: output,
-          ...workflow.env,
-          SOURCE: path.join(dir, "source"),
-          SCOPE_DIFF: ".claude-lane/incremental.diff",
-          SCOPE_BYTES: "700000",
-          CHUNK_DIR: s.env.CHUNK_DIR,
-          READ_BUDGET: workflow.env.READ_BUDGET,
-          MAX_CHUNKS: workflow.env.MAX_CHUNKS,
-          SCOPE: "incremental",
-          COPIES: "0",
-        },
+    const result = spawnSync("bash", ["-e", "-c", s.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_OUTPUT: output,
+        ...workflow.env,
+        SOURCE: path.join(dir, "source"),
+        SCOPE_DIFF: ".claude-lane/incremental.diff",
+        SCOPE_BYTES: "700000",
+        CHUNK_DIR: s.env.CHUNK_DIR,
+        READ_BUDGET: workflow.env.READ_BUDGET,
+        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+        SCOPE: "incremental",
+        COPIES: "0",
       },
-    );
+    });
     assert.equal(result.status, 0, result.stderr);
     const split = fs.readFileSync(output, "utf8");
     assert.match(split, /^chunks=2$/mu, job.name);
@@ -5575,22 +5270,8 @@ test("scan-upload fetches the gate with /usr/bin/git, no system or global config
 // their rules agree. The base's list declares data/*.json and four globs that
 // each meet one exception; the head declares more in a list only it holds.
 function dataFixture() {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-data-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
-  const write = (file, text) => {
-    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-    fs.writeFileSync(path.join(origin, file), text);
-  };
+  const { dir, origin } = originRepo("pr-review-cli-data-");
+  const write = (file, text) => writeAt(origin, file, text);
   // 400 records of about 30 bytes: a change to every record, or the file
   // added whole, is a diff section well over DATA_FLOOR_BYTES (7500); one
   // record deleted is a section of a few hundred bytes.
@@ -5676,7 +5357,6 @@ const DATA_DECLARED = [
 ];
 
 test("the full-diff step leaves the data files the base branch declares out of the diff, list, total and copy groups, in every leg", () => {
-  const { spawnSync } = require("node:child_process");
   const fixture = dataFixture();
   for (const job of [key, subscription, fallback]) {
     const fullDiff = step(job, "full-diff");
@@ -5848,24 +5528,14 @@ test("an incremental review leaves the data files the base branch declares out o
       GITHUB_SERVER_URL: "https://github.invalid",
       RUNNER_TEMP: dir,
     };
-    const saved = Object.fromEntries(
-      Object.keys(values).map((k) => [k, process.env[k]]),
-    );
-    const cwd = process.cwd();
-    Object.assign(process.env, values);
-    process.chdir(work);
-    try {
-      await new AsyncFunction(
-        "require",
-        "github",
-        "context",
-        "core",
-        step(job, "scope").with.script,
-      )(
+    await runScript(
+      step(job, "scope").with.script,
+      values,
+      {
         require,
         github,
-        { repo: { owner: "o", repo: "r" } },
-        {
+        context: { repo: { owner: "o", repo: "r" } },
+        core: {
           setSecret: () => {},
           setOutput: (k, v) => {
             outputs[k] = v;
@@ -5873,14 +5543,9 @@ test("an incremental review leaves the data files the base branch declares out o
           info: () => {},
           warning: (message) => warnings.push(message),
         },
-      );
-    } finally {
-      process.chdir(cwd);
-      for (const [k, v] of Object.entries(saved)) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
+      },
+      work,
+    );
     const read = (file) =>
       fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
     return {
@@ -6019,22 +5684,8 @@ test("the extract step names the data files the job left out, and a count its li
 // full-diff step names the files in scope numstat counts no lines for, and
 // the extract step records them in the coverage without changing a count.
 test("the full-diff step names the binary files in scope, in every leg", () => {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-binary-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
-  const write = (file, data) => {
-    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-    fs.writeFileSync(path.join(origin, file), data);
-  };
+  const { dir, origin } = originRepo("pr-review-cli-binary-");
+  const write = (file, data) => writeAt(origin, file, data);
   const gz = (n) => Buffer.from([0x1f, 0x8b, 0x08, 0x00, n, 0x00, 0xff]);
   write("a/fixtures.tar.gz", gz(1));
   write("gone.bin", gz(9));
@@ -6202,22 +5853,8 @@ test("each comments-mode attempt starts its lane comment record and closes it on
 // A git repository with a base commit `base` builds and a head commit `head`
 // builds on it; clone() makes a fresh checkout each step run can write in.
 function renameRepo(base, head) {
-  const { spawnSync } = require("node:child_process");
-  const git = (cwd, ...args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout.trim();
-  };
-  const dir = makeTemporaryDirectory("pr-review-cli-renames-");
-  const origin = path.join(dir, "origin");
-  fs.mkdirSync(origin);
-  git(origin, "init", "--quiet", "--initial-branch=main");
-  git(origin, "config", "user.email", "t@example.com");
-  git(origin, "config", "user.name", "t");
-  const write = (file, text) => {
-    fs.mkdirSync(path.dirname(path.join(origin, file)), { recursive: true });
-    fs.writeFileSync(path.join(origin, file), text);
-  };
+  const { dir, origin } = originRepo("pr-review-cli-renames-");
+  const write = (file, text) => writeAt(origin, file, text);
   const move = (from, to) => {
     fs.mkdirSync(path.dirname(path.join(origin, to)), { recursive: true });
     fs.renameSync(path.join(origin, from), path.join(origin, to));
@@ -6245,21 +5882,17 @@ function renameRepo(base, head) {
 function runLegStep(repo, work, job, id, env) {
   const output = `${work}.${id}.out`;
   fs.writeFileSync(output, "");
-  const result = require("node:child_process").spawnSync(
-    "bash",
-    ["-e", "-c", step(job, id).run],
-    {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        HOME: repo.dir,
-        GITHUB_OUTPUT: output,
-        ...workflow.env,
-        ...env,
-      },
+  const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: repo.dir,
+      GITHUB_OUTPUT: output,
+      ...workflow.env,
+      ...env,
     },
-  );
+  });
   assert.equal(result.status, 0, result.stderr);
   return {
     out: Object.fromEntries(
