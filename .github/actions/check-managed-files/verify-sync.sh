@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sync mode: prove the PR holds exactly what `sync-manifest.sh apply` at the
 # checked-out standards main HEAD produces. Changed paths must be managed
-# destinations, added or modified only, and applying standards onto the PR
+# destinations, added or modified, or retired destinations the engine deletes
+# for this target; applying standards onto the PR
 # head must leave no byte, mode, untracked or ignored-file difference.
 set -euo pipefail
 
@@ -47,6 +48,16 @@ while IFS= read -r path; do
 done <<<"$dest_paths"
 ((${#managed_set[@]} > 0)) || fail "$REPOSITORY is not a sync-manifest target at this SHA"
 
+if ! retired_paths="$(
+  bash "$engine" retired-paths --source-root "$STANDARDS_ROOT" --target "$REPOSITORY"
+)"; then
+  fail "could not resolve retired destination paths for $REPOSITORY"
+fi
+declare -A retired_set=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] && retired_set["$path"]=1
+done <<<"$retired_paths"
+
 scratch="$(mktemp -d)"
 worktree="$scratch/head"
 cleanup() {
@@ -77,7 +88,10 @@ while ((i < ${#diff_fields[@]})); do
       [[ -n "${managed_set[$path]+x}" ]] ||
         problems+=("$path: not a managed destination for $REPOSITORY")
       ;;
-    D) problems+=("$path: deleted; sync never deletes") ;;
+    D)
+      [[ -n "${retired_set[$path]+x}" ]] ||
+        problems+=("$path: deleted; sync never deletes")
+      ;;
     *) problems+=("$path: change type $status; sync only adds or modifies files") ;;
   esac
 done
