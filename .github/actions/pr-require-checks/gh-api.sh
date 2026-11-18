@@ -35,8 +35,9 @@
 # after a full-jitter wait of 0 to `GH_API_RETRY_BASE_SECONDS` seconds, then 0
 # to twice that, but only when a resend cannot do the write twice: GET, PUT,
 # PATCH, DELETE, a GraphQL query (never a `mutation`), or a POST whose caller
-# sets `GH_API_RESEND=true` because it sends the same state each time. Any other POST may have taken effect before the error, so it is
-# never resent. A caller whose own poll already reads again sets
+# sets `GH_API_RESEND=true` because it sends the same state each time. Any
+# other POST may have taken effect before the error, so it is never resent. A
+# caller whose own poll already reads again sets
 # `GH_API_RETRY_ERRORS=false`, so a poll never multiplies the sends. Any other
 # 4xx fails at once. A resendable call can take up to 32 s more than one send:
 # two more sends GitHub may cut off at 10 s each, and up to 12 s of waits. The
@@ -230,10 +231,6 @@ gh_api_once() {
     fi
     GH_MESSAGE="$(sed -n 's/^gh: \(.*\) (HTTP [0-9][0-9]*)$/\1/p' "$gh_stderr" | head -n1)"
     if [[ "$GH_GRAPHQL_ERRORS" == true ]]; then
-      if [[ -z "$GH_HTTP_STATUS" ]]; then
-        GH_HTTP_STATUS="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers")"
-        [[ "$GH_HTTP_STATUS" =~ ^[0-9]{3}$ ]] || GH_HTTP_STATUS=""
-      fi
       GH_MESSAGE="$(jq -r 'first(.errors[]? | .message? | strings) // ""' <"$gh_stdout" 2>/dev/null | head -n1 || true)"
     fi
     if [[ -z "$GH_MESSAGE" ]]; then
@@ -244,7 +241,7 @@ gh_api_once() {
   # per page, so a successful one counts a request per page.
   local count_status="" count_requests=1
   if [[ "$include" == true ]]; then
-    count_status="$(awk 'NR == 1 && /^HTTP\// { print $2 }' "$gh_headers" 2>/dev/null || true)"
+    count_status="$code"
   elif [[ "$status" -eq 0 ]]; then
     count_status=200
     count_requests="$(jq 'if type == "array" then length else 1 end' <"$gh_stdout" 2>/dev/null || true)"
