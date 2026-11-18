@@ -15,6 +15,7 @@
 
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -70,12 +71,8 @@ function scanPaths(scanLeak, entries) {
     return null;
   };
   const walk = (at, name) => {
-    let stat;
-    try {
-      stat = fs.lstatSync(at);
-    } catch {
-      return { label: "a path the scan cannot read" };
-    }
+    const stat = lstatOrNull(at);
+    if (!stat) return { label: "a path the scan cannot read" };
     if (stat.isSymbolicLink()) return { label: "a link, which the upload would follow" };
     if (stat.isDirectory()) {
       for (const child of fs.readdirSync(at).sort()) {
@@ -99,33 +96,26 @@ function scanPaths(scanLeak, entries) {
       return { withheld: { label: "a glob or exclude pattern, which the scan cannot follow" }, warned, files };
     }
     // A missing path uploads nothing; the upload's if-no-files-found decides it.
-    if (!fs.existsSync(entry) && !isLink(entry)) continue;
-    const hit = walk(entry, isDirectory(entry) ? "" : path.basename(entry));
+    if (!fs.existsSync(entry) && !lstatOrNull(entry)?.isSymbolicLink()) continue;
+    const hit = walk(entry, lstatOrNull(entry)?.isDirectory() ? "" : path.basename(entry));
     if (hit) return { withheld: hit, warned, files };
   }
   return { withheld: null, warned, files };
 }
 
-const isLink = (at) => {
+function lstatOrNull(at) {
   try {
-    return fs.lstatSync(at).isSymbolicLink();
+    return fs.lstatSync(at);
   } catch {
-    return false;
+    return null;
   }
-};
-const isDirectory = (at) => {
-  try {
-    return fs.lstatSync(at).isDirectory();
-  } catch {
-    return false;
-  }
-};
+}
 
 /** Scan `env.SCAN_PATHS` with the gate at `gatePath` (fetched when absent); returns the exit code. */
 async function main(env = process.env, gatePath = null) {
   let result;
   try {
-    const gate = gatePath ?? fetchGate(env.RUNNER_TEMP || require("node:os").tmpdir());
+    const gate = gatePath ?? fetchGate(env.RUNNER_TEMP || os.tmpdir());
     const { scanLeak } = await import(pathToFileURL(gate).href);
     if (typeof scanLeak !== "function") throw new Error("the gate exports no scanLeak");
     result = scanPaths(scanLeak, String(env.SCAN_PATHS ?? "").split(/\r?\n/u));

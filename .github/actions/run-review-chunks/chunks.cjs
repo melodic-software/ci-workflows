@@ -10,8 +10,7 @@
 // removed, leaving only this script's outputs for the step.
 //
 // A chunk runs only after the chunk before it succeeded and handed nothing
-// on, as the hand-written chunk steps did: the first failure or handoff
-// stops the loop, and every later chunk is `skipped`. The step fails when a
+// on: the first failure or handoff stops the loop, and every later chunk is `skipped`. The step fails when a
 // chunk failed.
 "use strict";
 
@@ -101,7 +100,7 @@ function runChunks(env, { runChunk, now = () => Date.now() }) {
     failed = status !== 0 || !resultObject(structured);
     outcomes.push(failed ? "failure" : "success");
     stop = {
-      "lane-class": leg["lane-class"] ?? (failed ? "other" : ""),
+      "lane-class": leg["lane-class"] || (failed ? "other" : ""),
       handoff: leg.handoff ?? "",
       "handoff-reason": leg["handoff-reason"] ?? "",
       credential: leg.credential ?? "",
@@ -111,7 +110,6 @@ function runChunks(env, { runChunk, now = () => Date.now() }) {
       "started-at": startedAt,
       "last-chunk": String(k),
     };
-    if (failed && stop["lane-class"] === "") stop["lane-class"] = "other";
     fs.truncateSync(outputFile, base);
     writeOutputs(outputFile, outputsOf(stop, outcomes, results, executions));
   }

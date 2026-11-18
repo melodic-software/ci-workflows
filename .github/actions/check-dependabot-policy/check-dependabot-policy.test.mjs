@@ -23,12 +23,15 @@ const NPM_COOLDOWN = `    cooldown:
         - "@anthropic-ai/claude-code"
 `;
 
-const CONFORMANT = `  - package-ecosystem: npm
+// A conformant npm entry up to its groups block.
+const NPM_HEAD = `  - package-ecosystem: npm
     directory: /
     open-pull-requests-limit: 5
     schedule:
       interval: weekly
-${NPM_COOLDOWN}    groups:
+${NPM_COOLDOWN}`;
+
+const CONFORMANT = `${NPM_HEAD}    groups:
       npm-minor-patch:
         update-types:
           - minor
@@ -254,12 +257,7 @@ test("a zero open-pull-requests-limit disables updates and is flagged", async ()
 });
 
 test("a groups block that only applies to security updates is flagged", async () => {
-  const entry = `  - package-ecosystem: npm
-    directory: /
-    open-pull-requests-limit: 5
-    schedule:
-      interval: weekly
-${NPM_COOLDOWN}    groups:
+  const entry = `${NPM_HEAD}    groups:
       security-only:
         applies-to: security-updates
         patterns:
@@ -270,12 +268,7 @@ ${NPM_COOLDOWN}    groups:
 });
 
 test("a groups block that explicitly applies to version updates passes", async () => {
-  const entry = `  - package-ecosystem: npm
-    directory: /
-    open-pull-requests-limit: 5
-    schedule:
-      interval: weekly
-${NPM_COOLDOWN}    groups:
+  const entry = `${NPM_HEAD}    groups:
       versions:
         applies-to: version-updates
         patterns:
@@ -286,12 +279,7 @@ ${NPM_COOLDOWN}    groups:
 });
 
 test("a version group that excludes every pattern is flagged", async () => {
-  const entry = `  - package-ecosystem: npm
-    directory: /
-    open-pull-requests-limit: 5
-    schedule:
-      interval: weekly
-${NPM_COOLDOWN}    groups:
+  const entry = `${NPM_HEAD}    groups:
       versions:
         patterns:
           - "*"
@@ -303,17 +291,7 @@ ${NPM_COOLDOWN}    groups:
 });
 
 test("a match-all ignore rule disables updates and is flagged", async () => {
-  const entry = `  - package-ecosystem: npm
-    directory: /
-    open-pull-requests-limit: 5
-    schedule:
-      interval: weekly
-${NPM_COOLDOWN}    groups:
-      npm-minor-patch:
-        update-types:
-          - minor
-          - patch
-    ignore:
+  const entry = `${CONFORMANT}    ignore:
       - dependency-name: "*"
 `;
   const root = await repository({ dependabotYaml: dependabot(entry) });
@@ -321,17 +299,7 @@ ${NPM_COOLDOWN}    groups:
 });
 
 test("a narrow ignore rule still passes", async () => {
-  const entry = `  - package-ecosystem: npm
-    directory: /
-    open-pull-requests-limit: 5
-    schedule:
-      interval: weekly
-${NPM_COOLDOWN}    groups:
-      npm-minor-patch:
-        update-types:
-          - minor
-          - patch
-    ignore:
+  const entry = `${CONFORMANT}    ignore:
       - dependency-name: "melodic-software/ci-workflows/*"
 `;
   const root = await repository({ dependabotYaml: dependabot(entry) });
@@ -754,42 +722,23 @@ test("a malformed cooldown class or fast-track block fails closed", async () => 
 });
 
 test("an auto-merge publisher key that is not a whole publisher fails closed", async () => {
-  const root = await repository({ dependabotYaml: dependabot(CONFORMANT) });
   const review = { tier: "auto", reviewed: "2026-10-08", basis: "test" };
-  const policy = {
-    schemaVersion: 2,
-    scheduleInterval: "weekly",
-    cooldownMinimumDays: 3,
-    ...updateClasses(),
-    maxOpenPullRequests: 5,
-    requireGroups: true,
-    autoMerge: {
-      ecosystems: ["github-actions"],
-      publishers: { "actions/checkout": review },
-      reviewOnly: [],
-      excludeSemverMajor: true,
-      requiredCheck: "ci-status",
-    },
-  };
-  const policyPath = path.join(root, "policy.json");
-  await writeFile(policyPath, JSON.stringify(policy));
-  await assert.rejects(
-    auditRepository({ root, policyPath }),
-    (error) => error instanceof ConfigurationError && error.message.includes("publishers"),
-  );
-  policy.autoMerge.publishers = { "actions/*": { ...review, tier: "unknown" } };
-  await writeFile(policyPath, JSON.stringify(policy));
-  await assert.rejects(
-    auditRepository({ root, policyPath }),
-    (error) => error instanceof ConfigurationError && error.message.includes("publishers"),
-  );
+  const policy = minimalPolicy();
+  for (const publishers of [
+    { "actions/checkout": review },
+    { "actions/*": { ...review, tier: "unknown" } },
+  ]) {
+    policy.autoMerge.publishers = publishers;
+    await assert.rejects(
+      auditWithPolicy(policy),
+      (error) => error instanceof ConfigurationError && error.message.includes("publishers"),
+    );
+  }
   policy.autoMerge.publishers = { "actions/*": review };
-  await writeFile(policyPath, JSON.stringify(policy));
-  assert.deepEqual(await auditRepository({ root, policyPath }), []);
+  assert.deepEqual(await auditWithPolicy(policy), []);
 });
 
 test("a review-only dependency entry needs its scope and the control it cites", async () => {
-  const root = await repository({ dependabotYaml: dependabot(CONFORMANT) });
   const entry = {
     repository: "melodic-software/standards",
     ecosystem: "npm",
@@ -799,24 +748,9 @@ test("a review-only dependency entry needs its scope and the control it cites", 
     basis: "test",
     control: "distribution/THREAT-MODEL.md#npm-supply-chain-production-engine",
   };
-  const policy = {
-    schemaVersion: 2,
-    scheduleInterval: "weekly",
-    cooldownMinimumDays: 3,
-    ...updateClasses(),
-    maxOpenPullRequests: 5,
-    requireGroups: true,
-    autoMerge: {
-      ecosystems: ["github-actions"],
-      publishers: { "actions/*": { tier: "auto", reviewed: "2026-10-08", basis: "test" } },
-      reviewOnly: [entry],
-      excludeSemverMajor: true,
-      requiredCheck: "ci-status",
-    },
-  };
-  const policyPath = path.join(root, "policy.json");
-  await writeFile(policyPath, JSON.stringify(policy));
-  assert.deepEqual(await auditRepository({ root, policyPath }), []);
+  const policy = minimalPolicy();
+  policy.autoMerge.reviewOnly = [entry];
+  assert.deepEqual(await auditWithPolicy(policy), []);
   const { control: _control, ...withoutControl } = entry;
   for (const reviewOnly of [
     [withoutControl],
@@ -824,11 +758,7 @@ test("a review-only dependency entry needs its scope and the control it cites", 
     undefined,
   ]) {
     policy.autoMerge.reviewOnly = reviewOnly;
-    await writeFile(policyPath, JSON.stringify(policy));
-    await assert.rejects(
-      auditRepository({ root, policyPath }),
-      (error) => error instanceof ConfigurationError,
-    );
+    await assert.rejects(auditWithPolicy(policy), (error) => error instanceof ConfigurationError);
   }
 });
 

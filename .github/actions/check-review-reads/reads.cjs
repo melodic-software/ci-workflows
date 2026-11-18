@@ -22,10 +22,16 @@ const UNCHECKED = "the job could not check which files the review read";
 const UNLISTED = "the job could not list the files the review had to read";
 const FORMAT_UNKNOWN = "the CLI's Read output format was not recognized";
 
-/** Each `diff --git` section: its line range, header, rename target, text and non-empty lines. */
-function diffSections(text) {
+// A text's lines, without the empty one after a final newline.
+function linesOf(text) {
   const lines = String(text).split("\n");
   if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+/** Each `diff --git` section: its line range, header, rename target, text and non-empty lines. */
+function diffSections(text) {
+  const lines = linesOf(text);
   const sections = [];
   lines.forEach((line, i) => {
     if (line.startsWith("diff --git ")) {
@@ -188,22 +194,25 @@ function readsOf(messages, workspace, lineCounts = new Map()) {
 
 const linesShown = (messages, workspace) => readsOf(messages, workspace).shown;
 
-// The text of a diff file the job wrote: a regular file, never a link.
-function diffFile(workspace, file) {
+// The text of a file the job wrote: a regular file, never a link; else null.
+function jobFile(workspace, file) {
   try {
     const full = path.resolve(workspace, file);
-    if (!fs.lstatSync(full).isFile()) return null;
-    const text = fs.readFileSync(full, "utf8");
-    const lines = text.split("\n");
-    if (lines.at(-1) === "") lines.pop();
-    return {
-      key: fileKey(workspace, file),
-      lines: lines.length,
-      sections: diffSections(text),
-    };
+    return fs.lstatSync(full).isFile() ? fs.readFileSync(full, "utf8") : null;
   } catch {
     return null;
   }
+}
+
+// A diff file the job wrote.
+function diffFile(workspace, file) {
+  const text = jobFile(workspace, file);
+  if (text === null) return null;
+  return {
+    key: fileKey(workspace, file),
+    lines: linesOf(text).length,
+    sections: diffSections(text),
+  };
 }
 
 // Whether a section is a listed path's: git's rename or copy target names it,
@@ -353,15 +362,8 @@ function checkReads({
 
 // A job-written list: a regular file of one path per line.
 function listOf(workspace, file) {
-  try {
-    const full = path.resolve(workspace, file);
-    if (!fs.lstatSync(full).isFile()) return null;
-    const lines = fs.readFileSync(full, "utf8").split("\n");
-    if (lines.at(-1) === "") lines.pop();
-    return lines;
-  } catch {
-    return null;
-  }
+  const text = jobFile(workspace, file);
+  return text === null ? null : linesOf(text);
 }
 
 function transcript(file) {
@@ -375,6 +377,7 @@ function transcript(file) {
 }
 
 const WHOLE = /^(?:0|[1-9][0-9]{0,5})$/u;
+const POSITIVE = /^[1-9][0-9]{0,5}$/u;
 
 // The mode the step runs in: `report` when unset, a value that is neither
 // enforces, and names itself only when plain.
@@ -449,9 +452,7 @@ function check(env, write, mode) {
   }
   const coverage = review?.coverage;
   const workspace = env.GITHUB_WORKSPACE || process.cwd();
-  const chunks = /^[1-9][0-9]{0,5}$/u.test(env.CHUNKS ?? "")
-    ? Number(env.CHUNKS)
-    : 0;
+  const chunks = POSITIVE.test(env.CHUNKS ?? "") ? Number(env.CHUNKS) : 0;
   if (
     !Number.isSafeInteger(coverage?.changed) ||
     !Number.isSafeInteger(coverage?.read) ||
@@ -484,7 +485,7 @@ function check(env, write, mode) {
         : "",
     );
   // distinct.diff is the split step's only when it left files out.
-  const alternates = /^[1-9][0-9]{0,5}$/u.test(env.EXCLUDED ?? "")
+  const alternates = POSITIVE.test(env.EXCLUDED ?? "")
     ? [path.join(env.CHUNK_DIR, "distinct.diff")]
     : [];
   const chunkDiffs = (i) =>

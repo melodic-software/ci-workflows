@@ -6,7 +6,9 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
+const SHA = /^[0-9a-f]{40}$/u;
 // The one findSecret label that warns instead of withholding: a review quotes
 // assignments from the diff it reviews.
 const WARN_ONLY = "password or secret assignment";
@@ -97,7 +99,7 @@ function commentBody(body, lane, binding = "") {
 // record (writeRecord) lists it (claude-code-plugins lib/lane-binding.mjs).
 function bindingLine(env) {
   return /^[1-9][0-9]{0,19}$/u.test(env.GITHUB_RUN_ID ?? "") &&
-    /^[0-9a-f]{40}$/u.test(env.HEAD_SHA ?? "")
+    SHA.test(env.HEAD_SHA ?? "")
     ? `<!-- claude-lane-run id=${env.GITHUB_RUN_ID} sha=${env.HEAD_SHA} -->`
     : "";
 }
@@ -456,7 +458,7 @@ function scopedFiles(env) {
     (f.h === undefined ||
       (Array.isArray(f.h) && f.h.every((h) => typeof h === "string")));
   if (
-    !/^[0-9a-f]{40}$/u.test(env.HEAD_SHA ?? "") ||
+    !SHA.test(env.HEAD_SHA ?? "") ||
     data?.head !== env.HEAD_SHA ||
     !Number.isSafeInteger(data.changed) ||
     data.changed < 0 ||
@@ -507,9 +509,7 @@ async function writeMarker(
   summary,
   sha = env.HEAD_SHA,
 ) {
-  const mergeBase = /^[0-9a-f]{40}$/u.test(env.MERGE_BASE ?? "")
-    ? env.MERGE_BASE
-    : "none";
+  const mergeBase = SHA.test(env.MERGE_BASE ?? "") ? env.MERGE_BASE : "none";
   // The scope step in pr-review-cli.yml reads only markers naming its own caller.
   const caller = (env.GITHUB_WORKFLOW_REF ?? "")
     .split("@")[0]
@@ -564,9 +564,7 @@ const WHY = {
 // findSecret from the publish gate the job fetched, or null.
 async function loadGate(env) {
   try {
-    const gate = await import(
-      require("node:url").pathToFileURL(env.PUBLISH_GATE ?? "").href
-    );
+    const gate = await import(pathToFileURL(env.PUBLISH_GATE ?? "").href);
     return typeof gate.findSecret === "function" ? gate.findSecret : null;
   } catch {
     return null;
@@ -669,9 +667,10 @@ async function publish({ github, context, core, env }) {
   if (live !== head)
     placed.problems.unshift(`the pull request's head moved to ${live}`);
   const summary = summaryText(review, placed.unanchored, lane);
+  const malformed = malformedComments(review);
   const findings = Math.max(
     review.findings,
-    review.comments.length + malformedComments(review).length,
+    review.comments.length + malformed.length,
   );
 
   const findSecret = await loadGate(env);
@@ -703,7 +702,7 @@ async function publish({ github, context, core, env }) {
         findings: review.findings,
         summary,
         comments: [...placed.inline, ...placed.unanchored],
-        malformed: malformedComments(review),
+        malformed,
       },
     });
     if (partial) return fail("partial", coverage);
@@ -728,9 +727,8 @@ async function publish({ github, context, core, env }) {
             (c) =>
               c.user?.login === "github-actions[bot]" && c.commit_id === head,
           );
-    const posted = new Set(
-      earlier.map((c) => commentKey({ ...c, side: c.side ?? "RIGHT" })),
-    );
+    const earlierKey = (c) => commentKey({ ...c, side: c.side ?? "RIGHT" });
+    const posted = new Set(earlier.map(earlierKey));
     const wanted = new Set(placed.inline.map(commentKey));
     // An earlier attempt of this run already posted these: this attempt's
     // record lists them too, so a lost first record is replaced by a re-run.
@@ -739,8 +737,7 @@ async function publish({ github, context, core, env }) {
       earlier
         .filter(
           (c) =>
-            boundRun(c.body) === env.GITHUB_RUN_ID &&
-            wanted.has(commentKey({ ...c, side: c.side ?? "RIGHT" })),
+            boundRun(c.body) === env.GITHUB_RUN_ID && wanted.has(earlierKey(c)),
         )
         .map((c) => ({ kind: "review_comment", id: c.id, body: c.body })),
     );
@@ -810,9 +807,7 @@ async function shadowReport(core, env, report) {
     `- Leg: ${report.leg}; scope: ${report.scope}`,
     `- Outcome: ${report.failure_class ?? "complete"}`,
     ...(report.coverage
-      ? [
-          `- Coverage: ${coverageText(report.coverage)}`,
-        ]
+      ? [`- Coverage: ${coverageText(report.coverage)}`]
       : []),
     `- Findings: ${report.findings ?? "none"}; inline-ready: ${report.inline ?? 0}`,
     `- Anchor problems: ${report.anchor_problems?.length ?? 0}`,

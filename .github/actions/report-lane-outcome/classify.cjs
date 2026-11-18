@@ -96,6 +96,22 @@ function toStringLikeJq(value) {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+// The last result message, or undefined.
+const resultOf = (messages) =>
+  messages.findLast((message) => message?.type === "result");
+
+// A Date as ISO-8601 to the second, or null when it is invalid.
+const isoSeconds = (date) =>
+  Number.isNaN(date.getTime())
+    ? null
+    : date.toISOString().replace(/\.000Z$/u, "Z");
+
+// The entries whose value is not null as an object, or null when none is.
+function present(entries) {
+  const kept = entries.filter(([, value]) => value !== null);
+  return kept.length > 0 ? Object.fromEntries(kept) : null;
+}
+
 // The execution file's messages, or null when it is unset, missing or not a
 // JSON array.
 function readMessages(executionFilePath) {
@@ -139,7 +155,7 @@ const REGAIN_ACCESS =
 // The failed run's messages when no model output exists, so every text in
 // them is the CLI's own; else null.
 function cliOnlyRun(messages) {
-  const result = messages.findLast((message) => message?.type === "result");
+  const result = resultOf(messages);
   if (result?.is_error !== true) return null;
   const assistants = messages.filter((m) => m?.type === "assistant");
   const content = assistants.flatMap((m) =>
@@ -183,8 +199,7 @@ function creditStopText(messages) {
 }
 
 function isCreditStop(messages, { exitCode = null } = {}) {
-  if (!Array.isArray(messages)) return false;
-  if (typeof exitCode === "number" && exitCode === 0) return false;
+  if (!Array.isArray(messages) || exitCode === 0) return false;
   return creditStopText(messages) !== null;
 }
 
@@ -193,11 +208,9 @@ function isCreditStop(messages, { exitCode = null } = {}) {
 function creditStopResetsAt(messages) {
   const text = Array.isArray(messages) ? creditStopText(messages) : null;
   const match = text?.match(REGAIN_ACCESS);
-  if (!match) return null;
-  const date = new Date(`${match[1]}T${match[2]}:${match[3]}:00Z`);
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toISOString().replace(/\.000Z$/u, "Z");
+  return match
+    ? isoSeconds(new Date(`${match[1]}T${match[2]}:${match[3]}:00Z`))
+    : null;
 }
 
 // The API error body's type, `error.details.error_code` and `request_id`
@@ -249,7 +262,7 @@ function failedShellCalls(messages, minCalls = FAILED_SHELL_MIN_CALLS) {
     messages
       .flatMap((m) => (Array.isArray(m?.message?.content) ? m.message.content : []))
       .filter((block) => block?.type === type);
-  const result = messages.findLast((message) => message?.type === "result");
+  const result = resultOf(messages);
   const denied = new Set(
     (Array.isArray(result?.permission_denials) ? result.permission_denials : []).map(
       (denial) => denial?.tool_use_id,
@@ -293,7 +306,8 @@ function classifyExecutionFile(
     };
   }
 
-  const last = readMessages(executionFilePath)?.at(-1);
+  const messages = readMessages(executionFilePath);
+  const last = messages?.at(-1);
   if (last === undefined || last === null) {
     return {
       reviewDetail: "(execution file present but unparsable)",
@@ -308,10 +322,7 @@ function classifyExecutionFile(
   let errorType = null;
   if (timedOut) {
     failureClass = "timeout";
-  } else if (
-    detectCreditStop &&
-    isCreditStop(readMessages(executionFilePath), { exitCode })
-  ) {
+  } else if (detectCreditStop && isCreditStop(messages, { exitCode })) {
     failureClass = "credit-stop";
   } else if (typeof status === "number") {
     failureClass = classFromStatus(status);
@@ -370,10 +381,7 @@ function isoFromEpoch(value) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return null;
   }
-  const date = new Date(value < 1e12 ? value * 1000 : value);
-  return Number.isNaN(date.getTime())
-    ? null
-    : date.toISOString().replace(/\.000Z$/u, "Z");
+  return isoSeconds(new Date(value < 1e12 ? value * 1000 : value));
 }
 
 // A rate_limit_event's info with each field read in either form: camelCase
@@ -468,27 +476,23 @@ function readLegLog(logFilePath) {
   } catch {
     return none;
   }
-  const kept = (entries) => {
-    const present = entries.filter(([, value]) => value !== null);
-    return present.length > 0 ? Object.fromEntries(present) : null;
-  };
   const count = (value) =>
     Number.isSafeInteger(value) && value >= 0 ? value : null;
   const usage = leg?.usage ?? {};
   const limits = leg?.rate_limits ?? {};
   return {
-    usage: kept([
+    usage: present([
       ["input", count(usage.input_tokens)],
       ["output", count(usage.output_tokens)],
       ["cacheRead", count(usage.cache_read_input_tokens)],
       ["cacheCreation", count(usage.cache_creation_input_tokens)],
     ]),
-    windows: kept(
+    windows: present(
       RATE_LIMIT_WINDOWS.filter((window) =>
         RATE_LIMIT_STATUSES.includes(limits[window]?.status),
       ).map((window) => [
         window,
-        kept([
+        present([
           ["utilization", fraction(limits[window].utilization)],
           [
             "resetsAt",
@@ -505,7 +509,7 @@ function readLegLog(logFilePath) {
 
 function readRunRecord(executionFilePath) {
   const messages = readMessages(executionFilePath) ?? [];
-  const result = messages.findLast((message) => message?.type === "result");
+  const result = resultOf(messages);
   const turns = result?.num_turns;
   const usage = result?.modelUsage;
   const cost = result?.total_cost_usd;
@@ -732,10 +736,6 @@ function factRecord(
     ...(credential === null ? ["credential"] : []),
   ];
   if (missing.length > 0) return { record: null, missing };
-  const present = (entries) => {
-    const kept = entries.filter(([, value]) => value !== null);
-    return kept.length > 0 ? Object.fromEntries(kept) : null;
-  };
   const record = present([
     ["v", 1],
     ["lane", laneId],
@@ -780,10 +780,7 @@ function factRecord(
     ["githubCalls", context.githubCalls ?? null],
     ["usage", facts.usage],
     ["windows", facts.windows],
-    [
-      "models",
-      facts.models.length > 0 ? facts.models : null,
-    ],
+    ["models", facts.models.length > 0 ? facts.models : null],
   ]);
   // Past the limit the least needed facts go first, the GitHub calls last.
   for (const field of ["models", "usage", "windows", "githubCalls"]) {
