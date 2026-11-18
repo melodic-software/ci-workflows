@@ -33,11 +33,7 @@ while IFS= read -r line; do
   line="${line%$'\r'}"
   trimmed="${line#"${line%%[![:space:]]*}"}"
   trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-  [[ -n "$trimmed" ]] || continue
-  case "$trimmed" in
-    \#*) continue ;;
-    *) ;;
-  esac
+  [[ -n "$trimmed" && "$trimmed" != \#* ]] || continue
   if [[ "$trimmed" == *: ]]; then
     # A header-shaped line that was INDENTED is ambiguous: headers are
     # unindented and patterns are indented, so this is either a mistyped
@@ -143,28 +139,21 @@ values=()
 # concurrently against one scratch repo via core.excludesFile, then fold in
 # `names` order. An empty pattern file is the vacuous-filter fail-OPEN;
 # check-ignore exit 0 = match, 1 = none, >1 = fatal (also fail OPEN).
-for index in "${!names[@]}"; do
-  ignore="$scratch/ignore-$index"
-  : >"$ignore"
-  while IFS= read -r pattern; do
-    case "$pattern" in
-      /*) printf '%s\n' "$pattern" >>"$ignore" ;;
-      *) printf '/%s\n' "$pattern" >>"$ignore" ;;
-    esac
-  done <"${group_files[$index]}"
-done
-# Cap at 4, the hosted runner's vCPU count. Unbounded `& … wait`
-# oversubscribes a filters.yml that grows past a handful of groups.
-jobs=4
 worker_indices=()
 for index in "${!names[@]}"; do
   ignore="$scratch/ignore-$index"
+  while IFS= read -r pattern; do
+    printf '/%s\n' "${pattern#/}"
+  done <"${group_files[$index]}" >"$ignore"
   if [[ ! -s "$ignore" ]]; then
     printf 'empty\n' >"$scratch/rc-$index"
     continue
   fi
   worker_indices+=("$index")
 done
+# Cap at 4, the hosted runner's vCPU count. Unbounded `& … wait`
+# oversubscribes a filters.yml that grows past a handful of groups.
+jobs=4
 if ((${#worker_indices[@]} > 0)); then
   # Each xargs invocation appends ONE group index after `_`. The worker
   # body is a single-quoted script on purpose: its expansions belong to
@@ -190,27 +179,20 @@ for index in "${!names[@]}"; do
   # A worker that was killed, or never wrote a status, is an operational
   # fault: fail OPEN the same way check-ignore exit >1 does, never as "no
   # match", so a parallel-scheduler glitch cannot silently skip a lane.
+  value=true
   if [[ ! -f "$scratch/rc-$index" ]]; then
     echo "::warning::check-ignore produced no status for group '${name}'; treating it as relevant."
-    values+=("true")
-    continue
-  fi
-  rc="$(<"$scratch/rc-$index")"
-  if [[ "$rc" == empty ]]; then
-    echo "::warning::Filter group '${name}' has no usable patterns; treating it as relevant."
-    values+=("true")
-    continue
-  fi
-  if [[ "$rc" -gt 1 ]]; then
-    echo "::warning::check-ignore failed for group '${name}' (rc=${rc}); treating it as relevant."
-    values+=("true")
-    continue
-  fi
-  if [[ -s "$scratch/matches-$index" ]]; then
-    values+=("true")
   else
-    values+=("false")
+    rc="$(<"$scratch/rc-$index")"
+    if [[ "$rc" == empty ]]; then
+      echo "::warning::Filter group '${name}' has no usable patterns; treating it as relevant."
+    elif [[ "$rc" -gt 1 ]]; then
+      echo "::warning::check-ignore failed for group '${name}' (rc=${rc}); treating it as relevant."
+    elif [[ ! -s "$scratch/matches-$index" ]]; then
+      value=false
+    fi
   fi
+  values+=("$value")
 done
 
 emit_results

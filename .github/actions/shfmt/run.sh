@@ -39,14 +39,14 @@ rm -f -- "$discovered"
 
 # Sparse checkouts can leave tracked, skip-worktree entries absent on disk.
 kept=()
-for file in ${files[@]+"${files[@]}"}; do
+for file in "${files[@]}"; do
   [[ -f "$file" ]] || continue
   for substring in $exclude; do
     [[ "$file" == *"$substring"* ]] && continue 2
   done
   kept+=("$file")
 done
-files=("${kept[@]+"${kept[@]}"}")
+files=("${kept[@]}")
 
 if [[ ${#files[@]} -eq 0 ]]; then
   echo 'No shell scripts to check.'

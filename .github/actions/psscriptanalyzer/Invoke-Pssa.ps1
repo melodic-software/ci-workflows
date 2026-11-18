@@ -106,7 +106,7 @@ if (-not (Test-Path -LiteralPath $Settings)) {
     exit 2
 }
 
-$files = [System.Collections.Generic.List[string]]::new()
+$candidates = [System.Collections.Generic.List[string]]::new()
 if ($Path.Count -eq 0) {
     # PowerShell may split native stdout on newline, so reassemble and split on
     # NUL. Filter to on-disk files so a sparse checkout is handled cleanly.
@@ -115,37 +115,29 @@ if ($Path.Count -eq 0) {
         Write-Error 'git ls-files failed — not a git checkout?' -ErrorAction Continue
         exit 2
     }
-    $tracked = ($raw -join "`n") -split "`0" | Where-Object { $_ }
-    foreach ($rel in $tracked) {
-        if (-not (Test-Path -LiteralPath $rel -PathType Leaf)) { continue }
-        $resolved = (Resolve-Path -LiteralPath $rel).Path
-        if (-not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
-            $files.Add($resolved)
+    foreach ($rel in ($raw -join "`n") -split "`0" | Where-Object { $_ }) {
+        if (Test-Path -LiteralPath $rel -PathType Leaf) {
+            $candidates.Add((Resolve-Path -LiteralPath $rel).Path)
         }
     }
 } else {
     foreach ($entry in $Path) {
         if (Test-Path -LiteralPath $entry -PathType Leaf) {
-            $resolved = (Resolve-Path -LiteralPath $entry).Path
-            $ext = [System.IO.Path]::GetExtension($resolved)
-            # Filter leaf inputs by extension too — a hook may pass a mixed file list.
-            if (($ext -in '.ps1', '.psm1') -and -not (Test-PathExcluded -FullPath $resolved -Patterns $ExcludePath)) {
-                $files.Add($resolved)
-            }
+            $candidates.Add((Resolve-Path -LiteralPath $entry).Path)
         } elseif (Test-Path -LiteralPath $entry -PathType Container) {
             Get-ChildItem -LiteralPath $entry -Recurse -Force -File |
-                Where-Object { $_.Extension -in '.ps1', '.psm1' } |
-                ForEach-Object {
-                    if (-not (Test-PathExcluded -FullPath $_.FullName -Patterns $ExcludePath)) {
-                        $files.Add($_.FullName)
-                    }
-                }
+                ForEach-Object { $candidates.Add($_.FullName) }
         } else {
             Write-Error "Path not found: $entry" -ErrorAction Continue
             exit 2
         }
     }
 }
+# Leaf inputs are filtered by extension too — a hook may pass a mixed file list.
+$files = @($candidates | Where-Object {
+        [System.IO.Path]::GetExtension($_) -in '.ps1', '.psm1' -and
+        -not (Test-PathExcluded -FullPath $_ -Patterns $ExcludePath)
+    })
 
 if ($files.Count -eq 0) {
     if ($FailOnNoFiles) {
@@ -156,13 +148,14 @@ if ($files.Count -eq 0) {
     exit 0
 }
 
-$findingCount = 0
 try {
     Import-Module PSScriptAnalyzer -RequiredVersion $AnalyzerVersion -ErrorAction Stop
 } catch {
     Write-Error "Import-Module failed: $($_.Exception.Message)" -ErrorAction Continue
     exit 2
 }
+
+$findingCount = 0
 
 foreach ($file in $files) {
     $analysisErrors = @()

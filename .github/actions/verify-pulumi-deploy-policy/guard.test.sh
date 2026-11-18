@@ -9,7 +9,6 @@ trap 'rm -rf -- "$temporary_directory"' EXIT
 urn_one='urn:pulumi:production::project::github:index/actionsVariable:ActionsVariable::one-ci-policy'
 urn_two='urn:pulumi:production::project::github:index/actionsVariable:ActionsVariable::two-ci-policy'
 child_urn="urn:pulumi:production::project::component:index:Parent\$github:index/actionsVariable:ActionsVariable::child-ci-policy"
-requested_urns="$(jq -cn --arg one "$urn_one" --arg two "$urn_two" '[$one, $two]')"
 
 mock_pulumi="$temporary_directory/pulumi"
 cat >"$mock_pulumi" <<'MOCK'
@@ -231,7 +230,6 @@ grep -Fx 'missing-count=1' "$output" >/dev/null
 printf 'PASS: documented child-resource URN is accepted\n'
 
 reset_valid_fixtures
-requested_urns="$(jq -cn --arg one "$urn_one" --arg two "$urn_two" '[$one, $two]')"
 TEST_STACK_NAME='other/project/production' expect_failure 'contract and stack organizations must match'
 grep -F 'policy contract organization does not match stack organization' "$stderr" >/dev/null
 
