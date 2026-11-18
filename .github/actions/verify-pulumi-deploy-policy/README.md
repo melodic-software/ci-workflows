@@ -16,16 +16,12 @@ Fails closed unless:
 
 Because the guard compares Pulumi's complete personal allow set against one
 contract, every repository the organization trusts belongs in that one
-contract. `contracts/kyle-sexton.json` is the org-wide contract and holds the
-`github-iac` and `azure-iac` policies. `contracts/kyle-sexton-github-iac.json`
-remains for callers pinned to an earlier release; it holds only the
-`github-iac` policy, so it stops matching once Pulumi holds both.
-`contracts/pulumi-oidc-policies.json` holds the same two policies under
-the workflow name `Release Deploy`, with the `azure-iac` workflow file
-`release-deploy.yml`. A deploy workflow selects it in the change that renames
-the workflow, and Pulumi's policies change in the same sitting: while Pulumi
-holds policies under both the old and the new names, neither contract matches
-and applies stop.
+contract. `contracts/pulumi-oidc-policies.json` is that contract: it holds the
+`github-iac` and `azure-iac` policies, both under the workflow name
+`Release Deploy`, with the `azure-iac` workflow file `release-deploy.yml`.
+Callers select it with `policy-contract: pulumi-oidc-policies`. Changing a
+deploy workflow's name or file changes its policy, so the contract and
+Pulumi's policies change together; until both match, applies stop.
 
 Contract v2 uses GitHub's immutable owner/repository-ID subject plus exact
 claims for: private repo, owner ID, actor ID, main ref, manual event, first run
