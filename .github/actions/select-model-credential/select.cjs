@@ -43,6 +43,7 @@
 const fs = require("node:fs");
 const gate = require("../check-key-credit/gate.cjs");
 const { FALLBACK_REASONS } = require("../report-lane-outcome/classify.cjs");
+const { FALLBACK_SECRET } = require("../run-claude-cli/lane.cjs");
 
 const NEXT = { key: "subscription", subscription: "fallback", fallback: "" };
 // The reasons a launcher handoff can carry, per leg (run-claude-cli
@@ -53,7 +54,6 @@ const HANDOFF_REASONS = {
   fallback: [],
 };
 const ROLE = /^[a-z][a-z0-9-]{0,39}$/u;
-const { FALLBACK_SECRET } = require("../run-claude-cli/lane.cjs");
 
 // The secret a leg reads, named as run-claude-cli names it.
 function secretName(role, leg) {
@@ -71,11 +71,15 @@ function reasonOf(value, allowed = FALLBACK_REASONS) {
   return allowed.includes(text) ? text : "";
 }
 
+// The next job's leg and why; empty hands on nothing.
+const handOn = (nextLeg = "", nextReason = "") => ({
+  "next-leg": nextLeg,
+  "next-reason": nextReason,
+});
+
 // The first leg, from a credit-history verdict (null when not read).
 function start({ skipKey }) {
-  return skipKey
-    ? { "next-leg": "subscription", "next-reason": "credit-stop" }
-    : { "next-leg": "key", "next-reason": "" };
+  return skipKey ? handOn("subscription", "credit-stop") : handOn("key");
 }
 
 // A leg job's own decision, from the inputs as the action receives them
@@ -97,13 +101,13 @@ function leg({ leg, role, selected = "", held = false, reason = "", ...flags }) 
     "key-skipped": String(keySkipped),
     "fallback-reason": leg === "key" ? "" : reasonOf(reason),
     "secret-name": name,
+    state: JSON.stringify({
+      leg,
+      present,
+      "key-skipped": keySkipped,
+      "fallback-ready": fallbackSet,
+    }),
   };
-  outputs.state = JSON.stringify({
-    leg,
-    present,
-    "key-skipped": keySkipped,
-    "fallback-ready": fallbackSet,
-  });
   let line;
   if (keySkipped) {
     line = `::notice::${name}'s last credit stop is inside the key-credit window; the subscription job runs.`;
@@ -128,25 +132,23 @@ function next({ state, handoff, handoffReason }) {
   }
   const leg = parsed?.leg;
   if (!Object.hasOwn(NEXT, leg) || typeof parsed.present !== "boolean") {
-    return { "next-leg": "", "next-reason": "" };
+    return handOn();
   }
   const following = NEXT[leg];
-  if (following === "") return { "next-leg": "", "next-reason": "" };
+  if (following === "") return handOn();
   if (!parsed.present) {
     if (leg === "key") {
-      return {
-        "next-leg": following,
-        "next-reason": parsed["key-skipped"] === true ? "credit-stop" : "no-key",
-      };
+      return handOn(
+        following,
+        parsed["key-skipped"] === true ? "credit-stop" : "no-key",
+      );
     }
     return parsed["fallback-ready"] === true
-      ? { "next-leg": following, "next-reason": "no-key" }
-      : { "next-leg": "", "next-reason": "" };
+      ? handOn(following, "no-key")
+      : handOn();
   }
   const reason = reasonOf(handoffReason, HANDOFF_REASONS[leg]);
-  return isTrue(handoff) && reason !== ""
-    ? { "next-leg": following, "next-reason": reason }
-    : { "next-leg": "", "next-reason": "" };
+  return isTrue(handoff) && reason !== "" ? handOn(following, reason) : handOn();
 }
 
 // Reads the key's credit history through check-key-credit and returns
