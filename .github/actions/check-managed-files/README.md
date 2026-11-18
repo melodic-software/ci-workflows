@@ -8,7 +8,8 @@ verified instead of exempted:
   in the same repository;
 - every PR commit is authored by the sync App (login and noreply email) and
   committed by `web-flow` with a valid GitHub signature;
-- every changed path is an added or modified managed destination, and
+- every changed path is an added or modified managed destination, or a
+  deleted path `sync-manifest.sh retired-paths` lists for the target, and
   `sync-manifest.sh apply` from standards `main` onto the PR head leaves no
   byte, mode, untracked or ignored-file difference.
 
