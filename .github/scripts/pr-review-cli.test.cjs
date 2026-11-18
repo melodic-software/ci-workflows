@@ -2676,10 +2676,6 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     step(job, "full-diff").run,
     /^echo "copies=\$copies" >> "\$GITHUB_OUTPUT"$/mu,
   );
-  assert.equal(
-    step(job, "extract").with.script,
-    step(key, "extract").with.script,
-  );
 });
 
 // Identical changes: the full-diff step groups modified regular files whose
@@ -7299,7 +7295,7 @@ test("the subscription and fallback steps match those generated from review-key"
 });
 
 test("a Dependabot bump of one pin in every leg keeps the legs in sync", () => {
-  const pin = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+  const [pin] = workflowText.match(/actions\/checkout@[0-9a-f]{40}/u);
   assert.equal(workflowText.split(pin).length - 1, 3);
   const bumped = workflowText.replaceAll(
     pin,

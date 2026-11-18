@@ -1,8 +1,12 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
-const { render, check } = require("./generate-model-legs.cjs");
+const { render, check, main } = require("./generate-model-legs.cjs");
 
 const KEY_STEPS = `      - name: Pick the credential
         with:
@@ -173,4 +177,36 @@ test("a missing job throws, naming it", () => {
     () => render(workflow(DERIVED_STEPS), bad),
     /no steps for job nope/u,
   );
+});
+
+test("--check exits 1 naming each stale region and the write command, and 0 once written", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "model-legs-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, spec.workflow);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, workflow(DERIVED_STEPS));
+  const errors = t.mock.method(console, "error", () => {});
+
+  assert.equal(main(["--check"], [spec], dir), 1);
+  assert.deepEqual(
+    errors.mock.calls.map((call) => call.arguments[0]),
+    [
+      "stale generated steps: demo sub",
+      "Run: node .github/scripts/generate-model-legs.cjs",
+    ],
+  );
+  assert.equal(fs.readFileSync(file, "utf8"), workflow(DERIVED_STEPS));
+
+  assert.equal(main([], [spec], dir), 0);
+  assert.equal(main(["--check"], [spec], dir), 0);
+  assert.equal(fs.readFileSync(file, "utf8"), workflow(marked(DERIVED_STEPS)));
+});
+
+test("the CLI's --check exits 0 on the repository's workflows", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(__dirname, "generate-model-legs.cjs"), "--check"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });

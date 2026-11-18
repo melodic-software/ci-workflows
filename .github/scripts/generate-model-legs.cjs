@@ -118,11 +118,11 @@ const specs = () =>
     .sort()
     .map((file) => require(path.join(specDir, file)));
 
-function main(argv) {
+function main(argv, specList = specs(), rootDir = root) {
   const checkOnly = argv.includes("--check");
   const stale = [];
-  for (const spec of specs()) {
-    const file = path.join(root, spec.workflow);
+  for (const spec of specList) {
+    const file = path.join(rootDir, spec.workflow);
     const text = fs.readFileSync(file, "utf8");
     if (checkOnly) stale.push(...check(text, spec));
     else fs.writeFileSync(file, render(text, spec));
@@ -135,4 +135,4 @@ function main(argv) {
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { render, check, specs };
+module.exports = { render, check, main };
