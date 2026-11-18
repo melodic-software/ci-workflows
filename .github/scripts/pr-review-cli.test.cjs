@@ -7345,3 +7345,28 @@ test("a missing levels directory or an explicit value the launcher refuses fails
   await composeFails({ EFFORT: "extreme" }, /The effort must be/u);
   await composeFails({ MAX_TURNS: "0" }, /max-turns must be/u);
 });
+
+const modelLegs = require("./model-legs/pr-review-cli.cjs");
+const { check: checkLegs } = require("./generate-model-legs.cjs");
+const workflowText = fs.readFileSync(
+  path.join(__dirname, "..", "workflows", "pr-review-cli.yml"),
+  "utf8",
+);
+
+test("the subscription and fallback steps match those generated from review-key", () => {
+  assert.deepEqual(
+    checkLegs(workflowText, modelLegs),
+    [],
+    "Run: node .github/scripts/generate-model-legs.cjs",
+  );
+});
+
+test("a Dependabot bump of one pin in every leg keeps the legs in sync", () => {
+  const pin = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+  assert.equal(workflowText.split(pin).length - 1, 3);
+  const bumped = workflowText.replaceAll(
+    pin,
+    `actions/checkout@${"0".repeat(40)}`,
+  );
+  assert.deepEqual(checkLegs(bumped, modelLegs), []);
+});
