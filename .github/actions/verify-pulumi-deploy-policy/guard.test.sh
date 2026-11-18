@@ -2,8 +2,7 @@
 set -euo pipefail
 
 action_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-contract="$action_path/contracts/kyle-sexton-github-iac.json"
-org_contract="$action_path/contracts/kyle-sexton.json"
+contract="$action_path/contracts/pulumi-oidc-policies.json"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
@@ -81,7 +80,7 @@ run_guard() {
     MOCK_POLICY="$policy" \
     MOCK_STATE="$state" \
     OPERATIONAL_RESOURCE_URNS_JSON="$requested_urns" \
-    POLICY_CONTRACT="${TEST_POLICY_CONTRACT:-kyle-sexton-github-iac}" \
+    POLICY_CONTRACT="${TEST_POLICY_CONTRACT:-pulumi-oidc-policies}" \
     PULUMI_BIN="$mock_pulumi" \
     STACK_NAME="${TEST_STACK_NAME:-kyle-sexton/project/production}" \
     bash "$action_path/guard.sh" >"$stdout" 2>"$stderr"
@@ -126,7 +125,7 @@ printf 'PASS: empty array performs policy-only validation with deterministic emp
 
 reset_valid_fixtures
 requested_urns='[]'
-jq_edit "$policy" '.policies[0].rules.workflow = "github-iac-production-deploy-v2"'
+jq_edit "$policy" '.policies[0].rules.workflow = "Release Deploy V2"'
 expect_failure 'policy-only mode still requires the exact OIDC policy'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
@@ -146,7 +145,7 @@ mkdir -p "$invalid_action_path/contracts"
 for operator in '*' '?' '.'; do
   jq --arg operator "$operator" \
     '.personalAllowPolicies[0].rules.workflow += $operator' \
-    "$contract" >"$invalid_action_path/contracts/kyle-sexton-github-iac.json"
+    "$contract" >"$invalid_action_path/contracts/pulumi-oidc-policies.json"
   reset_valid_fixtures
   TEST_ACTION_PATH="$invalid_action_path" \
     expect_failure "bundled contract rejects Pulumi '$operator' matcher semantics"
@@ -166,7 +165,7 @@ expect_failure 'Pulumi pattern metacharacter policy fails closed'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
 reset_valid_fixtures
-jq_edit "$policy" '.policies[0].rules.workflow = "github-iac-production-deploy-v2"'
+jq_edit "$policy" '.policies[0].rules.workflow = "Release Deploy V2"'
 expect_failure 'near-match workflow claim fails closed'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
@@ -236,80 +235,82 @@ requested_urns="$(jq -cn --arg one "$urn_one" --arg two "$urn_two" '[$one, $two]
 TEST_STACK_NAME='other/project/production' expect_failure 'contract and stack organizations must match'
 grep -F 'policy contract organization does not match stack organization' "$stderr" >/dev/null
 
-# Org-wide contract: both repositories' policies in one complete allow set.
-reset_org_fixtures() {
-  reset_valid_fixtures
-  jq -c '{version: 4, policies: .personalAllowPolicies}' "$org_contract" >"$policy"
-}
-
-reset_org_fixtures
-TEST_POLICY_CONTRACT='kyle-sexton' run_guard
+# The contract holds both repositories' policies as one complete allow set.
+reset_valid_fixtures
+run_guard
 grep -Fx 'existing-count=1' "$output" >/dev/null
-printf 'PASS: two-policy org contract matches its exact allow set\n'
+printf 'PASS: two-policy pulumi-oidc-policies contract matches its exact allow set\n'
 
 reset_valid_fixtures
-TEST_POLICY_CONTRACT='kyle-sexton' \
-  expect_failure 'single github-iac policy does not match the two-policy org contract'
+jq_edit "$policy" '.policies |= map(select(.rules.repository == "melodic-software/github-iac"))'
+expect_failure 'single github-iac policy does not match the two-policy contract'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
 azure_sub_prefix='repo:melodic-software@58273638/azure-iac@1404939524:environment:azure-iac-production:job_workflow_ref:'
 
-# expect_invalid_org_contract <description> <jq filter applied to the azure-iac policy>
-expect_invalid_org_contract() {
+# expect_invalid_contract <description> <jq filter applied to the azure-iac policy>
+expect_invalid_contract() {
   jq "(.personalAllowPolicies[] | select(.rules.repository == \"melodic-software/azure-iac\")) |= ($2)" \
-    "$org_contract" >"$invalid_action_path/contracts/kyle-sexton.json"
-  reset_org_fixtures
-  TEST_ACTION_PATH="$invalid_action_path" TEST_POLICY_CONTRACT='kyle-sexton' \
-    expect_failure "$1"
+    "$contract" >"$invalid_action_path/contracts/pulumi-oidc-policies.json"
+  reset_valid_fixtures
+  TEST_ACTION_PATH="$invalid_action_path" expect_failure "$1"
   grep -F 'bundled Pulumi OIDC policy contract is invalid' "$stderr" >/dev/null
 }
 
-expect_invalid_org_contract "a '.' in the job_workflow_ref file stem fails" \
-  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/azure-iac.production-deploy.yml@refs/heads/main\""
-expect_invalid_org_contract "a '.' after the composed sub fails" '.rules.sub += "."'
-expect_invalid_org_contract "a '*' in the job_workflow_ref file stem fails" \
+expect_invalid_contract "a '.' in the job_workflow_ref file stem fails" \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/release.deploy.yml@refs/heads/main\""
+expect_invalid_contract "a '.' after the composed sub fails" '.rules.sub += "."'
+expect_invalid_contract "a '*' in the job_workflow_ref file stem fails" \
   ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/*.yml@refs/heads/main\""
-expect_invalid_org_contract 'a job_workflow_ref naming another repository fails' \
-  ".rules.sub = \"${azure_sub_prefix}melodic-software/github-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/main\""
-expect_invalid_org_contract 'a job_workflow_ref at another ref fails' \
-  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/azure-iac-production-deploy.yml@refs/heads/dev\""
-expect_invalid_org_contract 'an environment other than <repository>-production fails' \
+expect_invalid_contract 'a job_workflow_ref naming another repository fails' \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/github-iac/.github/workflows/release-deploy.yml@refs/heads/main\""
+expect_invalid_contract 'a job_workflow_ref at another ref fails' \
+  ".rules.sub = \"${azure_sub_prefix}melodic-software/azure-iac/.github/workflows/release-deploy.yml@refs/heads/dev\""
+expect_invalid_contract 'an environment other than <repository>-production fails' \
   '.rules.environment = "azure-iac-staging" | .rules.sub |= sub(":environment:azure-iac-production"; ":environment:azure-iac-staging")'
 for bad_workflow in 'Release_Deploy' 'Release  Deploy' ' Release Deploy' 'Release Deploy ' 'Release-' 'Release Deploy*'; do
-  expect_invalid_org_contract "workflow name '$bad_workflow' fails" \
+  expect_invalid_contract "workflow name '$bad_workflow' fails" \
     ".rules.workflow = \"$bad_workflow\""
 done
-expect_invalid_org_contract 'a workflow name ending in a newline fails' '.rules.workflow = "Release Deploy\n"'
+expect_invalid_contract 'a workflow name ending in a newline fails' '.rules.workflow = "Release Deploy\n"'
 
-# Renamed deploy workflows: both policies carry the workflow name Release Deploy.
-release_deploy_contract="$action_path/contracts/pulumi-oidc-policies.json"
+# The same two policies under other deploy workflow names: github-iac's named
+# release-deploy, azure-iac's named azure-iac-production-deploy-v1 in
+# azure-iac-production-deploy.yml. A contract of one set never matches the other.
+old_names_filter='.rules |= if .repository == "melodic-software/azure-iac" then
+    .workflow = "azure-iac-production-deploy-v1" |
+    .sub |= sub("/release-deploy[.]yml@"; "/azure-iac-production-deploy.yml@")
+  else .workflow = "release-deploy" end'
+old_names_action_path="$temporary_directory/old-names-action"
+old_names_contract="$old_names_action_path/contracts/old-workflow-names.json"
+mkdir -p "$old_names_action_path/contracts"
+jq ".personalAllowPolicies |= map($old_names_filter)" "$contract" >"$old_names_contract"
 
 reset_valid_fixtures
-jq -c '{version: 4, policies: .personalAllowPolicies}' "$release_deploy_contract" >"$policy"
-TEST_POLICY_CONTRACT='pulumi-oidc-policies' run_guard
+jq_edit "$policy" ".policies |= map($old_names_filter)"
+TEST_ACTION_PATH="$old_names_action_path" TEST_POLICY_CONTRACT='old-workflow-names' run_guard
 grep -Fx 'existing-count=1' "$output" >/dev/null
-printf 'PASS: pulumi-oidc-policies contract matches its exact allow set\n'
+printf 'PASS: old-workflow-names contract matches its exact allow set\n'
 
-reset_org_fixtures
-TEST_POLICY_CONTRACT='pulumi-oidc-policies' \
-  expect_failure 'policies under the old workflow names do not match the pulumi-oidc-policies contract'
+reset_valid_fixtures
+jq_edit "$policy" ".policies |= map($old_names_filter)"
+expect_failure 'policies under the old workflow names do not match the pulumi-oidc-policies contract'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
 reset_valid_fixtures
-jq -c '{version: 4, policies: .personalAllowPolicies}' "$release_deploy_contract" >"$policy"
-TEST_POLICY_CONTRACT='kyle-sexton' \
-  expect_failure 'policies under the new workflow names do not match the org contract'
+TEST_ACTION_PATH="$old_names_action_path" TEST_POLICY_CONTRACT='old-workflow-names' \
+  expect_failure 'policies under the new workflow names do not match the old-workflow-names contract'
 grep -F 'do not exactly match' "$stderr" >/dev/null
 
-reset_org_fixtures
-jq --slurpfile renamed "$release_deploy_contract" \
-  '.policies += $renamed[0].personalAllowPolicies' "$policy" >"$policy.tmp"
+reset_valid_fixtures
+jq --slurpfile old "$old_names_contract" \
+  '.policies += $old[0].personalAllowPolicies' "$policy" >"$policy.tmp"
 mv -- "$policy.tmp" "$policy"
-for both_contract in kyle-sexton pulumi-oidc-policies; do
-  TEST_POLICY_CONTRACT="$both_contract" \
-    expect_failure "old and new policies held together do not match $both_contract"
-  grep -F 'do not exactly match' "$stderr" >/dev/null
-done
+expect_failure 'old and new policies held together do not match pulumi-oidc-policies'
+grep -F 'do not exactly match' "$stderr" >/dev/null
+TEST_ACTION_PATH="$old_names_action_path" TEST_POLICY_CONTRACT='old-workflow-names' \
+  expect_failure 'old and new policies held together do not match old-workflow-names'
+grep -F 'do not exactly match' "$stderr" >/dev/null
 
 # Never-deployed stack: the shape `pulumi stack export` (v3.263.0) printed for a
 # freshly initialized stack, resources key omitted.
