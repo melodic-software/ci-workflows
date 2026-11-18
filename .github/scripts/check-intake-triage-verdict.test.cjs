@@ -733,7 +733,11 @@ test("extract drops the whole verdict when any field is missing, unknown or out 
     const { outputs, lines } = extractRun({ ...GOOD, ...change });
     assert.equal(outputs.verdict, "", name);
     assert.equal(lines.length, 1, name);
-    assert.match(lines[0], /^::warning title=check-intake-triage-verdict::/u, name);
+    assert.match(
+      lines[0],
+      /^::warning title=check-intake-triage-verdict::/u,
+      name,
+    );
     assert.doesNotMatch(lines[0], /XL|ghp_|urgent|#12/u, name);
   }
   assert.equal(extractVerdict(undefined, extension), null);
