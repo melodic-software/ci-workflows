@@ -1,0 +1,71 @@
+name: Check Intake Triage Verdict
+description: >-
+  The intake-triage lane's output schema and the caller's typed verdict
+  fields, in one place for its three leg jobs and its apply job (verdict.cjs
+  states the rules and bounds). `schema` writes the schema file the model is
+  held to: the base fields, closed, plus the fields verdict-schema adds, whose
+  names and bounds it checks, failing the step on any violation; it also
+  names the added fields in the prompt. `extract` reads the added fields from
+  the leg's structured output and `check` reads a verdict another job passed;
+  both check every type and bound again and output the verdict as JSON, or
+  empty when a field fails, the verdict is over 16384 bytes (a schema whose
+  worst case exceeds that fails schema mode), or verdict-schema is empty. The
+  action logs field names only, but the runner's step echo shows the checked
+  values, so a verdict field must hold nothing the run log may not show. Needs
+  node on PATH.
+
+inputs:
+  mode:
+    description: schema, extract or check.
+    required: true
+  verdict-schema:
+    description: >-
+      The caller's verdict-schema input, `{ "properties": {...}, "required":
+      [...] }`. Empty adds nothing: the schema file holds the base schema
+      alone and the verdict output is empty.
+    required: false
+    default: ""
+  allowed:
+    description: schema mode. The compose step's label allowlist, a JSON array.
+    required: false
+    default: "[]"
+  type-names:
+    description: schema mode. The compose step's enabled Issue Type names, a JSON array.
+    required: false
+    default: "[]"
+  prompt-file:
+    description: schema mode. The compose step's prompt file; the schema file is written beside it.
+    required: false
+    default: ""
+  execution-file:
+    description: extract mode. The leg's execution file.
+    required: false
+    default: ""
+  verdict:
+    description: check mode. A verdict JSON object to check again.
+    required: false
+    default: ""
+
+outputs:
+  schema-file:
+    description: schema mode. The output schema file for run-claude-cli's json-schema-file.
+    value: ${{ steps.verdict.outputs.schema-file }}
+  verdict:
+    description: extract and check modes. The checked verdict as JSON, or empty.
+    value: ${{ steps.verdict.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build or check the verdict
+      id: verdict
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_VERDICT_SCHEMA: ${{ inputs.verdict-schema }}
+        INPUT_ALLOWED: ${{ inputs.allowed }}
+        INPUT_TYPE_NAMES: ${{ inputs.type-names }}
+        INPUT_PROMPT_FILE: ${{ inputs.prompt-file }}
+        INPUT_EXECUTION_FILE: ${{ inputs.execution-file }}
+        INPUT_VERDICT: ${{ inputs.verdict }}
+      run: node "$GITHUB_ACTION_PATH/verdict.cjs"

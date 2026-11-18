@@ -193,14 +193,15 @@ test("the triage-fallback job repeats the triage-subscription job's steps but fo
       }
       return copy;
     });
+  const compared = strip(
+    fallback.steps,
+    "fallback",
+    "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+    "fallback-token",
+    `\${{ needs.triage-subscription.outputs.next-reason }}`,
+  );
   assert.deepEqual(
-    strip(
-      fallback.steps,
-      "fallback",
-      "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
-      "fallback-token",
-      `\${{ needs.triage-subscription.outputs.next-reason }}`,
-    ),
+    compared,
     strip(
       subscription.steps,
       "subscription",
@@ -209,6 +210,13 @@ test("the triage-fallback job repeats the triage-subscription job's steps but fo
       `\${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
     ),
   );
+  // The verdict-schema steps are among the steps held equal.
+  for (const id of ["compose", "schema", "verdict", "extract"]) {
+    assert.ok(
+      compared.some((step) => step.id === id),
+      id,
+    );
+  }
   for (const key of [
     "permissions",
     "outputs",
@@ -401,10 +409,19 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
         }
         return copy;
       });
-  assert.deepEqual(
-    strip(subscription.steps, "CLAUDE_CODE_OAUTH_TOKEN", "subscription-token"),
-    strip(claude.steps, "CLAUDE_API_KEY", "api-key"),
+  const compared = strip(
+    subscription.steps,
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "subscription-token",
   );
+  assert.deepEqual(compared, strip(claude.steps, "CLAUDE_API_KEY", "api-key"));
+  // The verdict-schema steps are among the steps held equal.
+  for (const id of ["compose", "schema", "verdict", "extract"]) {
+    assert.ok(
+      compared.some((step) => step.id === id),
+      id,
+    );
+  }
   for (const key of [
     "permissions",
     "outputs",
@@ -991,4 +1008,73 @@ test("a credit-stopped key hands the triage to the triage-subscription job befor
     stepById(claude, "credit-marker").if,
     /steps\.claude\.outputs\.lane-class == 'credit-stop'/u,
   );
+});
+
+test("every leg builds its schema and reads its verdict through the one shared action, from verdict-schema", () => {
+  const ACTION = "$/.github/actions/check-intake-triage-verdict";
+  const VERDICT_SCHEMA = `\${{ inputs.verdict-schema }}`;
+  for (const job of [claude, subscription, fallback]) {
+    const ids = job.steps.map((step) => step.id);
+    const schema = job.steps.find((step) => step.id === "schema");
+    assert.equal(schema.uses, ACTION, job.name);
+    assert.equal(schema.if, undefined, job.name);
+    assert.deepEqual(
+      schema.with,
+      {
+        mode: "schema",
+        allowed: `\${{ steps.compose.outputs.allowed }}`,
+        "type-names": `\${{ steps.compose.outputs.type-names }}`,
+        "prompt-file": `\${{ steps.compose.outputs.prompt-file }}`,
+        "verdict-schema": VERDICT_SCHEMA,
+      },
+      job.name,
+    );
+    // After compose and before the credential, so a schema that breaks the
+    // rules stops the leg before any model call.
+    assert.equal(ids.indexOf("schema"), ids.indexOf("compose") + 1, job.name);
+    assert.equal(
+      ids.indexOf("credential"),
+      ids.indexOf("schema") + 1,
+      job.name,
+    );
+    assert.equal(
+      launcher(job).with["json-schema-file"],
+      `\${{ steps.schema.outputs.schema-file }}`,
+      job.name,
+    );
+    const verdict = job.steps.find((step) => step.id === "verdict");
+    const extract = job.steps.find((step) => step.id === "extract");
+    assert.equal(verdict.uses, ACTION, job.name);
+    assert.equal(verdict.if, extract.if, job.name);
+    assert.equal(verdict["continue-on-error"], true, job.name);
+    assert.deepEqual(
+      verdict.with,
+      {
+        mode: "extract",
+        "execution-file": `\${{ steps.claude.outputs.execution-file }}`,
+        "verdict-schema": VERDICT_SCHEMA,
+      },
+      job.name,
+    );
+    assert.equal(ids.indexOf("extract"), ids.indexOf("verdict") + 1, job.name);
+    assert.equal(
+      extract.env.VERDICT,
+      `\${{ steps.verdict.outputs.verdict }}`,
+      job.name,
+    );
+    // The verdict travels inside the triage output, not as a leg output.
+    assert.equal(Object.hasOwn(job.outputs, "verdict"), false, job.name);
+  }
+  const check = apply.steps.find((step) => step.id === "verdict");
+  assert.equal(check.uses, ACTION);
+  assert.deepEqual(check.with, {
+    mode: "check",
+    verdict: `\${{ steps.apply.outputs.verdict }}`,
+    "verdict-schema": VERDICT_SCHEMA,
+  });
+  assert.equal(apply.outputs.verdict, `\${{ steps.verdict.outputs.verdict }}`);
+  const { inputs, outputs } = workflow.on.workflow_call;
+  assert.equal(inputs["verdict-schema"].default, "");
+  assert.equal(inputs["verdict-schema"].type, "string");
+  assert.equal(outputs.verdict.value, `\${{ jobs.apply.outputs.verdict }}`);
 });

@@ -958,6 +958,12 @@ consumer to audit it.
   `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
   history cannot (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
+- `.github/actions/check-intake-triage-verdict` — `intake-triage.yml`'s output
+  schema and its caller's `verdict-schema` fields, shared by the three leg
+  jobs and the apply job: builds the schema file (failing the leg before any
+  model call on a field that reuses a base name, is unbounded or leaves an
+  object open), then checks each returned value against its type and bounds
+  again (its `action.yml` and `verdict.cjs` state the rules and caps).
 - `.github/actions/check-review-reads` — `pr-review-cli.yml`'s step after
   the extract step: holds the review's read count to the files the leg's own
   transcript shows read, before the review leaves the job (its `action.yml`
@@ -1544,6 +1550,14 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `allowed-author-ids` or a bot whose id is in `allowed-bot-sender-ids`
   (an empty or malformed list trusts no one), never the lane's own triage
   comment. The issue title and body always reach it and stay untrusted.
+  `verdict-schema` (default empty, which changes nothing) adds typed fields
+  to the triage's output schema, such as a size enum or a bounded score; it
+  can only add bounded fields, never loosen the base ones, and the
+  `verdict` output, at most 16384 bytes, returns the checked values from a
+  run that was not escalated and whose writes landed
+  (`.github/actions/check-intake-triage-verdict` states the rules).
+  Its string values are untrusted model text: pass them to a step through
+  `env:`, never into a `run:` script, and branch only on enum fields.
 
 ## Claude lanes — shared consumption contract
 
