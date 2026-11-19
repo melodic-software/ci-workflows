@@ -3492,3 +3492,13 @@ test("the live-log input defaults to true and reaches the run step of both actio
   const loop = chunks.runs.steps.find((s) => s.id === "loop");
   assert.equal(loop.env.LANE_LIVE_LOG, "${{ inputs.live-log }}");
 });
+
+// melodic-software/claude-code-plugins' plugin-eval legs load lane.cjs at a
+// pinned commit and judge each stream through these two exports
+// (.github/scripts/plugin-eval/eval-handoff.mjs judgeStream).
+test("lane.cjs exports judgeLeg and linesToMessages for the plugin-eval handoff", () => {
+  const lane = require("./lane.cjs");
+  assert.equal(typeof lane.judgeLeg, "function");
+  assert.equal(typeof lane.linesToMessages, "function");
+  assert.deepEqual(lane.linesToMessages('{"type":"system"}\nnot json\n{"type":"result"}\n'), [{ type: "system" }, { type: "result" }]);
+});
