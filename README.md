@@ -71,7 +71,8 @@ checkout of this repo. (Public is required because a public consumer such as
   consumers read, and
   [`contract-files.txt`](.github/actions/run-claude-cli/contract-files.txt)
   beside it lists every file it requires, one path per line, ready to fetch or
-  to pass as `sparse-checkout`. Every other `.cjs` file is internal.
+  to pass as `sparse-checkout` with `sparse-checkout-cone-mode: false`. Every
+  other `.cjs` file is internal.
 
 ## Versioning
 

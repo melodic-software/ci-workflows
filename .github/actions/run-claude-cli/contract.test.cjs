@@ -13,8 +13,11 @@ const ROOT = path.resolve(__dirname, "../../..");
 const FILES = fs.readFileSync(path.join(__dirname, "contract-files.txt"), "utf8").split("\n").filter(Boolean);
 
 test("the contract exports exactly the names consumers read", () => {
-  // Removing or renaming one breaks a consumer at its next re-pin.
-  assert.deepEqual(Object.keys(require("./contract.cjs")).sort(), [
+  // Removing or renaming one, here or in the module it comes from, breaks a
+  // consumer at its next re-pin.
+  const contract = require("./contract.cjs");
+  for (const [name, value] of Object.entries(contract)) assert.notEqual(value, undefined, name);
+  assert.deepEqual(Object.keys(contract).sort(), [
     "HANDOFF_REASONS",
     "SANDBOX_SETTINGS",
     "cliArgs",
@@ -36,7 +39,8 @@ test("contract-files.txt lists only files that exist, the contract first", () =>
 });
 
 test("the contract loads from contract-files.txt alone, and loads every file it lists", (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "contract-"));
+  // require.cache keys are real paths; a symlinked tmpdir would match none.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "contract-")));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, "package.json"), '{"type":"commonjs"}\n');
   for (const file of FILES) {
