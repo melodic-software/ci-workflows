@@ -56,7 +56,7 @@ module.exports = {
       secret: "CLAUDE_CODE_OAUTH_TOKEN",
       input: "subscription-token",
       reason:
-        "needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason",
+        "needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason || needs.check-key-credit.result == 'skipped' && 'no-key' || ''",
       comment: `      # check, extract and outcome steps; the status job carries the red. With
       # the fallback token set, a limit stop, a credit stop or a 401 or 402
       # hands off to the fallback job and skips the extract step. The step's
