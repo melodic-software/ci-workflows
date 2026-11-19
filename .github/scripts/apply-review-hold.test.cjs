@@ -2221,13 +2221,13 @@ test("a past lane run off the lane's record is not read; one with a run-name nam
 });
 
 // `count` lane runs of other pull requests, the k-th created k * `step`
-// seconds after the pull request opened.
-const otherRuns = (count, step = 1) => {
+// seconds after `start`, by default the pull request's opening.
+const otherRuns = (count, step = 1, start = OPENED) => {
   const lane = laneShape();
   return Array.from({ length: count }, (_, k) => ({
     ...lane.runs[0],
     id: 1000 + k,
-    created_at: stamp(Date.parse(OPENED) + k * step * 1000),
+    created_at: stamp(Date.parse(start) + k * step * 1000),
     display_title: `${LANE_NAME} #99 ${HEAD}`,
   }));
 };
@@ -2261,6 +2261,22 @@ test("a lane run listing over 1,000 runs is split by time until each part lists 
   );
 });
 
+test("a pull request open a week before the decision carries in both run shapes", async () => {
+  // About 600 lane runs a day across every pull request, as on
+  // claude-code-plugins.
+  const opened = stamp(Date.parse(DECIDED_AT) - 7 * 86400000);
+  const lane = laneShape(laneOf(), {
+    pulls: [branchPull({ createdAt: opened })],
+  });
+  const pull = await apply(costEnv(), { comments: [decision()] });
+  const week = await apply(costEnv(), {
+    comments: [decision()],
+    lane: { ...lane, runs: [...lane.runs, ...otherRuns(4200, 144, opened)] },
+  });
+  assert.equal(pull.core.outputs.hold, "false");
+  assert.deepEqual(holdOf(week), holdOf(pull));
+});
+
 test("a lane run listing it cannot finish carries nothing", async () => {
   const lane = laneShape();
   for (const [name, runs, why] of [
@@ -2268,11 +2284,6 @@ test("a lane run listing it cannot finish carries nothing", async () => {
       "1,000 runs in one second",
       otherRuns(1000, 0),
       /this lane started 1000 runs within one second/u,
-    ],
-    [
-      "runs past the request budget",
-      otherRuns(6000),
-      /this lane's runs take more than 50 requests to list/u,
     ],
   ]) {
     const { core } = await apply(costEnv(), {
@@ -2282,6 +2293,22 @@ test("a lane run listing it cannot finish carries nothing", async () => {
     assert.equal(core.outputs.hold, "true", name);
     assert.match(core.infos.at(-1), why, name);
   }
+  // A branch name first used 40 days before the decision, at 600 lane runs
+  // a day: past the request budget.
+  const reusedFrom = stamp(Date.parse(DECIDED_AT) - 40 * 86400000);
+  const past = await apply(costEnv(), {
+    comments: [decision()],
+    lane: {
+      ...lane,
+      pulls: [branchPull({ number: 3, createdAt: reusedFrom }), branchPull()],
+      runs: [...lane.runs, ...otherRuns(24000, 144, reusedFrom)],
+    },
+  });
+  assert.equal(past.core.outputs.hold, "true");
+  assert.match(
+    past.core.infos.at(-1),
+    /this lane's runs take more than 200 requests to list/u,
+  );
   // 999 in one second list in one range and carry.
   const under = await apply(costEnv(), {
     comments: [decision()],

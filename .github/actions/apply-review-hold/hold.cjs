@@ -231,8 +231,11 @@ const LANE_FILES = new Map([
 // A run listing with an event, branch or created filter returns at most
 // 1,000 runs (https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
 const MAX_LISTED_RUNS = 1000;
-// The requests one lane run listing may spend, counts and pages together.
-const MAX_LISTING_REQUESTS = 50;
+// The requests one lane run listing may spend, counts and pages together:
+// about 17,000 lane runs, four weeks at the hosted lanes' rate of some 600 a
+// day. A longer window (a branch name reused from an older pull request)
+// keeps the cost hold.
+const MAX_LISTING_REQUESTS = 200;
 const stamp = (ms) => new Date(ms).toISOString().replace(/\.[0-9]{3}Z$/u, "Z");
 
 // Every run `params` lists that was created from `from` to `to` (whole
