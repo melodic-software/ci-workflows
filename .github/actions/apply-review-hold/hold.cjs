@@ -231,6 +231,47 @@ const LANE_FILES = new Map([
 // A run listing with an event, branch or created filter returns at most
 // 1,000 runs (https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
 const MAX_LISTED_RUNS = 1000;
+// The requests one lane run listing may spend, counts and pages together.
+const MAX_LISTING_REQUESTS = 50;
+const stamp = (ms) => new Date(ms).toISOString().replace(/\.[0-9]{3}Z$/u, "Z");
+
+// Every run `params` lists that was created from `from` to `to` (whole
+// seconds as ms, both included), as { runs }, or { why }. A range whose
+// count reaches MAX_LISTED_RUNS is halved until each part lists under it,
+// so no run is cut off; one second at the cap, or past
+// MAX_LISTING_REQUESTS, reads as incomplete. A count that is not a number,
+// or a run with no id, throws.
+async function createdRuns(github, params, from, to) {
+  const runs = new Map();
+  const ranges = [[from, to]];
+  let requests = 0;
+  const over = { why: `this lane's runs take more than ${MAX_LISTING_REQUESTS} requests to list` };
+  while (ranges.length > 0) {
+    const [a, b] = ranges.pop();
+    const created = `${stamp(a)}..${stamp(b)}`;
+    if (++requests > MAX_LISTING_REQUESTS) return over;
+    const total = (await github.rest.actions.listWorkflowRuns({ ...params, created, per_page: 1 })).data
+      ?.total_count;
+    if (!Number.isInteger(total) || total < 0) throw new Error("a run count is not a number");
+    if (total >= MAX_LISTED_RUNS) {
+      if (b - a < 1000) return { why: `this lane started ${MAX_LISTED_RUNS} runs within one second` };
+      const mid = a + Math.floor((b - a) / 2000) * 1000;
+      ranges.push([mid + 1000, b], [a, mid]);
+      continue;
+    }
+    if (total === 0) continue;
+    requests += Math.ceil(total / 100);
+    if (requests > MAX_LISTING_REQUESTS) return over;
+    const list = await github.paginate(github.rest.actions.listWorkflowRuns, { ...params, created, per_page: 100 });
+    if (!Array.isArray(list) || list.length >= MAX_LISTED_RUNS)
+      return { why: `this lane's run listing reaches ${MAX_LISTED_RUNS} runs` };
+    for (const r of list) {
+      if (!Number.isInteger(r?.id)) throw new Error("a run of this lane has no id");
+      runs.set(r.id, r);
+    }
+  }
+  return { runs: [...runs.values()] };
+}
 
 // Whether run `r` is a workflow_run run of lane file `path` on main of
 // repository `self`, read from its own record.
@@ -260,9 +301,11 @@ function laneRunName(r, path) {
 // the pull request's head branch of this repository. The runs are this lane
 // file's runs on main naming any pull request from that branch, as a
 // pull_request run on the branch would be any of theirs; headOf takes a
-// run's head from its run-name. A run of this file whose run-name names no
-// pull request at a commit gives "" (no head commit), and a listing at the
-// 1,000-run cap reads as incomplete, so neither drops a run.
+// run's head from its run-name. The listing spans the oldest of those pull
+// requests' openings to the decision (createdRuns). A run of this file whose
+// run-name names no pull request at a commit gives "" (no head commit), and
+// a listing createdRuns cannot finish reads as incomplete, so neither drops
+// a run.
 async function laneRuns(github, owner, repo, self, env, current, decidedAt) {
   const workflow = String(current.path ?? "");
   const named = laneRecord(current, workflow, self) ? laneRunName(current, workflow) : null;
@@ -299,18 +342,15 @@ async function laneRuns(github, owner, repo, self, env, current, decidedAt) {
     return { why: "the pull requests from the head branch are unreadable" };
   if (!STAMP.test(String(decidedAt))) return { why: "the decision has no time" };
   const numbers = new Set(pulls.map((p) => p.number));
-  const opened = pulls.reduce((a, p) => (Date.parse(p.created_at) < Date.parse(a) ? p.created_at : a), decidedAt);
-  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-    owner,
-    repo,
-    workflow_id: current.workflow_id,
-    event: "workflow_run",
-    branch: "main",
-    created: `${opened}..${decidedAt}`,
-    per_page: 100,
-  });
-  if (!Array.isArray(runs) || runs.length >= MAX_LISTED_RUNS)
-    return { why: `this lane's run listing reaches ${MAX_LISTED_RUNS} runs` };
+  const opened = Math.min(...pulls.map((p) => Date.parse(p.created_at)));
+  const listed = await createdRuns(
+    github,
+    { owner, repo, workflow_id: current.workflow_id, event: "workflow_run", branch: "main" },
+    Math.min(opened, Date.parse(decidedAt)),
+    Date.parse(decidedAt),
+  );
+  if (listed.why) return listed;
+  const { runs } = listed;
   const headOf = (run) => {
     if (!laneRecord(run, workflow, self)) return undefined;
     const n = laneRunName(run, workflow);

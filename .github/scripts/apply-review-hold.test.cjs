@@ -208,7 +208,17 @@ function fakeGithub({
         listWorkflowRuns: (params) => {
           calls.push(["listWorkflowRuns", params]);
           if (fail.runs) throw new Error("HTTP 502");
-          return lane.runs;
+          if (params.created === undefined) return lane.runs;
+          // A lane listing: the runs created in the range, both ends
+          // included, and with per_page 1 the response's total_count.
+          const [from, to] = params.created.split("..").map(Date.parse);
+          const inRange = lane.runs.filter((r) => {
+            const at = Date.parse(r.created_at);
+            return at >= from && at <= to;
+          });
+          return params.per_page === 1
+            ? { data: { total_count: inRange.length } }
+            : inRange;
         },
         listJobsForWorkflowRun: (params) => {
           calls.push(["listJobs", params]);
@@ -1790,6 +1800,7 @@ test("a bound lane run carries the recorded cost decision as a pull_request run 
       "get",
       "listPulls",
       "listWorkflowRuns",
+      "listWorkflowRuns",
       "compare",
       "listJobs",
       "listAnnotations",
@@ -1805,15 +1816,22 @@ test("a bound lane run carries the recorded cost decision as a pull_request run 
     head: "o:feat/cost",
     per_page: 100,
   });
-  assert.deepEqual(read("listWorkflowRuns"), {
+  // The count of the range, then its runs.
+  const listing = {
     owner: "o",
     repo: "r",
     workflow_id: 6,
     event: "workflow_run",
     branch: "main",
     created: `${OPENED}..${DECIDED_AT}`,
-    per_page: 100,
-  });
+  };
+  assert.deepEqual(
+    github.calls.filter(([n]) => n === "listWorkflowRuns").map(([, p]) => p),
+    [
+      { ...listing, per_page: 1 },
+      { ...listing, per_page: 100 },
+    ],
+  );
   assert.equal(read("activity").ref, "refs/heads/feat/cost");
   assert.equal(read("compare").basehead, `main...${HEAD}`);
 });
@@ -2202,23 +2220,72 @@ test("a past lane run off the lane's record is not read; one with a run-name nam
   }
 });
 
-test("a lane run listing at the 1,000-run cap carries nothing", async () => {
+// `count` lane runs of other pull requests, the k-th created k * `step`
+// seconds after the pull request opened.
+const otherRuns = (count, step = 1) => {
   const lane = laneShape();
-  const filler = Array.from({ length: 999 }, (_, i) => ({
+  return Array.from({ length: count }, (_, k) => ({
     ...lane.runs[0],
-    id: 1000 + i,
+    id: 1000 + k,
+    created_at: stamp(Date.parse(OPENED) + k * step * 1000),
     display_title: `${LANE_NAME} #99 ${HEAD}`,
   }));
-  const { core } = await apply(costEnv(), {
+};
+const stamp = (ms) => new Date(ms).toISOString().replace(/\.000Z$/u, "Z");
+
+test("a lane run listing over 1,000 runs is split by time until each part lists every run", async () => {
+  const lane = laneShape();
+  const runs = [...lane.runs, ...otherRuns(1500)];
+  const { core, github } = await apply(costEnv(), {
     comments: [decision()],
-    lane: { ...lane, runs: [...lane.runs, ...filler] },
+    lane: { ...lane, runs },
   });
-  assert.equal(core.outputs.hold, "true");
-  assert.match(core.infos.at(-1), /this lane's run listing reaches 1000 runs/u);
-  // One fewer carries.
+  assert.equal(core.outputs.hold, "false");
+  const listings = github.calls
+    .filter(([n]) => n === "listWorkflowRuns")
+    .map(([, p]) => p);
+  const inRange = ({ created }) => {
+    const [from, to] = created.split("..").map(Date.parse);
+    return runs.filter(
+      (r) => Date.parse(r.created_at) >= from && Date.parse(r.created_at) <= to,
+    );
+  };
+  const pages = listings.filter((p) => p.per_page === 100);
+  assert.ok(pages.length > 1);
+  for (const p of pages) assert.ok(inRange(p).length < 1000, p.created);
+  // The listed ranges cover every run exactly once.
+  const listed = pages.flatMap((p) => inRange(p).map((r) => r.id));
+  assert.deepEqual(
+    [...listed].sort((a, b) => a - b),
+    runs.map((r) => r.id).sort((a, b) => a - b),
+  );
+});
+
+test("a lane run listing it cannot finish carries nothing", async () => {
+  const lane = laneShape();
+  for (const [name, runs, why] of [
+    [
+      "1,000 runs in one second",
+      otherRuns(1000, 0),
+      /this lane started 1000 runs within one second/u,
+    ],
+    [
+      "runs past the request budget",
+      otherRuns(6000),
+      /this lane's runs take more than 50 requests to list/u,
+    ],
+  ]) {
+    const { core } = await apply(costEnv(), {
+      comments: [decision()],
+      lane: { ...lane, runs: [...lane.runs, ...runs] },
+    });
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(core.infos.at(-1), why, name);
+  }
+  // 999 in one second list in one range and carry.
   const under = await apply(costEnv(), {
     comments: [decision()],
-    lane: { ...lane, runs: [...lane.runs, ...filler.slice(1)] },
+    lane: { ...lane, runs: [...lane.runs, ...otherRuns(998, 0)] },
   });
   assert.equal(under.core.outputs.hold, "false");
 });
