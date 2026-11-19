@@ -967,6 +967,11 @@ test("every leg job decides first and names the next leg last, and no job's if: 
 // checks its eval legs' handoff reasons against this closed list
 // (.github/scripts/plugin-eval/credential-legs.test.mjs).
 test("select.cjs exports HANDOFF_REASONS for the plugin-eval credential legs", () => {
-  assert.deepEqual(Object.keys(select.HANDOFF_REASONS), ["key", "subscription", "fallback"]);
-  for (const reasons of Object.values(select.HANDOFF_REASONS)) assert.ok(Array.isArray(reasons));
+  assert.deepEqual(Object.keys(select.HANDOFF_REASONS), [
+    "key",
+    "subscription",
+    "fallback",
+  ]);
+  for (const reasons of Object.values(select.HANDOFF_REASONS))
+    assert.ok(Array.isArray(reasons));
 });
