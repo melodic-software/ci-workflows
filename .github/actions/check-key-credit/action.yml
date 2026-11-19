@@ -6,7 +6,8 @@ description: >
   repository's artifacts named by the `marker` output (one list call) with
   the job token, which needs actions: read; the key job uploads that marker
   after a credit stop. When that marker is past the window but still kept, a
-  second call reads the `key-credit-probing-<workflow>-<key-job>` artifacts:
+  second call reads the `key-credit-probing-<key>` artifacts (`<key>` is
+  secret-name, else `<workflow>-<key-job>`):
   one created after the credit stop inside probe-minutes skips; none names
   this run the probe in the `probing-marker` output, which the gate job
   uploads (kept 7 days) so other gates skip while it is fresh. Any failure
@@ -29,8 +30,15 @@ inputs:
   key-job:
     description: >-
       The key job's display name, lower-case kebab (for example
-      claude-review-key); the marker's name carries it.
+      claude-review-key); the marker's name carries it when secret-name is
+      empty.
     required: true
+  secret-name:
+    description: >-
+      The key's secret name (REVIEWS_CLAUDE_API_KEY), never its value. The
+      markers carry it, so every job on that key shares one credit stop.
+    required: false
+    default: ""
   window-hours:
     description: >-
       The backoff's base step: how far back a single credit stop counts, in
@@ -89,6 +97,7 @@ runs:
       shell: bash
       env:
         KEY_JOB: ${{ inputs.key-job }}
+        KEY_SECRET: ${{ inputs.secret-name }}
         WINDOW_HOURS: ${{ inputs.window-hours }}
         PROBE_MINUTES: ${{ inputs.probe-minutes }}
         RESET_AT: ${{ inputs.reset-at }}

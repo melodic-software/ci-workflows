@@ -32,7 +32,9 @@ inputs:
       The role, lower-case kebab as run-claude-cli takes it (issue-lane); its
       upper-snake form is the secret-name prefix (ISSUE_LANE_CLAUDE_API_KEY,
       ISSUE_LANE_CLAUDE_CODE_OAUTH_TOKEN). Required on a key, subscription
-      or fallback call.
+      or fallback call. On a call that reads the credit history it names the
+      credit-stop and probing markers by the key's secret name, shared by
+      every job on that key; without it they carry the workflow and key-job.
     required: false
     default: ""
   credential-set:

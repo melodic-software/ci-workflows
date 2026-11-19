@@ -134,13 +134,15 @@ name: PR Review CLI
 #     call), holds no secret and no write
 #     token, and reads artifacts by exact name with the job token (actions:
 #     read, so the caller grants it): the marker the key job uploads after a
-#     credit stop (lane-class `credit-stop`), named for this caller workflow
-#     and lane, counting only one whose run's head is this repository, never
+#     credit stop (lane-class `credit-stop`), named for the role's key
+#     (key-credit-stop-<SECRET_NAME>), so any job on that key in the caller
+#     repository writes and reads it, counting only one whose run's head is
+#     this repository, never
 #     a fork's. When one was uploaded inside key-credit-window-hours, the key
 #     job is skipped and the subscription job reviews, its scope read by the
 #     status job in the key job's place. When that marker is past the window
 #     but still kept, a second read finds the probing marker
-#     (key-credit-probing-<workflow>-<key-job>, same fork rule): a fresh one
+#     (key-credit-probing-<SECRET_NAME>, same fork rule): a fresh one
 #     skips the key job the same way; none makes this run the probe, and the
 #     job uploads one (its runner token, kept 7 days). A failed or unclear
 #     read runs the key job as before and writes no probe
@@ -803,6 +805,7 @@ jobs:
         uses: $/.github/actions/select-model-credential
         with:
           leg: start
+          role: ${{ inputs.role }}
           key-job: ${{ inputs.lane == 'security' && 'security-review-key' || 'claude-review-key' }}
           window-hours: ${{ inputs.key-credit-window-hours }}
           reset-at: ${{ inputs.key-credit-reset-at }}

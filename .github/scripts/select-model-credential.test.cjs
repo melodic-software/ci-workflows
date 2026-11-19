@@ -195,7 +195,7 @@ test("the next leg follows the chain and each leg's handoff reasons", () => {
 
 const KEY_JOB = "claude-review-key";
 const NOW = Date.parse("2026-11-06T12:00:00Z");
-const NAME = markerName("pr-review-hosted.yml", KEY_JOB);
+const NAME = markerName("REVIEWS_CLAUDE_API_KEY");
 const ARTIFACT = (hoursAgo, name = NAME) => ({
   name,
   expired: false,
@@ -266,6 +266,7 @@ test("the start call reads the credit history once and names the first leg; an e
     await select.main(
       env(dir, {
         INPUT_LEG: "start",
+        INPUT_ROLE: "reviews",
         INPUT_KEY_JOB: KEY_JOB,
         INPUT_WINDOW_HOURS: "",
         INPUT_PROBE_MINUTES: "0",
@@ -278,6 +279,27 @@ test("the start call reads the credit history once and names the first leg; an e
     assert.equal(out.marker, NAME);
     assert.equal(out["skip-key"], String(leg === "subscription"));
     assert.equal(urls.length, 1);
+  }
+});
+
+test("the start call names the markers for the role's key, else for the workflow and key job", async () => {
+  for (const [role, marker] of [
+    ["reviews", NAME],
+    ["intake", markerName("INTAKE_CLAUDE_API_KEY")],
+    ["", markerName("pr-review-hosted.yml-claude-review-key")],
+    ["Not A Role", markerName("pr-review-hosted.yml-claude-review-key")],
+  ]) {
+    const dir = outputDir("select-start-");
+    await select.main(
+      env(dir, {
+        INPUT_LEG: "start",
+        INPUT_ROLE: role,
+        INPUT_KEY_JOB: KEY_JOB,
+      }),
+      counting([]).fetchImpl,
+      () => new Date(NOW),
+    );
+    assert.equal(outputs(dir).marker, marker, role);
   }
 });
 
@@ -296,7 +318,7 @@ test("a failed credit read runs the key", async () => {
 test("a key leg with key-job reads the credit history itself; leg and next calls make no API call", async () => {
   const dir = outputDir("select-leg-");
   const inline = counting([
-    ARTIFACT(0.5, markerName("pr-review-hosted.yml", "check-intent")),
+    ARTIFACT(0.5, markerName("PR_VERIFY_CLAUDE_API_KEY")),
   ]);
   await select.main(
     env(dir, {

@@ -154,13 +154,16 @@ function next({ state, handoff, handoffReason }) {
 // Reads the key's credit history through check-key-credit and returns
 // whether it holds the key off. Its own outputs (skip-key, origin-run,
 // marker, probing-marker) go to GITHUB_OUTPUT unchanged; any failure runs
-// the key.
+// the key. With a role the markers carry the key's secret name, so every
+// job on that key shares them; without one, the workflow and key job.
 async function readCredit(env, lines, fetchImpl, now) {
   try {
+    const role = String(env.INPUT_ROLE ?? "").trim();
     const { verdict, lines: gateLines } = await gate.main(
       {
         ...env,
         KEY_JOB: env.INPUT_KEY_JOB ?? "",
+        KEY_SECRET: ROLE.test(role) ? secretName(role, "key") : "",
         WINDOW_HOURS: env.INPUT_WINDOW_HOURS ?? "",
         PROBE_MINUTES: env.INPUT_PROBE_MINUTES ?? "",
         RESET_AT: env.INPUT_RESET_AT ?? "",
