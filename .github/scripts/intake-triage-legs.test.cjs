@@ -391,7 +391,7 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
             assert.equal(
               copy.with["key-off"],
               // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
-              "${{ vars.CLAUDE_API_KEYS_DISABLED }}",
+              "${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' }}",
             );
           } else {
             assert.equal(copy.with["key-off"], undefined);

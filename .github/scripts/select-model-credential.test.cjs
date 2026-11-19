@@ -979,7 +979,7 @@ test("every key leg passes vars.CLAUDE_API_KEYS_DISABLED as key-off, and no othe
           keyLegs++;
           assert.match(
             String(keyOff),
-            /^\$\{\{ vars\.CLAUDE_API_KEYS_DISABLED( == 'true' \|\| .+)? \}\}$/u,
+            /^\$\{\{ vars\.CLAUDE_API_KEYS_DISABLED == 'true'( \|\| .+)? \}\}$/u,
             `${name} ${id}`,
           );
         } else {
@@ -991,7 +991,7 @@ test("every key leg passes vars.CLAUDE_API_KEYS_DISABLED as key-off, and no othe
   assert.ok(keyLegs >= 2, `found ${keyLegs} key legs`);
 });
 
-test("the org switch holds the key off on exactly true, alone or beside REVIEWS_KEY_EXHAUSTED", () => {
+test("the org switch holds the key off on true, alone or beside REVIEWS_KEY_EXHAUSTED", () => {
   const off = (input, vars) =>
     select.leg({
       leg: "key",
@@ -999,7 +999,7 @@ test("the org switch holds the key off on exactly true, alone or beside REVIEWS_
       credentialSet: "true",
       keyOff: String(evaluate(input, { vars }) ?? ""),
     }).outputs.present === "false";
-  const bare = `\${{ vars.CLAUDE_API_KEYS_DISABLED }}`;
+  const bare = `\${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' }}`;
   const both = `\${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true' }}`;
   for (const input of [bare, both]) {
     assert.equal(off(input, {}), false, input);

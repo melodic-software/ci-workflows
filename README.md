@@ -1019,8 +1019,9 @@ consumer to audit it.
   next job's leg from the launcher's handoff. Each job's `if:` compares that
   `next-leg` output to its own leg. `key-off` holds the key off by hand,
   which the credit history cannot; every key leg passes the org variable
-  `CLAUDE_API_KEYS_DISABLED` (`true` sends every keyed lane to the
-  subscription; unset or `false` keeps the key), and pr-review-cli also
+  `CLAUDE_API_KEYS_DISABLED` (`true` in any letter case sends every keyed
+  lane to the subscription; unset or `false` keeps the key), and
+  pr-review-cli also
   `REVIEWS_KEY_EXHAUSTED` (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
 - `.github/actions/check-intake-triage-verdict` — `intake-triage.yml`'s output
