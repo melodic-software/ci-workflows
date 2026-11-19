@@ -276,11 +276,22 @@ test("the same tree on a moved base is replaced, since the PR step would rebase 
   assert.equal(result.outputs["branch-operation"], "replaced");
 });
 
-test("an extra commit on the branch is replaced, since the PR step would reset it", async () => {
+test("a merge commit on the branch is replaced, since the PR step would reset it", async () => {
   const result = await runReplace({
     head: branchHead({ parents: [BASE_SHA, "d".repeat(40)] }),
   });
   assert.equal(result.outputs["branch-operation"], "replaced");
+});
+
+test("an empty prepared tree fails before any read of the branch or GitHub write", async () => {
+  const result = await runReplace({ preparedTree: "" });
+  assert.deepEqual(names(result.calls), ["rules"]);
+  assert.equal(result.failures.length, 1);
+  assert.match(
+    result.failures[0],
+    /PREPARED_TREE for melodic-software\/azure-iac/u,
+  );
+  assert.equal(result.outputs["branch-operation"], "kept");
 });
 
 test("nothing left to sync deletes the branch and reports it closed, not replaced", async () => {

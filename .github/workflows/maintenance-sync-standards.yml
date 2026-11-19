@@ -623,10 +623,13 @@ jobs:
           set -euo pipefail
           git read-tree HEAD
           git add -A
+          base_sha="$(git rev-parse HEAD)"
+          base_tree="$(git rev-parse 'HEAD^{tree}')"
+          tree="$(git write-tree)"
           {
-            echo "base-sha=$(git rev-parse HEAD)"
-            echo "base-tree=$(git rev-parse 'HEAD^{tree}')"
-            echo "tree=$(git write-tree)"
+            echo "base-sha=$base_sha"
+            echo "base-tree=$base_tree"
+            echo "tree=$tree"
           } >> "$GITHUB_OUTPUT"
 
       # A target whose ruleset refuses this token any update of the sync branch
@@ -666,6 +669,12 @@ jobs:
               return;
             }
             if (updateRules.length === 0) return;
+            const shas = ['BASE_SHA', 'BASE_TREE', 'PREPARED_TREE'];
+            const malformed = shas.filter((name) => !/^[0-9a-f]{40}$/u.test(process.env[name] ?? ''));
+            if (malformed.length > 0) {
+              core.setFailed(`${malformed.join(', ')} for ${target} is not a commit or tree id; nothing was closed or deleted.`);
+              return;
+            }
             const ruleNames = updateRules
               .map((rule) => `${rule.ruleset_source} ruleset ${rule.ruleset_id}`)
               .join(', ');
