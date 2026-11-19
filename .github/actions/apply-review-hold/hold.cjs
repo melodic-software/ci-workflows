@@ -217,6 +217,108 @@ const MAX_COMPARE_FILES = 300;
 const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/u;
 const SHA = /^[0-9a-f]{40}$/u;
 const WORKFLOW_PATH = /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/u;
+// A GitHub timestamp, usable as a bound of a run listing's `created` range.
+const STAMP = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/u;
+
+// The workflow_run lane files a calling repository runs from main, each with
+// the name its run-name opens with: `<name> #<pull request> <head sha>`
+// (claude-code-plugins .github/workflows/pr-review-hosted-lane.yml and
+// pr-review-security-hosted-lane.yml run-name).
+const LANE_FILES = new Map([
+  [".github/workflows/pr-review-hosted-lane.yml", "PR Review Hosted Lane"],
+  [".github/workflows/pr-review-security-hosted-lane.yml", "PR Review Security Hosted Lane"],
+]);
+// A run listing with an event, branch or created filter returns at most
+// 1,000 runs (https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow).
+const MAX_LISTED_RUNS = 1000;
+
+// Whether run `r` is a workflow_run run of lane file `path` on main of
+// repository `self`, read from its own record.
+const laneRecord = (r, path, self) =>
+  LANE_FILES.has(path) &&
+  r?.event === "workflow_run" &&
+  r.head_branch === "main" &&
+  r.path === path &&
+  String(r.head_repository?.full_name).toLowerCase() === self;
+
+// The { pr, head } lane run `r` of file `path` names in its run-name, or
+// null when the run-name is not `<name> #<pull request> <head sha>`.
+function laneRunName(r, path) {
+  const name = LANE_FILES.get(path);
+  const title = String(r?.display_title ?? "");
+  const m =
+    name !== undefined && title.startsWith(`${name} `)
+      ? /^#([1-9][0-9]{0,8}) ([0-9a-f]{40})$/u.exec(title.slice(name.length + 1))
+      : null;
+  return m ? { pr: Number(m[1]), head: m[2] } : null;
+}
+
+// For a workflow_run lane run, the runs carryDecision reads in place of the
+// pull_request runs on the pull request's head branch, as { branch,
+// workflow, runs, headOf }, or { why }. The run binds only on its own record
+// (laneRecord) and its run-name naming PR_NUMBER at HEAD_SHA. The branch is
+// the pull request's head branch of this repository. The runs are this lane
+// file's runs on main naming any pull request from that branch, as a
+// pull_request run on the branch would be any of theirs; headOf takes a
+// run's head from its run-name. A run of this file whose run-name names no
+// pull request at a commit gives "" (no head commit), and a listing at the
+// 1,000-run cap reads as incomplete, so neither drops a run.
+async function laneRuns(github, owner, repo, self, env, current, decidedAt) {
+  const workflow = String(current.path ?? "");
+  const named = laneRecord(current, workflow, self) ? laneRunName(current, workflow) : null;
+  if (!named || !Number.isInteger(current.workflow_id))
+    return { why: "this run is not a bound workflow_run lane run of this repository" };
+  if (named.pr !== Number(env.PR_NUMBER) || named.head !== env.HEAD_SHA)
+    return { why: "this lane run names another pull request or head" };
+  const pull = (await github.rest.pulls.get({ owner, repo, pull_number: named.pr })).data;
+  const branch = String(pull?.head?.ref ?? "");
+  if (
+    pull?.number !== named.pr ||
+    String(pull.head?.repo?.full_name).toLowerCase() !== self ||
+    !BRANCH.test(branch)
+  )
+    return { why: "the pull request's head is not a usable branch of this repository" };
+  const pulls = await github.paginate(github.rest.pulls.list, {
+    owner,
+    repo,
+    state: "all",
+    head: `${owner}:${branch}`,
+    per_page: 100,
+  });
+  if (
+    !Array.isArray(pulls) ||
+    !pulls.every(
+      (p) =>
+        Number.isInteger(p?.number) &&
+        p.head?.ref === branch &&
+        String(p.head.repo?.full_name).toLowerCase() === self &&
+        STAMP.test(String(p.created_at)),
+    ) ||
+    !pulls.some((p) => p.number === named.pr)
+  )
+    return { why: "the pull requests from the head branch are unreadable" };
+  if (!STAMP.test(String(decidedAt))) return { why: "the decision has no time" };
+  const numbers = new Set(pulls.map((p) => p.number));
+  const opened = pulls.reduce((a, p) => (Date.parse(p.created_at) < Date.parse(a) ? p.created_at : a), decidedAt);
+  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+    owner,
+    repo,
+    workflow_id: current.workflow_id,
+    event: "workflow_run",
+    branch: "main",
+    created: `${opened}..${decidedAt}`,
+    per_page: 100,
+  });
+  if (!Array.isArray(runs) || runs.length >= MAX_LISTED_RUNS)
+    return { why: `this lane's run listing reaches ${MAX_LISTED_RUNS} runs` };
+  const headOf = (run) => {
+    if (!laneRecord(run, workflow, self)) return undefined;
+    const n = laneRunName(run, workflow);
+    if (!n) return "";
+    return numbers.has(n.pr) ? n.head : undefined;
+  };
+  return { branch, workflow, runs, headOf };
+}
 
 // The cost hold notices of lane `lane` among one status job's annotations,
 // as { sha, at } with `at` the job's completion: only those naming `head`,
@@ -327,7 +429,9 @@ function unranHead(activity, ran, decided, cutoff) {
 // from this lane's own check-run notices, never a comment: any workflow on
 // GITHUB_TOKEN posts as github-actions[bot] (claude-code-plugins#9635). It
 // reads every pull_request run of this run's workflow on the pull request's
-// head branch of this repository started before the decision; vets each
+// head branch of this repository started before the decision (for a
+// workflow_run lane run, the lane file's runs on main naming a pull request
+// from that branch, laneRuns); vets each
 // run's head (compare base...head lists under 300 files and does not change
 // this workflow's file, which a pull_request run takes from the head and so
 // could write the notice); takes, from each run's STATUS_JOB (or a
@@ -341,8 +445,9 @@ function unranHead(activity, ran, decided, cutoff) {
 // each with the same status, previous_filename and patch. So a base-only
 // merge or a rebase that leaves every patch as it was carries, and any other
 // change does not. A read that fails throws, and the caller keeps the hold.
-// Reads need actions: read (runs, jobs), checks: read (annotations) and
-// contents: read (compare, activity).
+// Reads need actions: read (runs, jobs), checks: read (annotations),
+// contents: read (compare, activity) and, for a lane run, pull-requests: read
+// (the pull requests from the head branch).
 async function carryDecision(github, owner, repo, env, runId, decision) {
   const cutoff = Date.parse(decision.created_at);
   if (!Number.isFinite(cutoff)) return { carry: false, why: "the decision has no time" };
@@ -355,15 +460,35 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     return { carry: false, why: "the status job name is not usable" };
   const self = `${owner}/${repo}`.toLowerCase();
   const current = (await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId })).data;
-  if (
-    current?.event !== "pull_request" ||
-    String(current.head_repository?.full_name).toLowerCase() !== self
-  )
-    return { carry: false, why: "this run is not a pull_request run of this repository" };
-  const branch = String(current.head_branch ?? "");
-  const workflow = String(current.path ?? "");
-  if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
-    return { carry: false, why: "this run's workflow or branch is not usable" };
+  let scope;
+  if (current?.event === "workflow_run") {
+    scope = await laneRuns(github, owner, repo, self, env, current, decision.created_at);
+    if (scope.why) return { carry: false, why: scope.why };
+  } else {
+    if (
+      current?.event !== "pull_request" ||
+      String(current.head_repository?.full_name).toLowerCase() !== self
+    )
+      return { carry: false, why: "this run is not a pull_request run of this repository" };
+    const branch = String(current.head_branch ?? "");
+    const workflow = String(current.path ?? "");
+    if (!BRANCH.test(branch) || !WORKFLOW_PATH.test(workflow) || !Number.isInteger(current.workflow_id))
+      return { carry: false, why: "this run's workflow or branch is not usable" };
+    const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+      owner,
+      repo,
+      workflow_id: current.workflow_id,
+      event: "pull_request",
+      branch,
+      per_page: 100,
+    });
+    const headOf = (run) =>
+      String(run?.head_repository?.full_name).toLowerCase() === self
+        ? String(run.head_sha ?? "")
+        : undefined;
+    scope = { branch, workflow, runs, headOf };
+  }
+  const { branch, workflow, runs, headOf } = scope;
 
   // Each compare is read once: base...sha's files by name, or null when it
   // lists 300 or more, a file with no patch, or one twice.
@@ -388,20 +513,12 @@ async function carryDecision(github, owner, repo, env, runId, decision) {
     return names;
   };
 
-  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-    owner,
-    repo,
-    workflow_id: current.workflow_id,
-    event: "pull_request",
-    branch,
-    per_page: 100,
-  });
   const notices = [];
   const ran = [];
   for (const run of runs) {
-    if (String(run?.head_repository?.full_name).toLowerCase() !== self) continue;
+    const head = headOf(run);
+    if (head === undefined) continue;
     if (!(Date.parse(run.created_at) < cutoff)) continue;
-    const head = String(run.head_sha ?? "");
     if (!SHA.test(head)) return { carry: false, why: "a run of this lane has no head commit" };
     ran.push(head);
     const files = await compare(head);

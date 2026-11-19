@@ -257,7 +257,15 @@ function fakeGithub({
         },
         get: async (params) => {
           calls.push(["get", params]);
-          return { data: { changed_files: changedFiles ?? files.length } };
+          return {
+            data: { changed_files: changedFiles ?? files.length, ...lane.pr },
+          };
+        },
+        // A lane run's pull requests from the head branch (laneShape).
+        list: (params) => {
+          calls.push(["listPulls", params]);
+          if (fail.pulls) throw new Error("HTTP 502");
+          return lane.pulls ?? [];
         },
       },
       issues: {
@@ -1683,4 +1691,577 @@ test("a re-run records only a hold comment word for word its own, never a look-a
   );
   assert.equal(writes.filter(([name]) => name === "createComment").length, 0);
   assert.equal(fs.existsSync(record), false);
+});
+
+// claude-code-plugins#17537: the hosted review lanes run as workflow_run
+// runs of main's copy, whose jobs attach to main's tip. A lane run binds on
+// its own record: its lane file, event workflow_run, branch main and the
+// run-name `<name> #<pull request> <head sha>` main's copy computes
+// (claude-code-plugins .github/workflows/pr-review-hosted-lane.yml run-name).
+const LANE_PATH = ".github/workflows/pr-review-hosted-lane.yml";
+const LANE_NAME = "PR Review Hosted Lane";
+const SECURITY_PATH = ".github/workflows/pr-review-security-hosted-lane.yml";
+const SECURITY_NAME = "PR Review Security Hosted Lane";
+const MAIN_TIP = "d".repeat(40);
+const DECIDED_AT = "2026-10-23T12:00:00Z";
+// A pull request from a branch, in the REST shape the lane path reads
+// (docs.github.com/en/rest/pulls/pulls: number, created_at, head.ref,
+// head.repo.full_name).
+const branchPull = ({
+  number = 7,
+  ref = "feat/cost",
+  repo = "o/r",
+  createdAt = OPENED,
+} = {}) => ({
+  number,
+  created_at: createdAt,
+  head: { ref, repo: { full_name: repo } },
+});
+// `fixture` (laneOf, the pull_request shape) as the same lane's workflow_run
+// runs: each run becomes the lane run main's copy names for its pull request
+// (`prOf`, 7 by default) and head. A pull_request run from another
+// repository's same-named branch becomes a lane run naming pull request 99,
+// from another branch. The current run names #7 at `head`.
+const laneShape = (
+  fixture = laneOf(),
+  {
+    head = HEAD,
+    path = LANE_PATH,
+    name = LANE_NAME,
+    current = {},
+    pulls = [branchPull()],
+    prOf = () => 7,
+  } = {},
+) => ({
+  ...fixture,
+  current: {
+    id: RUN_ID,
+    workflow_id: 6,
+    path,
+    event: "workflow_run",
+    head_branch: "main",
+    head_sha: MAIN_TIP,
+    head_repository: { full_name: "o/r" },
+    display_title: `${name} #7 ${head}`,
+    ...current,
+  },
+  runs: fixture.runs.map((r) => ({
+    id: r.id,
+    created_at: r.created_at,
+    head_sha: MAIN_TIP,
+    head_branch: "main",
+    event: "workflow_run",
+    path,
+    head_repository: { full_name: "o/r" },
+    display_title: `${name} #${r.head_repository.full_name === "o/r" ? prOf(r) : 99} ${r.head_sha}`,
+  })),
+  pr: { number: 7, head: { ref: "feat/cost", repo: { full_name: "o/r" } } },
+  pulls,
+});
+const holdOf = ({ core, error }) => ({
+  error: error?.message,
+  hold: core.outputs.hold,
+  why: core.infos.at(-1),
+});
+// One case in both run shapes: the pull_request run today, and the same
+// lane's workflow_run run.
+async function bothShapes(env, options = {}, shape = {}) {
+  const pull = await apply(env, options);
+  const lane = await apply(env, {
+    ...options,
+    lane: laneShape(options.lane ?? laneOf(), { head: env.HEAD_SHA, ...shape }),
+  });
+  return { pull: holdOf(pull), lane: holdOf(lane), laneRun: lane };
+}
+
+test("a bound lane run carries the recorded cost decision as a pull_request run does, reading the head branch's runs", async () => {
+  const { pull, lane, laneRun } = await bothShapes(costEnv(), {
+    comments: [decision()],
+  });
+  assert.equal(pull.hold, "false");
+  assert.deepEqual(lane, pull);
+  const { github } = laneRun;
+  assert.deepEqual(
+    github.calls.map(([name]) => name),
+    [
+      "listComments",
+      "graphql",
+      "getWorkflowRun",
+      "get",
+      "listPulls",
+      "listWorkflowRuns",
+      "compare",
+      "listJobs",
+      "listAnnotations",
+      "activity",
+    ],
+  );
+  const read = (name) => github.calls.find(([n]) => n === name)[1];
+  assert.deepEqual(read("get"), { owner: "o", repo: "r", pull_number: 7 });
+  assert.deepEqual(read("listPulls"), {
+    owner: "o",
+    repo: "r",
+    state: "all",
+    head: "o:feat/cost",
+    per_page: 100,
+  });
+  assert.deepEqual(read("listWorkflowRuns"), {
+    owner: "o",
+    repo: "r",
+    workflow_id: 6,
+    event: "workflow_run",
+    branch: "main",
+    created: `${OPENED}..${DECIDED_AT}`,
+    per_page: 100,
+  });
+  assert.equal(read("activity").ref, "refs/heads/feat/cost");
+  assert.equal(read("compare").basehead, `main...${HEAD}`);
+});
+
+test("the security lane's file binds with its own run-name", async () => {
+  const { lane } = await bothShapes(
+    costEnv(),
+    { comments: [decision()] },
+    { path: SECURITY_PATH, name: SECURITY_NAME },
+  );
+  assert.equal(lane.hold, "false");
+  // Its file with the other lane's name binds nothing.
+  const crossed = await bothShapes(
+    costEnv(),
+    { comments: [decision()] },
+    { path: SECURITY_PATH, name: LANE_NAME },
+  );
+  assert.equal(crossed.lane.hold, "true");
+});
+
+test("every carry check gives the same hold and reason in both run shapes", async () => {
+  const other = "c".repeat(40);
+  const cases = [
+    ["the notice fixture", costEnv(), { comments: [decision()] }],
+    ...[
+      laneOf({ annotations: { 111: [notice({ sha: LATER })] } }),
+      laneOf({
+        annotations: { 111: [notice({ lane: "claude-security-review" })] },
+      }),
+      laneOf({
+        annotations: { 111: [notice({ criteria: "critical-security" })] },
+      }),
+      laneOf({ annotations: { 111: [notice({ level: "warning" })] } }),
+      laneOf({
+        jobs: { 11: [statusJob({ completedAt: "2026-10-23T12:30:00Z" })] },
+      }),
+      laneOf({ jobs: { 11: [statusJob({ name: "PR Review / Review Key" })] } }),
+      laneOf({ jobs: { 11: [statusJob({ name: "Status" })] } }),
+      laneOf({ runs: [laneRun({ createdAt: "2026-10-23T12:10:00Z" })] }),
+      laneOf({ runs: [laneRun({ repo: "fork/r" })] }),
+      laneOf({ runs: [laneRun({ sha: "main" })] }),
+      laneOf({ activity: [push(HEAD, "2026-10-23T12:05:00Z")] }),
+      laneOf({ activity: [push(other, "2026-10-23T11:10:00Z"), push(HEAD)] }),
+      laneOf({ activity: reused(120, 200) }),
+      laneOf({ activity: { message: "not a list" } }),
+    ].map((lane, i) => [
+      `lane variant ${i}`,
+      costEnv(),
+      { comments: [decision()], lane },
+    ]),
+    [
+      "two heads at the newest time",
+      costEnv(),
+      {
+        comments: [decision()],
+        compares: {
+          [`main...${other}`]: { status: "ahead", files: [prFile()] },
+        },
+        lane: laneOf({
+          runs: [laneRun(), laneRun({ id: 12, sha: other })],
+          jobs: { 11: [statusJob()], 12: [statusJob({ id: 112 })] },
+          annotations: { 111: [notice()], 112: [notice({ sha: other })] },
+        }),
+      },
+    ],
+    [
+      "a later head's notice-free run fills the gap",
+      costEnv(),
+      {
+        comments: [decision()],
+        compares: {
+          [`main...${other}`]: { status: "ahead", files: [prFile()] },
+        },
+        lane: laneOf({
+          runs: [
+            laneRun(),
+            laneRun({ id: 12, sha: other, createdAt: "2026-10-23T11:15:00Z" }),
+          ],
+          jobs: {
+            11: [statusJob()],
+            12: [statusJob({ id: 112, completedAt: "2026-10-23T11:20:00Z" })],
+          },
+          activity: [push(other, "2026-10-23T11:10:00Z"), push(HEAD)],
+        }),
+      },
+    ],
+    [
+      "the same net diff at a later head",
+      costEnv(["cost"], { HEAD_SHA: LATER }),
+      {
+        comments: [decision()],
+        compares: {
+          [`main...${HEAD}`]: { status: "ahead", files: atDecided },
+          [`main...${LATER}`]: {
+            status: "ahead",
+            files: [prFile({ sha: "3".repeat(40) }), workflowFile()],
+          },
+        },
+      },
+    ],
+    [
+      "another net diff at a later head",
+      costEnv(["cost"], { HEAD_SHA: LATER }),
+      {
+        comments: [decision()],
+        compares: {
+          [`main...${HEAD}`]: { status: "ahead", files: atDecided },
+          [`main...${LATER}`]: { status: "ahead", files: [prFile()] },
+        },
+      },
+    ],
+    [
+      "a head listing 300 files",
+      costEnv(),
+      {
+        comments: [decision()],
+        compares: { [`main...${HEAD}`]: { status: "ahead", files: manyFiles } },
+      },
+    ],
+    [
+      "a failed compare",
+      costEnv(),
+      { comments: [decision()], fail: { compare: true } },
+    ],
+    [
+      "a failed run listing",
+      costEnv(),
+      { comments: [decision()], fail: { runs: true } },
+    ],
+    [
+      "a failed job read",
+      costEnv(),
+      { comments: [decision()], fail: { jobs: true } },
+    ],
+    [
+      "a failed annotation read",
+      costEnv(),
+      { comments: [decision()], fail: { annotations: true } },
+    ],
+    [
+      "a failed push history read",
+      costEnv(),
+      { comments: [decision()], fail: { activity: true } },
+    ],
+  ];
+  for (const [name, env, options] of cases) {
+    const { pull, lane } = await bothShapes(env, options);
+    assert.deepEqual(lane, pull, name);
+  }
+});
+
+test("a run of another pull request from the same head branch counts in both run shapes", async () => {
+  // Pull request 8 shares feat/cost; its run at `other` noticed a cost hold
+  // after HEAD's, so `other` is the decided head and the net diff differs.
+  const other = "c".repeat(40);
+  const options = {
+    comments: [decision()],
+    compares: {
+      [`main...${other}`]: {
+        status: "ahead",
+        files: [prFile({ filename: "src/x.js" })],
+      },
+    },
+    lane: laneOf({
+      runs: [
+        laneRun(),
+        laneRun({ id: 12, sha: other, createdAt: "2026-10-23T11:15:00Z" }),
+      ],
+      jobs: {
+        11: [statusJob()],
+        12: [statusJob({ id: 112, completedAt: "2026-10-23T11:30:00Z" })],
+      },
+      annotations: { 111: [notice()], 112: [notice({ sha: other })] },
+      activity: [push(other, "2026-10-23T11:10:00Z"), push(HEAD)],
+    }),
+  };
+  const {
+    pull,
+    lane,
+    laneRun: run8,
+  } = await bothShapes(costEnv(), options, {
+    pulls: [
+      branchPull(),
+      branchPull({ number: 8, createdAt: "2026-10-22T09:00:00Z" }),
+    ],
+    prOf: (r) => (r.id === 12 ? 8 : 7),
+  });
+  assert.equal(pull.hold, "true");
+  assert.match(pull.why, /differs from the decided head c{40}/u);
+  assert.deepEqual(lane, pull);
+  // The listing starts at the older pull request's opening.
+  const listed = run8.github.calls.find(([n]) => n === "listWorkflowRuns")[1];
+  assert.equal(listed.created, `2026-10-22T09:00:00Z..${DECIDED_AT}`);
+});
+
+test("a lane run naming one pull request or head carries no decision for another", async () => {
+  for (const [name, shape, why] of [
+    [
+      "the run names pull request 8, the hold is for 7",
+      { current: { display_title: `${LANE_NAME} #8 ${HEAD}` } },
+      /this lane run names another pull request or head/u,
+    ],
+    [
+      "the run names head b…, the hold is for a…",
+      { current: { display_title: `${LANE_NAME} #7 ${LATER}` } },
+      /this lane run names another pull request or head/u,
+    ],
+    [
+      "the only noticing run names pull request 9, from another branch",
+      { prOf: () => 9 },
+      /no cost hold notice of this lane precedes the decision/u,
+    ],
+    [
+      "pull request 7 is not among the pull requests from its head branch",
+      { pulls: [branchPull({ number: 8 })] },
+      /the pull requests from the head branch are unreadable/u,
+    ],
+  ]) {
+    const { lane } = await bothShapes(
+      costEnv(),
+      { comments: [decision()] },
+      shape,
+    );
+    assert.equal(lane.hold, "true", name);
+    assert.match(lane.why, why, name);
+  }
+  // A run naming #7 at LATER whose status job noticed HEAD: the notice names
+  // another head than its run's, so it decides nothing.
+  const { lane } = await bothShapes(costEnv(), {
+    comments: [decision()],
+    compares: { [`main...${LATER}`]: { status: "ahead", files: [prFile()] } },
+    lane: laneOf({ runs: [laneRun({ sha: LATER })] }),
+  });
+  assert.equal(lane.hold, "true");
+  assert.match(
+    lane.why,
+    /no cost hold notice of this lane precedes the decision/u,
+  );
+});
+
+test("a wrong path, event, branch, repository or run-name carries nothing", async () => {
+  const bound =
+    /this run is not a bound workflow_run lane run of this repository/u;
+  for (const [name, shape, why, override = {}] of [
+    ["the review workflow's own path", { path: RUN_PATH }, bound],
+    [
+      "another workflow file",
+      { current: { path: ".github/workflows/other.yml" } },
+      bound,
+    ],
+    [
+      "a run on another branch",
+      { current: { head_branch: "feat/cost" } },
+      bound,
+    ],
+    [
+      "a run of a fork",
+      { current: { head_repository: { full_name: "fork/r" } } },
+      bound,
+    ],
+    [
+      "a workflow_dispatch run",
+      { current: { event: "workflow_dispatch" } },
+      /this run is not a pull_request run of this repository/u,
+    ],
+    ["no workflow id", { current: { workflow_id: "6" } }, bound],
+    ["no run-name", { current: { display_title: undefined } }, bound],
+    [
+      "no pull request",
+      { current: { display_title: `${LANE_NAME} # ${HEAD}` } },
+      bound,
+    ],
+    ["no head", { current: { display_title: `${LANE_NAME} #7` } }, bound],
+    [
+      "a short head",
+      { current: { display_title: `${LANE_NAME} #7 ${"a".repeat(39)}` } },
+      bound,
+    ],
+    [
+      "an upper-case head",
+      { current: { display_title: `${LANE_NAME} #7 ${"A".repeat(40)}` } },
+      bound,
+    ],
+    [
+      "a leading zero",
+      { current: { display_title: `${LANE_NAME} #07 ${HEAD}` } },
+      bound,
+    ],
+    [
+      "a trailing space",
+      { current: { display_title: `${LANE_NAME} #7 ${HEAD} ` } },
+      bound,
+    ],
+    [
+      "another name",
+      { current: { display_title: `PR Review Hosted #7 ${HEAD}` } },
+      bound,
+    ],
+    [
+      "a prefixed name",
+      { current: { display_title: `x ${LANE_NAME} #7 ${HEAD}` } },
+      bound,
+    ],
+    [
+      "the pull request's head is a fork's",
+      {},
+      /the pull request's head is not a usable branch of this repository/u,
+      {
+        pr: {
+          number: 7,
+          head: { ref: "feat/cost", repo: { full_name: "fork/r" } },
+        },
+      },
+    ],
+    [
+      "the pull request read answers another number",
+      {},
+      /the pull request's head is not a usable branch of this repository/u,
+      {
+        pr: {
+          number: 8,
+          head: { ref: "feat/cost", repo: { full_name: "o/r" } },
+        },
+      },
+    ],
+    [
+      "a pull request from the branch is a fork's",
+      { pulls: [branchPull(), branchPull({ number: 8, repo: "fork/r" })] },
+      /the pull requests from the head branch are unreadable/u,
+    ],
+  ]) {
+    const lane = { ...laneShape(laneOf(), shape), ...override };
+    const { core, error, github } = await apply(costEnv(), {
+      comments: [decision()],
+      lane,
+    });
+    assert.equal(error, undefined, name);
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(core.infos.at(-1), why, name);
+    // No run is listed: the run itself does not bind.
+    assert.ok(!github.calls.some(([n]) => n === "listWorkflowRuns"), name);
+  }
+});
+
+test("a past lane run off the lane's record is not read; one with a run-name naming no head carries nothing", async () => {
+  const pastRun = (extra) => {
+    const lane = laneShape();
+    return { ...lane, runs: [{ ...lane.runs[0], ...extra }] };
+  };
+  const none = /no cost hold notice of this lane precedes the decision/u;
+  for (const [name, lane, why] of [
+    [
+      "a past run of another event",
+      pastRun({ event: "workflow_dispatch" }),
+      none,
+    ],
+    [
+      "a past run on another branch",
+      pastRun({ head_branch: "feat/cost" }),
+      none,
+    ],
+    ["a past run of another file", pastRun({ path: SECURITY_PATH }), none],
+    [
+      "a past run of another repository",
+      pastRun({ head_repository: { full_name: "fork/r" } }),
+      none,
+    ],
+    [
+      "a past run naming no pull request",
+      pastRun({ display_title: `${LANE_NAME} # ${HEAD}` }),
+      /a run of this lane has no head commit/u,
+    ],
+    [
+      "a past run with no run-name",
+      pastRun({ display_title: undefined }),
+      /a run of this lane has no head commit/u,
+    ],
+  ]) {
+    const { core, error } = await apply(costEnv(), {
+      comments: [decision()],
+      lane,
+    });
+    assert.equal(error, undefined, name);
+    assert.equal(core.outputs.hold, "true", name);
+    assert.match(core.infos.at(-1), why, name);
+  }
+});
+
+test("a lane run listing at the 1,000-run cap carries nothing", async () => {
+  const lane = laneShape();
+  const filler = Array.from({ length: 999 }, (_, i) => ({
+    ...lane.runs[0],
+    id: 1000 + i,
+    display_title: `${LANE_NAME} #99 ${HEAD}`,
+  }));
+  const { core } = await apply(costEnv(), {
+    comments: [decision()],
+    lane: { ...lane, runs: [...lane.runs, ...filler] },
+  });
+  assert.equal(core.outputs.hold, "true");
+  assert.match(core.infos.at(-1), /this lane's run listing reaches 1000 runs/u);
+  // One fewer carries.
+  const under = await apply(costEnv(), {
+    comments: [decision()],
+    lane: { ...lane, runs: [...lane.runs, ...filler.slice(1)] },
+  });
+  assert.equal(under.core.outputs.hold, "false");
+});
+
+test("a lane run whose head changes the lane file, or a failed pull request read, carries nothing", async () => {
+  const changed = await apply(costEnv(), {
+    comments: [decision()],
+    compares: {
+      [`main...${HEAD}`]: {
+        status: "ahead",
+        files: [
+          prFile(),
+          {
+            filename: LANE_PATH,
+            status: "modified",
+            patch: "@@ -1 +1 @@\n-a\n+b",
+          },
+        ],
+      },
+    },
+    lane: laneShape(),
+  });
+  assert.equal(changed.core.outputs.hold, "true");
+  assert.match(changed.core.infos.at(-1), /changes this lane's workflow/u);
+  const failed = await apply(costEnv(), {
+    comments: [decision()],
+    fail: { pulls: true },
+    lane: laneShape(),
+  });
+  assert.equal(failed.core.outputs.hold, "true");
+  assert.match(failed.core.infos.at(-1), /a read failed/u);
+});
+
+test("an unrecorded cost decision still holds in both run shapes", async () => {
+  for (const comments of [
+    [],
+    [decision({ userId: 1 })],
+    [decision({ body: "**Decision recorded.** Cost: yes." })],
+  ]) {
+    const { pull, lane, laneRun } = await bothShapes(costEnv(), { comments });
+    assert.equal(pull.hold, "true");
+    assert.deepEqual(lane, pull);
+    assert.ok(!laneRun.github.calls.some(([n]) => n === "getWorkflowRun"));
+    assert.equal(laneRun.writes.filter(([n]) => n === "addLabels").length, 1);
+  }
 });
