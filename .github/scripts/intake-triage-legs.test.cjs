@@ -387,7 +387,14 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
               // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
               "${{ needs.check-key-credit.outputs.next-leg }}",
             );
+            // The org switch holds the key off; only the key leg takes it.
+            assert.equal(
+              copy.with["key-off"],
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+              "${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' }}",
+            );
           } else {
+            assert.equal(copy.with["key-off"], undefined);
             assert.equal(copy.with.leg, "subscription");
             assert.equal(
               copy.with.reason,
@@ -395,7 +402,13 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
               "${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}",
             );
           }
-          for (const name of ["leg", "credential-set", "selected", "reason"]) {
+          for (const name of [
+            "leg",
+            "credential-set",
+            "selected",
+            "reason",
+            "key-off",
+          ]) {
             delete copy.with[name];
           }
         }

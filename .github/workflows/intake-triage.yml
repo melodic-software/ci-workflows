@@ -1015,6 +1015,7 @@ jobs:
           credential-set: ${{ secrets.CLAUDE_API_KEY != '' }}
           fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
           selected: ${{ needs.check-key-credit.outputs.next-leg }}
+          key-off: ${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome
