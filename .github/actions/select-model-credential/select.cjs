@@ -245,4 +245,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { leg, main, next, secretName, start };
+module.exports = { HANDOFF_REASONS, leg, main, next, secretName, start };
