@@ -25,7 +25,8 @@ dir=${RUNNER_TOOL_CACHE:?}/node/$version/x64
 if [[ -f $dir.complete && -x $dir/bin/node ]]; then
   echo "Found in cache @ $dir"
 else
-  name=node-v$version-linux-x64.tar.xz
+  # .tar.gz, not .tar.xz: the fleet worker image has no xz-utils.
+  name=node-v$version-linux-x64.tar.gz
   base=${NODE_DIST_URL:-https://nodejs.org/dist}/v$version
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
@@ -46,7 +47,7 @@ else
   [[ $got == "$want" ]] || fail "$name has SHA-256 $got, SHASUMS256.txt says $want"
   rm -rf "$dir" "$dir.complete"
   mkdir -p "$dir"
-  tar -xJf "$tmp/$name" -C "$dir" --strip-components=1
+  tar -xzf "$tmp/$name" -C "$dir" --strip-components=1
   touch "$dir.complete"
   echo "Installed $name (sha256 $got) @ $dir"
 fi

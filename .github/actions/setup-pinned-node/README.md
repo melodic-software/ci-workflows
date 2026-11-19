@@ -9,7 +9,7 @@ date, so an exact pin misses whenever the two differ, and every miss spends the 
 limit, which every job in the calling repository shares.
 
 This action uses the tool cache when it holds the version. Otherwise it downloads
-`SHASUMS256.txt`, `SHASUMS256.txt.sig` and `node-v<version>-linux-x64.tar.xz` from
+`SHASUMS256.txt`, `SHASUMS256.txt.sig` and `node-v<version>-linux-x64.tar.gz` from
 `https://nodejs.org/dist` and extracts the tarball into the tool cache only after this chain holds:
 
 1. The trust root is the committed keyring, `pubring.kbx`.
@@ -21,7 +21,10 @@ A compromised nodejs.org or CDN that swaps the files fails step 2 unless it also
 signing key. A tool-cache hit is the runner image's own copy and skips the chain.
 
 The same action lives in `melodic-software/claude-code-plugins` at
-`.github/actions/setup-pinned-node`; keep `install-node.sh` and `pubring.kbx` byte-identical to it.
+`.github/actions/setup-pinned-node`; keep `pubring.kbx` byte-identical to it. This
+`install-node.sh` differs only in fetching the `.tar.gz` release rather than `.tar.xz`: the fleet
+worker image (`melodic-software/ci-runner`'s `Dockerfile`, on `actions-runner`'s Ubuntu 24.04 base,
+installed with `--no-install-recommends`) has `gzip` but no `xz-utils`, so `tar -xJ` fails there.
 
 ## Inputs
 

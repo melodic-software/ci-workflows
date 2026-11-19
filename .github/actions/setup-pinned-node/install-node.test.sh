@@ -45,9 +45,9 @@ make_dist() {
   mkdir -p "$pkg/bin" "$dist/v24.21.0"
   printf '#!/bin/sh\necho v24.21.0\n' >"$pkg/bin/node"
   chmod +x "$pkg/bin/node"
-  tar -cJf "$dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz" -C "$T/pkg" node-v24.21.0-linux-x64
+  tar -czf "$dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz" -C "$T/pkg" node-v24.21.0-linux-x64
   if [[ $sums == good ]]; then
-    (cd "$dist/v24.21.0" && sha256sum node-v24.21.0-linux-x64.tar.xz >SHASUMS256.txt)
+    (cd "$dist/v24.21.0" && sha256sum node-v24.21.0-linux-x64.tar.gz >SHASUMS256.txt)
   else
     printf '%s\n' "$sums" >"$dist/v24.21.0/SHASUMS256.txt"
   fi
@@ -103,7 +103,7 @@ refused() {
 }
 
 make_dist "$T/dist-tampered" good
-printf '%s  node-v24.21.0-linux-x64.tar.xz\n' "$(printf 'b%.0s' {1..64})" >>"$T/dist-tampered/v24.21.0/SHASUMS256.txt"
+printf '%s  node-v24.21.0-linux-x64.tar.gz\n' "$(printf 'b%.0s' {1..64})" >>"$T/dist-tampered/v24.21.0/SHASUMS256.txt"
 run tampered 24.21.0 "$T/dist-tampered"
 if refused tampered && [[ $out == *'BAD signature from "signer'* ]]; then
   ok "a SHASUMS256.txt changed after signing is refused before anything is installed"
@@ -141,7 +141,7 @@ else
   bad "run from a sibling action, the script finds the keyring beside itself" "rc=$rc path=$path_line out=$out"
 fi
 
-make_dist "$T/dist-bad" "$(printf '0%.0s' {1..64})  node-v24.21.0-linux-x64.tar.xz"
+make_dist "$T/dist-bad" "$(printf '0%.0s' {1..64})  node-v24.21.0-linux-x64.tar.gz"
 run mismatch 24.21.0 "$T/dist-bad"
 if [[ $rc -ne 0 && -z $path_line && ! -e $T/cache-mismatch/node/24.21.0/x64.complete &&
   $out == *"SHASUMS256.txt says 0000"* ]]; then
@@ -150,9 +150,9 @@ else
   bad "a checksum mismatch fails" "rc=$rc path=$path_line out=$out"
 fi
 
-make_dist "$T/dist-missing" "$(printf 'a%.0s' {1..64})  node-v24.21.0-linux-arm64.tar.xz"
+make_dist "$T/dist-missing" "$(printf 'a%.0s' {1..64})  node-v24.21.0-linux-arm64.tar.gz"
 run missing 24.21.0 "$T/dist-missing"
-if [[ $rc -ne 0 && -z $path_line && $out == *"lists no checksum for node-v24.21.0-linux-x64.tar.xz"* ]]; then
+if [[ $rc -ne 0 && -z $path_line && $out == *"lists no checksum for node-v24.21.0-linux-x64.tar.gz"* ]]; then
   ok "a SHASUMS256.txt without the tarball's line fails"
 else
   bad "a SHASUMS256.txt without the tarball's line fails" "rc=$rc out=$out"
