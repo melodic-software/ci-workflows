@@ -65,6 +65,13 @@ checkout of this repo. (Public is required because a public consumer such as
   separate workflow run from the later successful one, was observed to leave a
   failed same-named check that kept the merge blocked, and re-running did not
   clear it. Pushing a new commit (an empty signed commit is enough) did.
+- **Code outside this repository loads the lane logic only through
+  [`run-claude-cli/contract.cjs`](.github/actions/run-claude-cli/contract.cjs).**
+  It re-exports the launcher, classifier and credential-chain functions such
+  consumers read, and
+  [`contract-files.txt`](.github/actions/run-claude-cli/contract-files.txt)
+  beside it lists every file it requires, one path per line, ready to fetch or
+  to pass as `sparse-checkout`. Every other `.cjs` file is internal.
 
 ## Versioning
 
