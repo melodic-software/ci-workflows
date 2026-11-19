@@ -322,7 +322,7 @@ test("the fallback job repeats the subscription job's steps but for the credenti
       "subscription",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "subscription-token",
-      `\${{ needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
+      `\${{ needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason || needs.check-key-credit.result == 'skipped' && 'no-key' || '' }}`,
     ),
   );
   for (const field of [
@@ -1131,9 +1131,10 @@ test("the key job runs unless the start call names the subscription leg, a faile
     );
   assert.equal(runs(select.start({ skipKey: true })), false);
   assert.equal(runs(select.start({ skipKey: false })), true);
-  // A failed or skipped start call leaves next-leg empty: the key runs.
+  // A failed start call leaves next-leg empty: the key runs. A skipped one
+  // past the shared gate is key-off: the key does not run.
   assert.equal(runs({}, "failure"), true);
-  assert.equal(runs({}, "skipped"), true);
+  assert.equal(runs({}, "skipped"), false);
   assert.deepEqual(key.needs, [
     "check-kill-switch",
     "resolve-pull-request",
@@ -1154,6 +1155,210 @@ test("the key job runs unless the start call names the subscription leg, a faile
   );
   assert.equal(gate.outputs["next-leg"], `\${{ steps.gate.outputs.next-leg }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
+});
+
+const KEY_OFF = [
+  { CLAUDE_API_KEYS_DISABLED: "true" },
+  { REVIEWS_KEY_EXHAUSTED: "true" },
+  { CLAUDE_API_KEYS_DISABLED: "true", REVIEWS_KEY_EXHAUSTED: "true" },
+];
+const KEY_ON = [
+  {},
+  { CLAUDE_API_KEYS_DISABLED: "false", REVIEWS_KEY_EXHAUSTED: "false" },
+  { CLAUDE_API_KEYS_DISABLED: "", REVIEWS_KEY_EXHAUSTED: "" },
+];
+
+// One run's leg jobs from the caller's variables: check-key-credit's gate
+// decides whether it ran, and each later job reads that result as the runner
+// would hand it on.
+function legRun(
+  vars,
+  { github = PR, inputs = {}, kill, start, keyOutputs, subOutputs } = {},
+) {
+  const context = (needs) => ({
+    github,
+    inputs: { "allowed-bot-sender-ids": "", ...inputs },
+    vars,
+    needs: {
+      "check-kill-switch": kill ?? { result: "skipped", outputs: {} },
+      ...needs,
+    },
+  });
+  const gateRan = Boolean(
+    evaluate(workflow.jobs["check-key-credit"].if, context({})),
+  );
+  const credit = gateRan
+    ? { result: "success", outputs: start ?? select.start({ skipKey: false }) }
+    : { result: "skipped", outputs: {} };
+  const keyRan = Boolean(
+    evaluate(key.if, context({ "check-key-credit": credit })),
+  );
+  const keyJob = keyRan
+    ? { result: "success", outputs: keyOutputs ?? {} }
+    : { result: "skipped", outputs: {} };
+  const legNeeds = { "check-key-credit": credit, "review-key": keyJob };
+  const subRan = Boolean(evaluate(subscription.if, context(legNeeds)));
+  const reason = subRan
+    ? decide("subscription", {
+        reason: evaluate(
+          step(subscription, "credential").with.reason,
+          context(legNeeds),
+        ),
+      }).outputs["fallback-reason"]
+    : "";
+  const subJob = subRan
+    ? {
+        result: "success",
+        outputs: subOutputs ?? { "scope-review": "sub", "pr-files": "s" },
+      }
+    : { result: "skipped", outputs: {} };
+  const allNeeds = { ...legNeeds, "review-subscription": subJob };
+  return {
+    gateRan,
+    keyRan,
+    subRan,
+    reason,
+    fallbackRan: Boolean(evaluate(fallback.if, context(allNeeds))),
+    publishRan: Boolean(evaluate(status.if, { needs: allNeeds })),
+    publishEnv: (name, v) =>
+      evaluate(status.steps.find((s) => s.name === name).env[v], {
+        needs: allNeeds,
+      }),
+  };
+}
+
+test("key-off skips check-key-credit and the key job, and the subscription job reviews for no-key", () => {
+  for (const vars of KEY_OFF) {
+    const name = JSON.stringify(vars);
+    const run = legRun(vars);
+    assert.equal(run.gateRan, false, `check-key-credit runs under ${name}`);
+    assert.equal(run.keyRan, false, `review-key runs under ${name}`);
+    assert.equal(
+      run.subRan,
+      true,
+      `review-subscription is skipped under ${name}`,
+    );
+    assert.equal(
+      run.reason,
+      "no-key",
+      `subscription fallback-reason under ${name}`,
+    );
+    assert.equal(
+      run.publishRan,
+      true,
+      `publish-review is skipped under ${name}`,
+    );
+    for (const stepName of ["Publish the review", "Apply the hold"]) {
+      assert.equal(
+        run.publishEnv(stepName, "PR_FILES"),
+        "s",
+        `${stepName} PR_FILES under ${name}`,
+      );
+    }
+    assert.equal(
+      run.publishEnv("Publish the review", "SCOPE_REVIEW"),
+      "sub",
+      name,
+    );
+    assert.equal(
+      run.fallbackRan,
+      false,
+      `review-fallback runs with no handoff under ${name}`,
+    );
+    const handedOff = legRun(vars, {
+      subOutputs: { handoff: "true", "next-leg": "fallback" },
+    });
+    assert.equal(
+      handedOff.fallbackRan,
+      true,
+      `review-fallback skips a handoff under ${name}`,
+    );
+    // key-off opens no gate the subscription job keeps.
+    const fork = withPr((g) => {
+      g.event.pull_request.head.repo.full_name = "fork/r";
+    });
+    assert.equal(
+      legRun(vars, { github: fork }).subRan,
+      false,
+      `a fork reaches review-subscription under ${name}`,
+    );
+    const stopped = legRun(vars, {
+      inputs: { "kill-switch": true },
+      kill: { result: "success", outputs: { proceed: "false" } },
+    });
+    assert.equal(
+      stopped.subRan,
+      false,
+      `a kill switch stop reaches review-subscription under ${name}`,
+    );
+  }
+});
+
+test("with the key on, check-key-credit and the key job run and the subscription job follows only a handoff or a credit skip", () => {
+  for (const vars of KEY_ON) {
+    const name = JSON.stringify(vars);
+    const run = legRun(vars);
+    assert.equal(
+      run.gateRan,
+      true,
+      `check-key-credit is skipped under ${name}`,
+    );
+    assert.equal(run.keyRan, true, `review-key is skipped under ${name}`);
+    assert.equal(
+      run.subRan,
+      false,
+      `review-subscription runs with no handoff under ${name}`,
+    );
+    const handoff = legRun(vars, {
+      keyOutputs: handedOn(
+        "key",
+        {},
+        { handoff: "true", "handoff-reason": "credit-stop" },
+      ),
+    });
+    assert.deepEqual(
+      [handoff.keyRan, handoff.subRan, handoff.reason],
+      [true, true, "credit-stop"],
+      `key handoff under ${name}`,
+    );
+    const skipped = legRun(vars, { start: select.start({ skipKey: true }) });
+    assert.deepEqual(
+      [skipped.gateRan, skipped.keyRan, skipped.subRan, skipped.reason],
+      [true, false, true, "credit-stop"],
+      `credit skip under ${name}`,
+    );
+    const failed = legRun(vars, { start: {} });
+    assert.equal(
+      failed.keyRan,
+      true,
+      `a start call with no next-leg skips the key under ${name}`,
+    );
+  }
+});
+
+test("check-key-credit's gate is the key and subscription jobs' gate plus key-off, the only job gate that reads it", () => {
+  const flat = (text) => text.replace(/\s+/gu, " ").trim();
+  const keyOffClause =
+    "&& !(vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true') ";
+  const gateIf = flat(workflow.jobs["check-key-credit"].if);
+  assert.equal(
+    gateIf.split(keyOffClause).length,
+    2,
+    "check-key-credit names key-off once",
+  );
+  const shared = gateIf.replace(keyOffClause, "");
+  assert.equal(
+    flat(key.if),
+    `needs.check-key-credit.result != 'skipped' && needs.check-key-credit.outputs.next-leg != 'subscription' && ${shared}`,
+  );
+  assert.equal(
+    flat(subscription.if),
+    `(needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription' || needs.check-key-credit.result == 'skipped') && ${shared}`,
+  );
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (id === "check-key-credit" || id === "check-kill-switch") continue;
+    assert.doesNotMatch(String(job.if ?? ""), /vars\./u, id);
+  }
 });
 
 test("only the key job uploads the gate's marker, only after a credit stop, kept 7 days", () => {

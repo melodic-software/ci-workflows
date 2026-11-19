@@ -1535,7 +1535,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `pull-requests: write` in both modes and, in summary mode, does not cancel
   in-progress runs, and grants `actions: read` for the `check-key-credit` job,
   which skips the key job for `key-credit-window-hours` after the key's
-  credit stop, and `actions: read` with `checks: read` for the status job,
+  credit stop and, like the key job, does not run while either variable
+  above is `true`, and `actions: read` with `checks: read` for the status job,
   which reads its earlier runs' cost hold notices. GitHub fails the run at
   startup when the caller does not grant both. The workflow header carries the canonical caller and
   the security model. `kill-switch: true` (default `false`) runs the
