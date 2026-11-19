@@ -12,7 +12,7 @@ This action uses the tool cache when it holds the version. Otherwise it download
 `SHASUMS256.txt`, `SHASUMS256.txt.sig` and `node-v<version>-linux-x64.tar.gz` from
 `https://nodejs.org/dist` and extracts the tarball into the tool cache only after this chain holds:
 
-1. The trust root is the committed keyring, `pubring.kbx`.
+1. The trust root is the committed keyring, `pubring.kbx.hex`.
 2. `gpgv` verifies `SHASUMS256.txt.sig` against that keyring before anything reads
    `SHASUMS256.txt`.
 3. The tarball's SHA-256 matches the signed `SHASUMS256.txt`.
@@ -21,10 +21,14 @@ A compromised nodejs.org or CDN that swaps the files fails step 2 unless it also
 signing key. A tool-cache hit is the runner image's own copy and skips the chain.
 
 The same action lives in `melodic-software/claude-code-plugins` at
-`.github/actions/setup-pinned-node`; keep `pubring.kbx` byte-identical to it. This
-`install-node.sh` differs only in fetching the `.tar.gz` release rather than `.tar.xz`: the fleet
-worker image (`melodic-software/ci-runner`'s `Dockerfile`, on `actions-runner`'s Ubuntu 24.04 base,
-installed with `--no-install-recommends`) has `gzip` but no `xz-utils`, so `tar -xJ` fails there.
+`.github/actions/setup-pinned-node`. This copy differs in three ways:
+
+- It fetches the `.tar.gz` release rather than `.tar.xz`. The fleet worker image
+  (`melodic-software/ci-runner`'s `Dockerfile`, on `actions-runner`'s Ubuntu 24.04 base, installed
+  with `--no-install-recommends`) has `gzip` but no `xz-utils`, so `tar -xJ` fails there.
+- It commits the keyring as base16 text and decodes it with coreutils `basenc` at run time. The
+  synced editorconfig-checker config reads every tracked file as text.
+- It bounds each download with `_shared/install-release.sh`'s curl budget.
 
 ## Inputs
 
@@ -38,14 +42,15 @@ tarball's line.
 
 ## Release keyring
 
-`pubring.kbx` holds public keys only. It is a byte-exact copy of `gpg/pubring.kbx` from
+`pubring.kbx.hex` holds public keys only: `basenc --base16 -d pubring.kbx.hex` gives a byte-exact
+copy of `gpg/pubring.kbx` from
 [nodejs/release-keys](https://github.com/nodejs/release-keys) at commit
 [`481637f813e912c4aa3622d7964ab426c97b8e8d`](https://github.com/nodejs/release-keys/blob/481637f813e912c4aa3622d7964ab426c97b8e8d/gpg/pubring.kbx):
 95,960 bytes, sha256 `610b8d249da3d5733f5a128def2dd0294dbbf5b5713e6ca2529db8db419dee00`.
 
 It changes only when Node.js adds or retires a releaser, so a version bump needs no edit here. When
 the step fails on a signature, check whether the release was signed by a key new upstream. If so,
-replace the file from a newer release-keys commit, confirm its fingerprints against the
+replace the file with `basenc --base16 -w 76` of a newer release-keys commit's keybox, confirm its fingerprints against the
 release-keys README and the [nodejs/node README](https://github.com/nodejs/node#release-keys),
 confirm the release's real `SHASUMS256.txt.sig` verifies, and update the commit and sha256 above.
 If no new key explains it, treat the download as compromised.

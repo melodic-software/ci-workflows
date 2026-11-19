@@ -4,8 +4,8 @@
 # nodejs.org/dist, verifies SHASUMS256.txt.sig against the committed Node.js release
 # keyring, and checks the tarball's SHA-256 against the verified SHASUMS256.txt
 # before extracting it into the tool cache. No GitHub API call either way.
-# NODE_DIST_URL replaces https://nodejs.org/dist and NODE_RELEASE_KEYRING replaces the
-# committed keyring (the test points them at local fixtures).
+# NODE_DIST_URL replaces https://nodejs.org/dist and NODE_RELEASE_KEYRING, a keybox
+# path, replaces the committed keyring (the test points them at local fixtures).
 set -euo pipefail
 
 fail() {
@@ -30,10 +30,15 @@ else
   base=${NODE_DIST_URL:-https://nodejs.org/dist}/v$version
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  # An absolute path from this script: check-wip-cap runs it from a sibling action,
-  # so GITHUB_ACTION_PATH is not this directory, and gpgv looks for a bare filename
-  # in its own home directory.
-  keyring=${NODE_RELEASE_KEYRING:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pubring.kbx}
+  # The keyring is committed as base16 text (editorconfig-checker reads every tracked
+  # file as text) and decoded here. Found from this script's own path: markdownlint
+  # runs it from a sibling action, so GITHUB_ACTION_PATH is not this directory.
+  keyring=${NODE_RELEASE_KEYRING:-}
+  if [[ -z $keyring ]]; then
+    hex=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pubring.kbx.hex
+    keyring=$tmp/pubring.kbx
+    basenc --base16 -d "$hex" >"$keyring" || fail "cannot decode the release keyring $hex"
+  fi
   fetch() {
     curl -fsSL --proto-redir '=https' --connect-timeout 10 --max-time 120 \
       --retry 8 --retry-all-errors --retry-max-time 300 -o "$tmp/$1" "$base/$1"
