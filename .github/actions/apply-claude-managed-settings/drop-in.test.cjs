@@ -55,8 +55,8 @@ test("drop-in-name must be a bare lowercase file name", () => {
 
 test("the drop-in step writes only managed-settings.d/<name>.json, root-owned 644", () => {
   const [settings, dropIn] = action.runs.steps;
-  assert.equal(settings.if, "inputs.drop-in-file == ''");
-  assert.equal(dropIn.if, "inputs.drop-in-file != ''");
+  assert.equal(settings.if, "inputs.drop-in-file == '' && inputs.drop-in-name == ''");
+  assert.equal(dropIn.if, "inputs.drop-in-file != '' || inputs.drop-in-name != ''");
   assert.equal(action.inputs["drop-in-file"].default, "");
   assert.equal(action.inputs["drop-in-name"].default, "");
   assert.doesNotMatch(dropIn.run, /managed-settings\.json/u);
@@ -114,4 +114,10 @@ test("a refused drop-in writes nothing", () => {
   assert.equal(run.status, 1);
   assert.match(run.stdout, /^::error title=apply-claude-managed-settings::.*may set only pluginConfigs$/mu);
   assert.equal(fs.existsSync(log), false);
+});
+
+test("a drop-in name with an empty file is refused, never a managed-settings.json write", () => {
+  assert.match(readDropIn("", "50-source-control").problem, /drop-in-file is empty$/u);
+  const [settings] = action.runs.steps;
+  assert.match(settings.if, /inputs\.drop-in-name == ''/u);
 });

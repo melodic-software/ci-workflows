@@ -51,7 +51,8 @@ inputs:
   drop-in-name:
     description: >-
       The drop-in's file name without `.json`: lowercase letters, digits, `.`,
-      `_` and `-`. Required with drop-in-file. Claude Code merges drop-ins in
+      `_` and `-`. Required with drop-in-file; either one set without the
+      other fails the step and writes nothing. Claude Code merges drop-ins in
       alphabetical order, a later file winning.
     required: false
     default: ""
@@ -60,7 +61,7 @@ runs:
   using: composite
   steps:
     - name: Write the managed settings
-      if: inputs.drop-in-file == ''
+      if: inputs.drop-in-file == '' && inputs.drop-in-name == ''
       shell: bash
       env:
         SETTINGS: ${{ inputs.settings }}
@@ -76,7 +77,7 @@ runs:
         sudo chown root:root /etc/claude-code/managed-settings.json
         sudo chmod 644 /etc/claude-code/managed-settings.json
     - name: Write the managed settings drop-in
-      if: inputs.drop-in-file != ''
+      if: inputs.drop-in-file != '' || inputs.drop-in-name != ''
       shell: bash
       env:
         DROP_IN_FILE: ${{ inputs.drop-in-file }}

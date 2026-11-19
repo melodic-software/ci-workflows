@@ -17,6 +17,9 @@ function readDropIn(file, name, { read = fs.readFileSync } = {}) {
   if (!NAME.test(name ?? "") || name.endsWith(".json")) {
     return { problem: `drop-in-name ${JSON.stringify(name)} is not a lowercase file name without .json` };
   }
+  if (!file) {
+    return { problem: "drop-in-name is set but drop-in-file is empty" };
+  }
   let settings;
   try {
     settings = JSON.parse(read(file, "utf8"));
