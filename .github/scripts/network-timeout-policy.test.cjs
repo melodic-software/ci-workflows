@@ -38,6 +38,11 @@ test("immutable release assets have a bounded exponential retry budget", () => {
     // budget, hence two occurrences.
     ["go quality", read(".github/workflows/pr-run-checks-go.yml"), 2],
     ["shared installer", read(".github/actions/_shared/install-release.sh"), 1],
+    [
+      "Node installer",
+      read(".github/actions/setup-pinned-node/install-node.sh"),
+      1,
+    ],
   ]) {
     assert.equal(
       occurrences(content, /--connect-timeout 10 --max-time 120/gu),

@@ -34,7 +34,10 @@ else
   # so GITHUB_ACTION_PATH is not this directory, and gpgv looks for a bare filename
   # in its own home directory.
   keyring=${NODE_RELEASE_KEYRING:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pubring.kbx}
-  fetch() { curl -fsSL --proto-redir '=https' --retry 7 --retry-all-errors -o "$tmp/$1" "$base/$1"; }
+  fetch() {
+    curl -fsSL --proto-redir '=https' --connect-timeout 10 --max-time 120 \
+      --retry 8 --retry-all-errors --retry-max-time 300 -o "$tmp/$1" "$base/$1"
+  }
   echo "Downloading $base/$name"
   fetch SHASUMS256.txt
   fetch SHASUMS256.txt.sig
