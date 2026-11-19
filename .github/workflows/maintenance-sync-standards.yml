@@ -613,7 +613,8 @@ jobs:
           } > "$PR_BODY"
 
       # The tree the PR step will commit: the default branch plus the applied
-      # components, staged into a throwaway index so .target stays untouched.
+      # components, staged into a copy of the checkout's index: .target stays
+      # untouched, and unchanged files are not re-hashed, as in the PR step.
       - name: Compute the prepared sync tree
         id: prepared
         working-directory: .target
@@ -621,7 +622,7 @@ jobs:
           GIT_INDEX_FILE: ${{ runner.temp }}/standards-sync-prepared.index
         run: |
           set -euo pipefail
-          git read-tree HEAD
+          cp "$(git rev-parse --absolute-git-dir)/index" "$GIT_INDEX_FILE"
           git add -A
           base_sha="$(git rev-parse HEAD)"
           base_tree="$(git rev-parse 'HEAD^{tree}')"
@@ -701,18 +702,26 @@ jobs:
             const { data: pulls } = await github.rest.pulls.list({
               owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 100,
             });
-            const closed = [];
-            for (const pull of pulls.filter((pull) => pull.head?.repo?.full_name === `${owner}/${repo}`)) {
-              await github.rest.pulls.update({ owner, repo, pull_number: pull.number, state: 'closed' });
-              closed.push(`#${pull.number}`);
-            }
-            const closedNote = closed.length > 0 ? ` after closing ${closed.join(', ')}` : '';
+            const syncPulls = pulls.filter((pull) => pull.head?.repo?.full_name === `${owner}/${repo}`);
+            // Delete first: a refused delete then leaves the sync PR open and
+            // its review intact. Deleting a PR's head branch closes the PR; the
+            // explicit close below only confirms it.
             try {
               await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
             } catch (error) {
-              core.setFailed(`Could not delete ${target}${closedNote}, which ${ruleNames} refuses this token any update of: ${error.message}`);
+              core.setFailed(`Could not delete ${target}, which ${ruleNames} refuses this token any update of; no PR was closed: ${error.message}`);
               return;
             }
+            const closed = [];
+            for (const pull of syncPulls) {
+              try {
+                await github.rest.pulls.update({ owner, repo, pull_number: pull.number, state: 'closed' });
+              } catch (error) {
+                core.warning(`Could not confirm #${pull.number} closed after deleting its head branch: ${error.message}`);
+              }
+              closed.push(`#${pull.number}`);
+            }
+            const closedNote = closed.length > 0 ? `, closing ${closed.join(', ')},` : '';
             // With nothing left to sync the PR step opens no PR: its `closed`.
             const operation = preparedTree === process.env.BASE_TREE ? 'closed' : 'replaced';
             core.setOutput('branch-operation', operation);

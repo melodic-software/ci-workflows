@@ -1,7 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -81,6 +83,76 @@ test("the prepared tree is staged in a throwaway index outside the target checko
   );
 });
 
+function extractRunScript(name) {
+  const start = stepIndex(name);
+  const runIndex = workflowLines.findIndex(
+    (line, index) => index > start && /^ {8}run: \|$/u.test(line),
+  );
+  const body = [];
+  for (let index = runIndex + 1; index < workflowLines.length; index += 1) {
+    const line = workflowLines[index];
+    if (line.length > 0 && !line.startsWith("          ")) break;
+    body.push(line.slice(10));
+  }
+  return body.join("\n");
+}
+
+// A file committed with CRLF before a `text eol=lf` attribute keeps its blob
+// in the PR step's `git add -A`, because its index entry is stat-clean. A tree
+// computed by re-hashing every file would normalize it and never match.
+test("the prepared tree equals what the PR step's git add -A commits", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prepared-tree-"));
+  try {
+    const git = (...args) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "test");
+    git("config", "core.autocrlf", "false");
+    git("config", "commit.gpgsign", "false");
+    fs.writeFileSync(path.join(dir, "a.txt"), "one\r\ntwo\r\n");
+    const past = new Date("2000-01-01T00:00:00Z");
+    fs.utimesSync(path.join(dir, "a.txt"), past, past);
+    git("add", "a.txt");
+    git("commit", "-qm", "crlf");
+    fs.writeFileSync(path.join(dir, ".gitattributes"), "*.txt text eol=lf\n");
+    git("add", ".gitattributes");
+    git("commit", "-qm", "attributes");
+    fs.writeFileSync(path.join(dir, "managed.md"), "synced\n");
+
+    const output = path.join(dir, "..", `${path.basename(dir)}.output`);
+    execFileSync(
+      "bash",
+      ["-c", extractRunScript("Compute the prepared sync tree")],
+      {
+        cwd: dir,
+        env: {
+          ...process.env,
+          GIT_INDEX_FILE: path.join(dir, "..", `${path.basename(dir)}.index`),
+          GITHUB_OUTPUT: output,
+        },
+      },
+    );
+    const outputs = Object.fromEntries(
+      fs
+        .readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+    assert.equal(git("status", "--porcelain"), "?? managed.md");
+    git("add", "-A");
+    assert.equal(outputs.tree, git("write-tree"));
+    assert.equal(outputs["base-tree"], git("rev-parse", "HEAD^{tree}"));
+    assert.equal(outputs["base-sha"], git("rev-parse", "HEAD"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    for (const suffix of [".output", ".index"]) {
+      fs.rmSync(`${dir}${suffix}`, { force: true });
+    }
+  }
+});
+
 const BASE_SHA = "b".repeat(40);
 const BASE_TREE = "1".repeat(40);
 const PREPARED_TREE = "2".repeat(40);
@@ -104,6 +176,7 @@ async function runReplace({
   pulls = [sameRepoPull(155)],
   preparedTree = PREPARED_TREE,
   deleteError,
+  closeError,
 } = {}) {
   const keys = [
     "OWNER",
@@ -151,7 +224,7 @@ async function runReplace({
         },
         pulls: {
           list: record("list", { data: pulls }),
-          update: record("close", {}),
+          update: record("close", closeError ?? {}),
         },
         git: { deleteRef: record("deleteRef", deleteError ?? {}) },
       },
@@ -233,14 +306,14 @@ test("a branch already holding the prepared tree on the current base is left alo
   assert.equal(result.summaries.length, 0);
 });
 
-test("a changed tree closes the open sync PR, then deletes the branch", async () => {
+test("a changed tree deletes the branch, then confirms the open sync PR closed", async () => {
   const result = await runReplace();
   assert.deepEqual(names(result.calls), [
     "rules",
     "getBranch",
     "list",
-    "close",
     "deleteRef",
+    "close",
   ]);
   const list = result.calls.find((call) => call.name === "list").args;
   assert.equal(list.head, "melodic-software:chore/standards-sync");
@@ -334,7 +407,7 @@ test("a PR from another repository of the same owner is not closed", async () =>
   );
 });
 
-test("a refused delete fails the job naming the target, the rule and the closed PR", async () => {
+test("a refused delete fails the job naming the target and the rule, and closes no PR", async () => {
   const result = await runReplace({
     deleteError: new Error("Cannot delete this protected ref"),
   });
@@ -344,7 +417,17 @@ test("a refused delete fails the job naming the target, the rule and the closed 
     /melodic-software\/azure-iac:chore\/standards-sync/u,
   );
   assert.match(result.failures[0], /ruleset 24659680/u);
-  assert.match(result.failures[0], /after closing #155/u);
+  assert.match(result.failures[0], /no PR was closed/u);
+  assert.ok(!names(result.calls).includes("close"));
   assert.equal(result.outputs["branch-operation"], "kept");
   assert.equal(result.summaries.length, 0);
+});
+
+test("a failed close after the delete only warns, since the delete closed the PR", async () => {
+  const result = await runReplace({
+    closeError: new Error("Validation Failed"),
+  });
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.warnings.length, 1);
+  assert.equal(result.outputs["branch-operation"], "replaced");
 });

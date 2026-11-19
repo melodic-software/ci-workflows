@@ -1411,10 +1411,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   budget the target fails: re-run it, or the next push to standards main or the
   weekly reconciliation carries it. When a ruleset on the target applies an
   `update` rule to the sync branch, the token cannot change that branch in
-  place, so whenever the PR step would write it the workflow closes the open
-  sync PR and deletes the branch, and the PR step then creates both afresh for
+  place, so whenever the PR step would write it the workflow deletes the branch,
+  which closes its open sync PR, and the PR step then creates both afresh for
   a new review; it never force-updates the branch. A refused delete fails that
-  target. The step's `branch-operation` output and the job summary record
+  target and closes nothing. The step's `branch-operation` output and the job summary record
   `replaced`, or `closed` when nothing is left to sync. The two jobs that use
   the App secrets run in the caller environment named by `environment` (default `standards-sync`)
   with `deployment: false`, so an environment whose deployment-branch policy
