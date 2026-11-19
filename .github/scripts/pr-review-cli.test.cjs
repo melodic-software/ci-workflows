@@ -1388,7 +1388,7 @@ test("the subscription job repeats the key job's steps but for the credential an
     });
   assert.equal(
     step(key, "credential").with["key-off"],
-    `\${{ vars.REVIEWS_KEY_EXHAUSTED }}`,
+    `\${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true' }}`,
   );
   assert.equal(step(key, "credential").with.reason, undefined);
   assert.equal(step(subscription, "credential").with["key-off"], undefined);
@@ -1477,11 +1477,17 @@ test("a leg whose runner isolation failed reports install-failed, not no-outcome
   }
 });
 
-test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED is true", () => {
+test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED or CLAUDE_API_KEYS_DISABLED is true", () => {
   // The step's inputs as the runner hands them to the action: strings.
-  const present = (job, leg, secrets, exhausted) => {
+  const present = (job, leg, secrets, exhausted, disabled) => {
     const inputs = step(job, "credential").with;
-    const context = { secrets, vars: { REVIEWS_KEY_EXHAUSTED: exhausted } };
+    const context = {
+      secrets,
+      vars: {
+        REVIEWS_KEY_EXHAUSTED: exhausted,
+        CLAUDE_API_KEYS_DISABLED: disabled,
+      },
+    };
     return decide(leg, {
       credentialSet: String(evaluate(inputs["credential-set"], context)),
       keyOff:
@@ -1490,9 +1496,13 @@ test("the key job runs no model when the key is empty or REVIEWS_KEY_EXHAUSTED i
           : String(evaluate(inputs["key-off"], context) ?? ""),
     }).outputs.present;
   };
-  const keyPresent = (secret, exhausted) =>
-    present(key, "key", { CLAUDE_API_KEY: secret }, exhausted);
+  const keyPresent = (secret, exhausted, disabled) =>
+    present(key, "key", { CLAUDE_API_KEY: secret }, exhausted, disabled);
   assert.equal(keyPresent("k", ""), "true");
+  // The org switch holds every key off; unset or false keeps the key.
+  assert.equal(keyPresent("k", "", "true"), "false");
+  assert.equal(keyPresent("k", undefined, "false"), "true");
+  assert.equal(keyPresent("k", "true", "false"), "false");
   assert.equal(keyPresent("k", undefined), "true");
   assert.equal(keyPresent("k", "false"), "true");
   assert.equal(keyPresent("k", "true"), "false");

@@ -49,8 +49,9 @@ inputs:
   key-off:
     description: >-
       Key leg: `true` holds the key off and the subscription job runs, reason
-      no-key. A manual switch the credit history cannot replace; pr-review-cli
-      passes vars.REVIEWS_KEY_EXHAUSTED.
+      no-key. A manual switch the credit history cannot replace: every key
+      leg passes the org variable vars.CLAUDE_API_KEYS_DISABLED, and
+      pr-review-cli also vars.REVIEWS_KEY_EXHAUSTED.
     required: false
     default: ""
   selected:

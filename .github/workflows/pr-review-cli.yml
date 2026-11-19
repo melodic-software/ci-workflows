@@ -115,9 +115,9 @@ name: PR Review CLI
 #     only in the review-subscription job, and only when the key job's
 #     handoff output is exactly `true` (run-claude-cli: a credit stop, or the
 #     key refused with API status 401 or 402; a 403 stops the run) or it had
-#     no key: the secret is empty, or the caller repository's variable
-#     REVIEWS_KEY_EXHAUSTED is `true` (the action's key-off), which skips the
-#     key's model call.
+#     no key: the secret is empty, or the caller's variable
+#     CLAUDE_API_KEYS_DISABLED or REVIEWS_KEY_EXHAUSTED is `true` (the
+#     action's key-off), which skips the key's model call.
 #     That job runs on a fresh ubuntu-24.04 runner, repeats every hardening
 #     step and takes no artifact or cache from the key job. Either secret
 #     may be empty.
@@ -2747,7 +2747,7 @@ jobs:
           role: ${{ inputs.role }}
           credential-set: ${{ secrets.CLAUDE_API_KEY != '' }}
           fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          key-off: ${{ vars.REVIEWS_KEY_EXHAUSTED }}
+          key-off: ${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true' }}
 
       # continue-on-error keeps a failed leg from ending the job before the
       # check, extract and outcome steps; the status job carries the red. A

@@ -34,7 +34,7 @@ const leg = ({ job, name, secret, input, reason, recordComment }) => ({
       count: 1,
     },
     {
-      find: `          selected: \${{ needs.check-key-credit.outputs.next-leg }}\n`,
+      find: `          selected: \${{ needs.check-key-credit.outputs.next-leg }}\n          key-off: \${{ vars.CLAUDE_API_KEYS_DISABLED }}\n`,
       replace: `          reason: \${{ ${reason} }}\n`,
       count: 1,
     },
