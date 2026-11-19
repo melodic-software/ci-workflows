@@ -132,13 +132,22 @@ fi
 # keyring here, so it must be found from there.
 mkdir -p "$T/actions/setup-pinned-node" "$T/actions/markdownlint"
 cp "$SCRIPT" "$T/actions/setup-pinned-node/install-node.sh"
-cp "$T/signer/pubring.kbx" "$T/actions/setup-pinned-node/pubring.kbx"
+basenc --base16 -w 76 "$T/signer/pubring.kbx" >"$T/actions/setup-pinned-node/pubring.kbx.hex"
 KEYRING='' ENTRY=$T/actions/markdownlint/../setup-pinned-node/install-node.sh ACTION_PATH=$T/actions/markdownlint \
   run sibling 24.21.0 "$T/dist-good"
 if [[ $rc -eq 0 && $path_line == "$T/cache-sibling/node/24.21.0/x64/bin" && $out == *"Good signature"* ]]; then
   ok "run from a sibling action, the script finds the keyring beside itself"
 else
   bad "run from a sibling action, the script finds the keyring beside itself" "rc=$rc path=$path_line out=$out"
+fi
+
+# The committed keyring decodes to the bytes README.md records for release-keys.
+recorded=$(grep -o 'sha256 .[0-9a-f]\{64\}' "${SCRIPT%/*}/README.md" | grep -o '[0-9a-f]\{64\}')
+decoded=$(basenc --base16 -d "${SCRIPT%/*}/pubring.kbx.hex" | sha256sum | cut -d' ' -f1)
+if [[ -n $recorded && $decoded == "$recorded" ]]; then
+  ok "the committed keyring decodes to the sha256 README.md records"
+else
+  bad "the committed keyring decodes to the recorded sha256" "recorded=$recorded decoded=$decoded"
 fi
 
 make_dist "$T/dist-bad" "$(printf '0%.0s' {1..64})  node-v24.21.0-linux-x64.tar.gz"
