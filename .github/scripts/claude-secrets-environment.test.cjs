@@ -13,11 +13,22 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const workflowsDir = path.join(__dirname, "..", "workflows");
 const REUSABLES = ["pr-review-cli.yml", "intake-triage.yml"];
-const CLAUDE_SECRET = /secrets\.[A-Za-z_][\w-]*(?:CLAUDE|OAUTH)/i;
+const CLAUDE_SECRET = /secrets\.\w*(?:CLAUDE|OAUTH)/i;
 const CALLER_ENVIRONMENT = ["$", "{{ inputs.environment }}"].join("");
 
 const load = (file) =>
   parseWorkflow(fs.readFileSync(path.join(workflowsDir, file), "utf8"));
+
+test("the Claude-secret pattern matches a name that starts with CLAUDE or OAUTH", () => {
+  for (const name of [
+    "CLAUDE_API_KEY",
+    "OAUTH_TOKEN",
+    "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
+  ]) {
+    assert.match(`secrets.${name}`, CLAUDE_SECRET, name);
+  }
+  assert.doesNotMatch("secrets.GITHUB_TOKEN", CLAUDE_SECRET);
+});
 
 for (const file of REUSABLES) {
   test(`${file}: an optional environment input defaults to empty`, () => {
