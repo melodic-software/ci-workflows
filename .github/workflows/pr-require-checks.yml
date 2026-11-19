@@ -565,6 +565,8 @@ jobs:
         run: node --test .github/actions/report-lane-outcome/*.test.cjs
       - name: Test the run-claude-cli launcher
         run: node --test .github/actions/run-claude-cli/*.test.cjs
+      - name: Test the apply-claude-managed-settings drop-in
+        run: node --test .github/actions/apply-claude-managed-settings/*.test.cjs
       - name: Test the check-managed-files action
         run: node --test .github/actions/check-managed-files/*.test.cjs
       - name: Test the setup-pinned-node installer
