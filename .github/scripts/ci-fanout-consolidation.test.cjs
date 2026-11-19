@@ -529,6 +529,38 @@ test("the report-ci-status composite drops the hold only on a failed contract-on
   );
 });
 
+test("the report-ci-status composite re-runs contract-only siblings only when its own contract passed", () => {
+  const rerun = foldedValue(
+    compositeStep("aggregate-results"),
+    "rerun-contract-only-siblings",
+  );
+  const rerunFor = ({ contract, input }) =>
+    evaluate(rerun, {
+      steps: { contract: { outcome: contract } },
+      inputs: { "rerun-contract-only-siblings": input },
+    });
+  assert.equal(
+    rerunFor({ contract: "success", input: "true" }),
+    "true",
+    "a passing contract keeps the caller's re-runs",
+  );
+  assert.equal(
+    rerunFor({ contract: "failure", input: "true" }),
+    "false",
+    "a failed contract fails every contract-only sibling the same way, so nothing is re-run",
+  );
+  assert.equal(
+    rerunFor({ contract: "success", input: "false" }),
+    "false",
+    "a caller's opt-out still holds when the contract passes",
+  );
+  assert.equal(
+    rerunFor({ contract: "failure", input: "false" }),
+    "false",
+    "a caller's opt-out holds when the contract fails",
+  );
+});
+
 test("pr-require-checks.yml consolidates the hygiene composites into the checks reusable", () => {
   // This repository dogfoods the `checks` reusable every consumer adopts.
   assert.match(ciWorkflow, /^ {2}pr-run-checks:$/mu);
