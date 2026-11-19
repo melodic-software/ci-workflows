@@ -529,35 +529,43 @@ test("the report-ci-status composite drops the hold only on a failed contract-on
   );
 });
 
-test("the report-ci-status composite re-runs contract-only siblings only when its own contract passed", () => {
-  const rerun = foldedValue(
-    compositeStep("aggregate-results"),
-    "rerun-contract-only-siblings",
+test("the report-ci-status composite limits sibling re-runs to after a failed contract read", () => {
+  const aggregateStep = compositeStep("aggregate-results");
+  // The caller's opt-in passes through whatever the contract outcome, so a
+  // sibling started by the event that cleared the contract is still re-run.
+  assert.match(
+    aggregateStep,
+    /^ {8}rerun-contract-only-siblings: \$\{\{ inputs\.rerun-contract-only-siblings \}\}$/mu,
   );
-  const rerunFor = ({ contract, input }) =>
-    evaluate(rerun, {
-      steps: { contract: { outcome: contract } },
-      inputs: { "rerun-contract-only-siblings": input },
+  // The read time is recorded before the contract step reads, and its own
+  // failure cannot fail the composite.
+  const readStep = compositeSteps.find((step) =>
+    /^ {6}id: contract-read$/mu.test(step),
+  );
+  assert.ok(readStep !== undefined, "no contract-read step");
+  assert.match(readStep, /^ {6}continue-on-error: true$/mu);
+  assert.ok(
+    ciStatusComposite.indexOf("id: contract-read\n") <
+      ciStatusComposite.indexOf("id: contract\n"),
+    "the read time is recorded after the contract step",
+  );
+  const createdAfter = foldedValue(aggregateStep, "rerun-created-after");
+  const createdAfterFor = (contract) =>
+    evaluate(createdAfter, {
+      steps: {
+        contract: { outcome: contract },
+        "contract-read": { outputs: { at: "2026-11-19T12:00:00Z" } },
+      },
     });
   assert.equal(
-    rerunFor({ contract: "success", input: "true" }),
-    "true",
-    "a passing contract keeps the caller's re-runs",
+    createdAfterFor("failure"),
+    "2026-11-19T12:00:00Z",
+    "a failed contract limits re-runs to siblings created after its read",
   );
   assert.equal(
-    rerunFor({ contract: "failure", input: "true" }),
-    "false",
-    "a failed contract fails every contract-only sibling the same way, so nothing is re-run",
-  );
-  assert.equal(
-    rerunFor({ contract: "success", input: "false" }),
-    "false",
-    "a caller's opt-out still holds when the contract passes",
-  );
-  assert.equal(
-    rerunFor({ contract: "failure", input: "false" }),
-    "false",
-    "a caller's opt-out holds when the contract fails",
+    createdAfterFor("success"),
+    "",
+    "a passing contract re-runs every candidate",
   );
 });
 

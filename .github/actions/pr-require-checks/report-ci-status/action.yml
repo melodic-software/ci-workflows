@@ -44,8 +44,9 @@ inputs:
     description: >-
       `true` has a full run that records `success` re-run the red
       contract-only runs of this workflow on the same head SHA. Passed to
-      `aggregate-results` only when this run's contract step passed, and
-      `false` otherwise; the calling job needs `actions: write`.
+      `aggregate-results`. When this run's contract step failed, only
+      siblings created after its read (less 60 seconds for clock skew) are
+      re-run; the calling job needs `actions: write`.
     default: 'true'
   yield-wait-seconds:
     description: >-
@@ -92,6 +93,12 @@ runs:
     # this whole composite, concluded `success`, so its conclusion must follow
     # the lanes alone. Their results are outputs, and the caller fails the
     # job on them in a step of its own.
+    - name: Record the contract read time
+      id: contract-read
+      continue-on-error: true
+      shell: bash
+      run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$GITHUB_OUTPUT"
+
     - name: Check the pull-request contract
       id: contract
       continue-on-error: true
@@ -128,12 +135,14 @@ runs:
         treat-skipped-as: ${{ inputs.treat-skipped-as }}
         yield-to-full-run: 'true'
         carry-forward-wait-seconds: '0'
-        # The title and labels are pull-request state the contract step just
-        # read live: when it failed, every contract-only sibling on this head
-        # fails it again, so re-running them only spends jobs and API calls.
-        rerun-contract-only-siblings: >-
-          ${{ steps.contract.outcome == 'success' &&
-          inputs.rerun-contract-only-siblings || 'false' }}
+        rerun-contract-only-siblings: ${{ inputs.rerun-contract-only-siblings }}
+        # The title and labels are pull-request state the contract step read
+        # live: after a failed read, a sibling created before it fails the
+        # same contract again, and only a later one, which may have read the
+        # cause cleared, is worth re-running.
+        rerun-created-after: >-
+          ${{ steps.contract.outcome != 'success' &&
+          steps.contract-read.outputs.at || '' }}
         step-name: ${{ inputs.step-name }}
         # The contract-only predicate is identical to aggregate-results'
         # `contract-only` default.

@@ -1770,6 +1770,59 @@ run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
 expect_log "Recorded ci-lanes=success on ${sha}."
 expect_no_gh_call 'rerun-failed-jobs'
 
+# rerun-created-after: the time just before this run read a contract that
+# failed. 5700 was created before that read less the 60 s margin, 5800 inside
+# the margin and 5900 after the read, by the event that cleared the contract.
+rm -f -- "$fixtures/${workflow_runs_key}.json"
+clear_rerun_fixtures
+completed_run_at() {
+  printf '{"id":%s,"status":"completed","conclusion":"failure","created_at":"%s"}' "$1" "$2"
+}
+workflow_runs "[$(completed_run_at 5700 2026-09-05T11:58:59Z),$(completed_run_at 5800 2026-09-05T11:59:30Z),$(completed_run_at 5900 2026-09-05T12:00:30Z)]"
+for id in 5700 5800 5900; do
+  jobs_for "$id" failure skipped
+done
+
+# Without the cutoff 5700, which read the same failing contract, is re-run to
+# fail again.
+echo 'case: after a failed contract read a sibling created before it is not re-run'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-09-05T12:00:00Z
+expect_no_gh_call 'actions/runs/5700/rerun-failed-jobs'
+expect_no_gh_call 'actions/runs/5700/jobs'
+expect_log "Not re-running run(s) 5700 on ${sha}: created before this run's failed contract read at 2026-09-05T12:00:00Z, so they would fail it again."
+# Without the margin 5800, within clock skew of the read, is skipped.
+expect_gh_call "POST repos/${repository}/actions/runs/5800/rerun-failed-jobs"
+
+# The race: the contract cleared after this run read it, and the clearing
+# event's run went red superseded. Without keeping later siblings it stays red.
+echo 'case: after a failed contract read a sibling created after it is re-run'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-09-05T12:00:00Z
+expect_gh_call "POST repos/${repository}/actions/runs/5900/rerun-failed-jobs"
+expect_log "Re-ran 2 failed contract-only run(s) on ${sha}."
+
+# Without the empty-input path a passing contract would filter on a stale time.
+echo 'case: with no rerun-created-after every candidate is re-run'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true
+for id in 5700 5800 5900; do
+  expect_gh_call "POST repos/${repository}/actions/runs/${id}/rerun-failed-jobs"
+done
+expect_no_log 'Not re-running run(s)'
+
+# Without the shape check a malformed time would skip siblings, or turn jq's
+# error into a red after the success is recorded.
+echo 'case: a malformed rerun-created-after warns and re-runs every candidate'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=yesterday
+expect_log '::warning::rerun-created-after must be YYYY-MM-DDTHH:MM:SSZ, got: yesterday; re-running every failed contract-only run.'
+for id in 5700 5800 5900; do
+  expect_gh_call "POST repos/${repository}/actions/runs/${id}/rerun-failed-jobs"
+done
+
+# A value of the right shape that is no real date takes the same path.
+echo 'case: a well-shaped but impossible rerun-created-after re-runs every candidate'
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-13-45T12:00:00Z
+expect_log "Re-ran 3 failed contract-only run(s) on ${sha}."
+clear_rerun_fixtures
+
 echo 'case: an unrecognized rerun-contract-only-siblings value is rejected'
 run_case 1 'success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=on
 expect_log "::error::rerun-contract-only-siblings must be 'true' or 'false', got: on"
@@ -3448,12 +3501,12 @@ reset_yield_fixtures
 
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
-for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rate-limit-wait-seconds record-pending yield-to-full-run yield-wait-seconds token repository sha; do
+for input_name in results treat-skipped-as contract-only same-repo status-context carry-forward-wait-seconds rerun-contract-only-siblings rerun-wait-seconds rerun-created-after rate-limit-wait-seconds record-pending yield-to-full-run yield-wait-seconds token repository sha; do
   if ! grep -qE "^  ${input_name}:" "$action_metadata"; then
     fail_case "action.yml declares no '${input_name}' input"
   fi
 done
-for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN YIELD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
+for environment_name in RESULTS TREAT_SKIPPED_AS CONTRACT_ONLY SAME_REPO STATUS_CONTEXT CARRY_FORWARD_WAIT_SECONDS RERUN_CONTRACT_ONLY_SIBLINGS RERUN_WAIT_SECONDS RERUN_CREATED_AFTER RATE_LIMIT_WAIT_SECONDS RECORD_PENDING YIELD_TO_FULL_RUN YIELD_WAIT_SECONDS GH_TOKEN REPOSITORY SHA; do
   if ! grep -qF "        ${environment_name}: " "$action_metadata"; then
     fail_case "action.yml does not pass '${environment_name}' to run.sh"
   fi
