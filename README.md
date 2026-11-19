@@ -980,11 +980,12 @@ consumer to audit it.
   GitHub API call; `markdownlint` and `check-managed-files` run its script
   in place of `actions/setup-node` (its `README.md` says why).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
-  job: skips the key job while the key's credit stop in the same workflow is
-  inside `key-credit-window-hours` (default 1), reading one artifact name with
-  the job token (one call), and runs the key on any failure. Past the window,
-  while that marker is still kept, a second call reads the probing marker
-  `key-credit-probing-<workflow>-<key-job>`: the first gate to pass the key
+  job: skips the key job while the key's credit stop in any job of the
+  repository on the same key is inside `key-credit-window-hours` (default 1),
+  reading one artifact name, `key-credit-stop-<SECRET_NAME>`, with the job
+  token (one call), and runs the key on any failure. Past the window, while
+  that marker is still kept, a second call reads the probing marker
+  `key-credit-probing-<SECRET_NAME>`: the first gate to pass the key
   uploads it (kept 7 days), and later gates skip while it is newer than the
   action's `probe-minutes` input (default 15). A gate that reads before the
   probe is listed still passes the key. The window backs off from those same

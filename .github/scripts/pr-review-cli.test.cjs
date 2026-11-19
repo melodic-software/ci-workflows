@@ -7313,3 +7313,13 @@ test("a Dependabot bump of one pin in every leg keeps the legs in sync", () => {
   );
   assert.deepEqual(checkLegs(bumped, modelLegs), []);
 });
+
+test("both lanes of one run may upload the key's markers: each upload overwrites", () => {
+  const uploads = Object.values(workflow.jobs).flatMap((job) =>
+    (job.steps ?? []).filter((s) =>
+      /^Upload the key's (credit-stop|probing) marker$/u.test(s.name ?? ""),
+    ),
+  );
+  assert.equal(uploads.length, 2);
+  for (const upload of uploads) assert.equal(upload.with.overwrite, true);
+});

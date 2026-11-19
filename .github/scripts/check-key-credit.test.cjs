@@ -33,7 +33,8 @@ const readAction = () =>
   );
 
 const KEY = "claude-review-key";
-const NAME = markerName("pr-review-hosted.yml", KEY);
+const SECRET = "REVIEWS_CLAUDE_API_KEY";
+const NAME = markerName(SECRET);
 const NOW = Date.parse("2026-10-24T12:00:00Z");
 const SINCE = NOW - 6 * 3600 * 1000;
 const at = (hoursAgo) => new Date(NOW - hoursAgo * 3600 * 1000).toISOString();
@@ -45,13 +46,31 @@ const marker = (run, hoursAgo, extra = {}) => ({
   ...extra,
 });
 
-test("the marker is named for the caller workflow and the key job", () => {
-  assert.equal(NAME, "key-credit-stop-pr-review-hosted.yml-claude-review-key");
-  assert.notEqual(markerName("other.yml", KEY), NAME);
-  assert.notEqual(
-    markerName("pr-review-hosted.yml", "security-review-key"),
+test("the marker is named for the key's secret, whichever workflow and job run it", async () => {
+  assert.equal(NAME, "key-credit-stop-REVIEWS_CLAUDE_API_KEY");
+  assert.notEqual(markerName("INTAKE_CLAUDE_API_KEY"), NAME);
+  const named = async (extra) => {
+    const dir = makeTemporaryDirectory("check-key-credit-");
+    await main(env(dir, extra), fakeFetch([]).fetchImpl, now);
+    return /^marker=(.*)$/mu.exec(output(dir))[1];
+  };
+  // Two lanes on one key share one marker.
+  assert.equal(
+    await named({
+      KEY_JOB: "security-review-key",
+      WORKFLOW_REF: "o/r/.github/workflows/other.yml@refs/heads/main",
+    }),
     NAME,
   );
+  // Without a secret name, or with one that is not one, the marker keeps the
+  // caller's workflow and key job.
+  for (const secret of ["", "reviews", "A B", "X".repeat(101)]) {
+    assert.equal(
+      await named({ KEY_SECRET: secret }),
+      "key-credit-stop-pr-review-hosted.yml-claude-review-key",
+      secret,
+    );
+  }
 });
 
 test("a marker inside the window skips, citing its run; the newest wins in any order", () => {
@@ -81,7 +100,7 @@ test("no marker, an expired one, another name or a malformed one runs the key", 
     [],
     null,
     [marker(10, 1, { expired: true })],
-    [marker(10, 1, { name: markerName("other.yml", KEY) })],
+    [marker(10, 1, { name: markerName("INTAKE_CLAUDE_API_KEY") })],
     [marker(10, 1, { created_at: "not a date" })],
     [marker(10, 1, { created_at: null })],
     [marker(10, 1, { workflow_run: null })],
@@ -178,6 +197,7 @@ test("decide fails open on every read failure", async () => {
 function env(dir, extra = {}) {
   return {
     KEY_JOB: KEY,
+    KEY_SECRET: SECRET,
     WINDOW_HOURS: "6",
     PROBE_MINUTES: "15",
     WORKFLOW_REF:
@@ -217,7 +237,7 @@ function fakeFetch(routes) {
 }
 
 const ARTIFACTS =
-  /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-stop-pr-review-hosted\.yml-claude-review-key&per_page=100$/u;
+  /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-stop-REVIEWS_CLAUDE_API_KEY&per_page=100$/u;
 const now = () => new Date(NOW);
 const output = (dir) => fs.readFileSync(path.join(dir, "output"), "utf8");
 
@@ -275,7 +295,8 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
     [{}, 1, NAME],
     [{ WINDOW_HOURS: "0" }, 0, NAME],
     [{ WINDOW_HOURS: "abc" }, 0, NAME],
-    [{ WORKFLOW_REF: "nonsense" }, 0, ""],
+    [{ WORKFLOW_REF: "nonsense" }, 1, NAME],
+    [{ WORKFLOW_REF: "nonsense", KEY_SECRET: "" }, 0, ""],
     [{ GITHUB_TOKEN: "" }, 0, NAME],
   ]) {
     const dir = makeTemporaryDirectory("check-key-credit-");
@@ -285,7 +306,8 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
     assert.equal(urls.length, calls, JSON.stringify(extra));
     assert.match(lines[0], /^check-key-credit: .* runs the key: /u);
     // The marker name still goes out, so a key job can record a credit stop
-    // while the gate is off; an unreadable ref leaves it empty.
+    // while the gate is off; an unreadable ref with no secret name leaves it
+    // empty.
     assert.equal(
       output(dir),
       `skip-key=false\norigin-run=\nmarker=${name}\nprobing-marker=\n`,
@@ -295,17 +317,17 @@ test("main runs the key on a refused read, an unreadable ref or a window of 0, s
 
 // The probing marker: the gate that passes the key after a credit stop's
 // window ends uploads it, and gates that read it while it is fresh skip.
-const PROBE = "key-credit-probing-pr-review-hosted.yml-claude-review-key";
+const PROBE = "key-credit-probing-REVIEWS_CLAUDE_API_KEY";
 const PROBES =
-  /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-probing-pr-review-hosted\.yml-claude-review-key&per_page=100$/u;
+  /^https:\/\/api\.example\/repos\/o\/r\/actions\/artifacts\?name=key-credit-probing-REVIEWS_CLAUDE_API_KEY&per_page=100$/u;
 const minutesAgo = (minutes) =>
   new Date(NOW - minutes * 60 * 1000).toISOString();
 const probe = (run, minutes, extra = {}) =>
   marker(run, 0, { name: PROBE, created_at: minutesAgo(minutes), ...extra });
 
 test("the probing marker is named apart from the credit-stop marker", () => {
-  assert.equal(probeName("pr-review-hosted.yml", KEY), PROBE);
-  assert.notEqual(probeName("other.yml", KEY), PROBE);
+  assert.equal(probeName(SECRET), PROBE);
+  assert.notEqual(probeName("INTAKE_CLAUDE_API_KEY"), PROBE);
   assert.notEqual(PROBE, NAME);
 });
 
@@ -465,6 +487,8 @@ test("the action passes the caller's workflow ref and the window to the gate, an
   const run = action.runs.steps[0];
   assert.equal(run.env.WORKFLOW_REF, `\${{ github.workflow_ref }}`);
   assert.equal(run.env.WINDOW_HOURS, `\${{ inputs.window-hours }}`);
+  assert.equal(run.env.KEY_SECRET, `\${{ inputs.secret-name }}`);
+  assert.equal(action.inputs["secret-name"].default, "");
   assert.equal(action.inputs["window-hours"].default, "");
   assert.equal(
     action.outputs.marker.value,
@@ -511,7 +535,7 @@ test("an empty window or probe window is the 1-hour and 15-minute default; 0 sta
           artifacts: [
             {
               ...marker(99, 10 / 60),
-              name: probeName("pr-review-hosted.yml", KEY),
+              name: probeName(SECRET),
             },
           ],
         },

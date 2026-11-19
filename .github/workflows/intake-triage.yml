@@ -454,6 +454,7 @@ jobs:
         uses: $/.github/actions/select-model-credential
         with:
           leg: start
+          role: ${{ inputs.role }}
           key-job: claude-intake-triage
           window-hours: ${{ inputs.key-credit-window-hours }}
           reset-at: ${{ inputs.key-credit-reset-at }}

@@ -1,8 +1,8 @@
 // check-key-credit: whether a keyed lane's key job should skip the model
 // because the key ended in a credit stop inside the window.
 //
-// The key job uploads an artifact named markerName(workflow, keyJob) after
-// the launcher's lane-class `credit-stop` (run-claude-cli: classify.cjs
+// The key job uploads an artifact named markerName(key) after the
+// launcher's lane-class `credit-stop` (run-claude-cli: classify.cjs
 // isCreditStop), so an auth stop (401, or 402 without the credit text) never
 // writes one. This gate's first call reads the repository's artifacts of that
 // exact name, and skips the key when the newest unexpired one was created
@@ -12,8 +12,11 @@
 // or an unreadable answer runs the key: it never skips
 // the subscription path and never fails the step.
 //
-// The name carries the caller workflow's file and the key job, so each
-// caller's key is judged on its own credit stops. A fork's pull_request run
+// The name carries the key's secret name (KEY_SECRET, as
+// select-model-credential derives it from the role), so one credit stop
+// holds off every job in the repository that runs the same key. A caller
+// that passes no secret name keeps the name of its workflow file and key
+// job, judged on its own credit stops. A fork's pull_request run
 // holds no secret but can upload an artifact of any name from a modified
 // workflow, so a marker counts only when its run's head repository is this
 // repository (workflow_run.head_repository_id equal to repository_id). Any
@@ -82,6 +85,8 @@ const MAX_PROBE_MINUTES = 1440;
 const WORKFLOW_REF = /^[\w.-]+\/[\w.-]+\/\.github\/workflows\/([\w.-]+\.ya?ml)@/u;
 // The shape the rotation tool writes, optionally with milliseconds. Date.parse
 // alone takes far looser text ("2026"), which is no reset here.
+// A secret name as run-claude-cli derives it (ROLE_CLAUDE_API_KEY).
+const SECRET = /^[A-Z][A-Z0-9_]{0,99}$/u;
 const RESET_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/u;
 
 // The rate-limit reading report-api-budget reads, as the scope step writes
@@ -109,14 +114,18 @@ function recordBudget(response, runnerTemp) {
   }
 }
 
+// What a marker name carries: the key's secret name, or without one the
+// caller's workflow file and key job.
+const keyOf = (secret, workflow, keyJob) => secret || `${workflow}-${keyJob}`;
+
 // The artifact name the key job uploads and this gate reads.
-function markerName(workflow, keyJob) {
-  return `${MARKER_PREFIX}${workflow}-${keyJob}`;
+function markerName(key) {
+  return `${MARKER_PREFIX}${key}`;
 }
 
 // The artifact name the gate job uploads when it passes the key as a probe.
-function probeName(workflow, keyJob) {
-  return `${PROBE_PREFIX}${workflow}-${keyJob}`;
+function probeName(key) {
+  return `${PROBE_PREFIX}${key}`;
 }
 
 // The unexpired markers of the exact name, created at or after `sinceMs` by
@@ -260,11 +269,14 @@ function readEnv(env) {
   const probe = String(env.PROBE_MINUTES ?? "").trim();
   const probeMinutes = probe === "" ? DEFAULT_PROBE_MINUTES : Number(probe);
   const workflow = (env.WORKFLOW_REF ?? "").match(WORKFLOW_REF)?.[1] ?? null;
+  const secretText = String(env.KEY_SECRET ?? "").trim();
+  const secret = SECRET.test(secretText) ? secretText : "";
   const repository = env.GITHUB_REPOSITORY ?? "";
   const valid =
     /^[a-z][a-z0-9-]{0,99}$/u.test(keyJob) &&
     /^[\w.-]+\/[\w.-]+$/u.test(repository) &&
-    workflow !== null;
+    (secret !== "" || workflow !== null);
+  const key = keyOf(secret, workflow, keyJob);
   return {
     keyJob,
     hours,
@@ -272,8 +284,8 @@ function readEnv(env) {
     probeMinutes:
       probeMinutes > 0 && probeMinutes <= MAX_PROBE_MINUTES ? probeMinutes : 0,
     repository,
-    marker: valid ? markerName(workflow, keyJob) : "",
-    probe: valid ? probeName(workflow, keyJob) : "",
+    marker: valid ? markerName(key) : "",
+    probe: valid ? probeName(key) : "",
     api: env.GITHUB_API_URL || "https://api.github.com",
     server: env.GITHUB_SERVER_URL || "https://github.com",
     token: env.GITHUB_TOKEN ?? "",
