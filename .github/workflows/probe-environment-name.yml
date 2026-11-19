@@ -1,0 +1,19 @@
+name: Probe Environment Name
+
+on:
+  push:
+    branches: [feat/claude-lanes-environment-input]
+
+permissions: {}
+
+jobs:
+  empty:
+    name: Empty
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    environment:
+      name: ${{ github.event_name == 'never' && 'never' || '' }}
+      deployment: false
+    steps:
+      - name: Report reaching the runner
+        run: echo "an empty environment name reached the runner"
