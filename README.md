@@ -1018,9 +1018,12 @@ consumer to audit it.
   leg's model runs from whether its secret is set (passed as
   `secrets.X != ''`, never a value); a call last in each leg job names the
   next job's leg from the launcher's handoff. Each job's `if:` compares that
-  `next-leg` output to its own leg. `key-off` (pr-review-cli passes
-  `vars.REVIEWS_KEY_EXHAUSTED`) holds the key off by hand, which the credit
-  history cannot (its `action.yml` describes the inputs; `select.cjs` the
+  `next-leg` output to its own leg. `key-off` holds the key off by hand,
+  which the credit history cannot; every key leg passes the org variable
+  `CLAUDE_API_KEYS_DISABLED` (`true` in any letter case sends every keyed
+  lane to the subscription; unset or `false` keeps the key), and
+  pr-review-cli also
+  `REVIEWS_KEY_EXHAUSTED` (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
 - `.github/actions/check-intake-triage-verdict` — `intake-triage.yml`'s output
   schema and its caller's `verdict-schema` fields, shared by the three leg
@@ -1507,9 +1510,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`/review:security-review`), on `.github/actions/run-claude-cli` with the
   two-job pattern above: the funding `role` (default `reviews`) API key in
   the `review-key` job, its subscription token in `review-subscription`
-  after a handoff, with no key, or when the caller repository's
-  `REVIEWS_KEY_EXHAUSTED` variable is `true`, and the optional
-  `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
+  after a handoff, with no key, or when the caller's
+  `CLAUDE_API_KEYS_DISABLED` or `REVIEWS_KEY_EXHAUSTED` variable is `true`,
+  and the optional `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
   subscription job hands off, each choice made by
   `.github/actions/select-model-credential`. The model jobs are read-only
   (`contents: read`, `pull-requests: read`, `cache-mode: none`, no

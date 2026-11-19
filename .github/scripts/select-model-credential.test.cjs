@@ -985,6 +985,56 @@ test("every leg job decides first and names the next leg last, and no job's if: 
   }
 });
 
+// The org variable CLAUDE_API_KEYS_DISABLED sends every keyed lane to the
+// subscription, so callers need no wiring: every key leg here passes it as
+// key-off, and no other leg takes key-off.
+test("every key leg passes vars.CLAUDE_API_KEYS_DISABLED as key-off, and no other leg does", () => {
+  const dir = path.join(__dirname, "..", "workflows");
+  let keyLegs = 0;
+  for (const name of fs.readdirSync(dir).filter((f) => /\.ya?ml$/u.test(f))) {
+    for (const [id, job] of Object.entries(load(name).jobs ?? {})) {
+      for (const step of job.steps ?? []) {
+        if (!String(step.uses ?? "").includes("select-model-credential"))
+          continue;
+        const keyOff = step.with?.["key-off"];
+        if (step.with?.leg === "key") {
+          keyLegs++;
+          assert.match(
+            String(keyOff),
+            /^\$\{\{ vars\.CLAUDE_API_KEYS_DISABLED == 'true'( \|\| .+)? \}\}$/u,
+            `${name} ${id}`,
+          );
+        } else {
+          assert.equal(keyOff, undefined, `${name} ${id} ${step.name}`);
+        }
+      }
+    }
+  }
+  assert.ok(keyLegs >= 2, `found ${keyLegs} key legs`);
+});
+
+test("the org switch holds the key off on true, alone or beside REVIEWS_KEY_EXHAUSTED", () => {
+  const off = (input, vars) =>
+    select.leg({
+      leg: "key",
+      role: "r",
+      credentialSet: "true",
+      keyOff: String(evaluate(input, { vars }) ?? ""),
+    }).outputs.present === "false";
+  const bare = `\${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' }}`;
+  const both = `\${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true' }}`;
+  for (const input of [bare, both]) {
+    assert.equal(off(input, {}), false, input);
+    assert.equal(off(input, { CLAUDE_API_KEYS_DISABLED: "false" }), false);
+    assert.equal(off(input, { CLAUDE_API_KEYS_DISABLED: "true" }), true);
+  }
+  assert.equal(off(both, { REVIEWS_KEY_EXHAUSTED: "true" }), true);
+  assert.equal(
+    off(both, { CLAUDE_API_KEYS_DISABLED: "false", REVIEWS_KEY_EXHAUSTED: "" }),
+    false,
+  );
+});
+
 // melodic-software/claude-code-plugins loads select.cjs at a pinned commit and
 // checks its eval legs' handoff reasons against this closed list
 // (.github/scripts/plugin-eval/credential-legs.test.mjs).

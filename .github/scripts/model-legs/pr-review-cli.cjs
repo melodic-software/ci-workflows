@@ -25,7 +25,7 @@ const leg = ({ job, name, secret, input, reason, comment }) => ({
       count: 1,
     },
     {
-      find: `          key-off: \${{ vars.REVIEWS_KEY_EXHAUSTED }}\n`,
+      find: `          key-off: \${{ vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true' }}\n`,
       replace: `          reason: \${{ ${reason} }}\n`,
       count: 1,
     },
