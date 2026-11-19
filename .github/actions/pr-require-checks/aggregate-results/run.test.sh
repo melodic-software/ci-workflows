@@ -1789,7 +1789,7 @@ echo 'case: after a failed contract read a sibling created before it is not re-r
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-09-05T12:00:00Z
 expect_no_gh_call 'actions/runs/5700/rerun-failed-jobs'
 expect_no_gh_call 'actions/runs/5700/jobs'
-expect_log "Not re-running run(s) 5700 on ${sha}: created before this run's failed contract read at 2026-09-05T12:00:00Z, so they would fail it again."
+expect_log "Not re-running run(s) 5700 on ${sha}: started before this run's failed contract read at 2026-09-05T12:00:00Z, so they would fail it again."
 # Without the margin 5800, within clock skew of the read, is skipped.
 expect_gh_call "POST repos/${repository}/actions/runs/5800/rerun-failed-jobs"
 
@@ -1799,6 +1799,15 @@ echo 'case: after a failed contract read a sibling created after it is re-run'
 run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-09-05T12:00:00Z
 expect_gh_call "POST repos/${repository}/actions/runs/5900/rerun-failed-jobs"
 expect_log "Re-ran 2 failed contract-only run(s) on ${sha}."
+
+# A hand re-run of an old sibling after the cause cleared reads the contract
+# anew. Without run_started_at it is judged by its old created_at and skipped.
+echo 'case: after a failed contract read a sibling created before it but re-run after it is re-run'
+workflow_runs "[{\"id\":5700,\"status\":\"completed\",\"conclusion\":\"failure\",\"created_at\":\"2026-09-05T11:58:59Z\",\"run_started_at\":\"2026-09-05T12:00:30Z\"}]"
+run_case 0 'success success' pass false true RERUN_CONTRACT_ONLY_SIBLINGS=true RERUN_CREATED_AFTER=2026-09-05T12:00:00Z
+expect_gh_call "POST repos/${repository}/actions/runs/5700/rerun-failed-jobs"
+expect_no_log 'Not re-running run(s)'
+workflow_runs "[$(completed_run_at 5700 2026-09-05T11:58:59Z),$(completed_run_at 5800 2026-09-05T11:59:30Z),$(completed_run_at 5900 2026-09-05T12:00:30Z)]"
 
 # Without the empty-input path a passing contract would filter on a stale time.
 echo 'case: with no rerun-created-after every candidate is re-run'

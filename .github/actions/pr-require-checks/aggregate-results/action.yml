@@ -157,9 +157,10 @@ inputs:
     description: >-
       A UTC time, `YYYY-MM-DDTHH:MM:SSZ`, from just before this run read a
       pull-request contract that failed. With `rerun-contract-only-siblings`,
-      only failed siblings created at or after it, less 60 seconds for clock
-      skew, are re-run: one created earlier read the same failing title or
-      labels and would fail again, while a later one may have read them
+      only failed siblings whose later of `created_at` and `run_started_at`
+      is at or after it, less 60 seconds for clock skew, are re-run: one
+      started earlier read the same failing title or labels and would fail
+      again, while a later one, or a later re-run, may have read them
       cleared. Empty re-runs every candidate; a malformed value warns and
       re-runs every candidate too.
     default: ''

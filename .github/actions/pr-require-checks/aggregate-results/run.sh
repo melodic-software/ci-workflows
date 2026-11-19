@@ -1674,18 +1674,21 @@ rerun_failed_contract_only_siblings() {
     '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
     <"$runs")"
   echo "Failed run(s) of this workflow on ${SHA} to consider for a re-run: ${candidates:-none}."
-  # A sibling created before this run's failed contract read saw the same
-  # failing title or labels, so it is skipped; one created later may have read
-  # them cleared. The 60 s margin absorbs clock skew toward re-running, and a
-  # created_at that does not parse is kept.
+  # A sibling whose latest attempt started before this run's failed contract
+  # read saw the same failing title or labels, so it is skipped; one created or
+  # re-run later may have read them cleared. A sibling's time is the later of
+  # created_at and run_started_at. The 60 s margin absorbs clock skew toward
+  # re-running, and a created_at that does not parse is kept.
   if [[ -n "$created_after" ]]; then
     skipped="$(jq -r --argjson self "$GITHUB_RUN_ID" --arg after "$created_after" \
       '($after | try (fromdateiso8601 - 60) catch null) as $cutoff
        | [ .workflow_runs[]? | select($cutoff != null and .status == "completed" and .conclusion == "failure" and (.id // $self) != $self)
-           | select(((.created_at // "") | try fromdateiso8601 catch null) as $c | $c != null and $c < $cutoff) | .id ]
+           | ((.created_at // "") | try fromdateiso8601 catch null) as $c
+           | ((.run_started_at // "") | try fromdateiso8601 catch null) as $s
+           | select($c != null and ([$c, ($s // $c)] | max) < $cutoff) | .id ]
        | sort | join(" ")' <"$runs")"
     if [[ -n "$skipped" ]]; then
-      echo "Not re-running run(s) ${skipped} on ${SHA}: created before this run's failed contract read at ${created_after}, so they would fail it again."
+      echo "Not re-running run(s) ${skipped} on ${SHA}: started before this run's failed contract read at ${created_after}, so they would fail it again."
       candidates="$(jq -rn --arg all "$candidates" --arg skip "$skipped" '($skip | split(" ")) as $s | $all | split(" ") | map(select(. as $id | $s | index($id) | not)) | join(" ")')"
     fi
   fi
