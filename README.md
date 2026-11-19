@@ -961,6 +961,10 @@ consumer to audit it.
   collector reads, built from the `x-ratelimit-*` headers and URLs of the
   job's own requests, so it spends none (its `action.yml` describes what it
   does).
+- `.github/actions/setup-pinned-node` — the exact Node a version file pins,
+  from the tool cache or a signature-checked nodejs.org download, with no
+  GitHub API call; `markdownlint` and `check-managed-files` run its script
+  in place of `actions/setup-node` (its `README.md` says why).
 - `.github/actions/check-key-credit` — `pr-review-cli.yml`'s `check-key-credit`
   job: skips the key job while the key's credit stop in the same workflow is
   inside `key-credit-window-hours` (default 1), reading one artifact name with

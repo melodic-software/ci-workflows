@@ -23,16 +23,23 @@ inputs:
     # to match that pin, never past it; npm latest can lead standards.
     default: 0.23.3
   node-version:
-    description: Node.js version to set up.
+    description: Exact X.Y.Z Node.js version to set up (Linux X64 runners).
     default: 24.21.0
 
 runs:
   using: composite
   steps:
+    # Not actions/setup-node: on a tool-cache miss it reads the node-versions
+    # manifest through the GitHub API with the job token (see
+    # setup-pinned-node's README).
     - name: Set up Node
-      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-      with:
-        node-version: ${{ inputs.node-version }}
+      shell: bash
+      env:
+        NODE_VERSION: ${{ inputs.node-version }}
+      run: |
+        set -euo pipefail
+        printf '%s\n' "$NODE_VERSION" >"$RUNNER_TEMP/markdownlint-node-version"
+        bash "$GITHUB_ACTION_PATH/../setup-pinned-node/install-node.sh" "$RUNNER_TEMP/markdownlint-node-version"
 
     - name: Lint markdown
       shell: bash

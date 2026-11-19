@@ -5,6 +5,7 @@
     "build/",
     "\\.git/",
     "\\.ruff_cache/",
+    "\\.kbx$",
     "\\.lock$",
     "\\.min\\.",
     "node_modules/",
