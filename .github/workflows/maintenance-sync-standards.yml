@@ -702,7 +702,7 @@ jobs:
               owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 100,
             });
             const closed = [];
-            for (const pull of pulls.filter((pull) => pull.head?.repo?.owner?.login === owner)) {
+            for (const pull of pulls.filter((pull) => pull.head?.repo?.full_name === `${owner}/${repo}`)) {
               await github.rest.pulls.update({ owner, repo, pull_number: pull.number, state: 'closed' });
               closed.push(`#${pull.number}`);
             }

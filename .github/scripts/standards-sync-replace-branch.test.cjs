@@ -95,7 +95,7 @@ const branchHead = ({ tree = PREPARED_TREE, parents = [BASE_SHA] } = {}) => ({
 });
 const sameRepoPull = (number) => ({
   number,
-  head: { repo: { owner: { login: "melodic-software" } } },
+  head: { repo: { full_name: "melodic-software/azure-iac" } },
 });
 
 async function runReplace({
@@ -307,11 +307,31 @@ test("nothing left to sync deletes the branch and reports it closed, not replace
 test("a fork PR that reuses the branch name is not closed", async () => {
   const result = await runReplace({
     pulls: [
-      { number: 7000, head: { repo: { owner: { login: "someone-else" } } } },
+      {
+        number: 7000,
+        head: { repo: { full_name: "someone-else/azure-iac" } },
+      },
     ],
   });
   assert.ok(!names(result.calls).includes("close"));
   assert.equal(result.outputs["branch-operation"], "replaced");
+});
+
+test("a PR from another repository of the same owner is not closed", async () => {
+  const result = await runReplace({
+    pulls: [
+      {
+        number: 7001,
+        head: { repo: { full_name: "melodic-software/azure-iac-fork" } },
+      },
+      sameRepoPull(155),
+    ],
+  });
+  const closed = result.calls.filter((call) => call.name === "close");
+  assert.deepEqual(
+    closed.map((call) => call.args.pull_number),
+    [155],
+  );
 });
 
 test("a refused delete fails the job naming the target, the rule and the closed PR", async () => {
