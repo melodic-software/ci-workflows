@@ -9,6 +9,9 @@ description: >-
   runner isolation removes sudo and before any head checkout. run-claude-cli
   refuses to run without the file. The check is
   run-claude-cli/managed-settings.cjs, the same rule run-claude-cli applies.
+  With drop-in-file, it writes that file as a root-owned
+  /etc/claude-code/managed-settings.d/<drop-in-name>.json instead and leaves
+  managed-settings.json alone.
 
 inputs:
   settings:
@@ -35,11 +38,29 @@ inputs:
       action cannot see.
     required: false
     default: ""
+  drop-in-file:
+    description: >-
+      Empty (the default) writes managed-settings.json. A path instead writes
+      that JSON file, which may set only `pluginConfigs` so it can never
+      override a key managed-settings.json pins, as a root-owned (root:root,
+      644) /etc/claude-code/managed-settings.d/<drop-in-name>.json; nothing
+      else is written. Read it from a checkout of the default branch, never a
+      pull request's head.
+    required: false
+    default: ""
+  drop-in-name:
+    description: >-
+      The drop-in's file name without `.json`: lowercase letters, digits, `.`,
+      `_` and `-`. Required with drop-in-file. Claude Code merges drop-ins in
+      alphabetical order, a later file winning.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
     - name: Write the managed settings
+      if: inputs.drop-in-file == ''
       shell: bash
       env:
         SETTINGS: ${{ inputs.settings }}
@@ -54,3 +75,20 @@ runs:
         printf '%s\n' "$SETTINGS" | sudo tee /etc/claude-code/managed-settings.json >/dev/null
         sudo chown root:root /etc/claude-code/managed-settings.json
         sudo chmod 644 /etc/claude-code/managed-settings.json
+    - name: Write the managed settings drop-in
+      if: inputs.drop-in-file != ''
+      shell: bash
+      env:
+        DROP_IN_FILE: ${{ inputs.drop-in-file }}
+        DROP_IN_NAME: ${{ inputs.drop-in-name }}
+      run: |
+        json=$(node "$GITHUB_ACTION_PATH/drop-in.cjs") || { printf '%s\n' "$json"; exit 1; }
+        if ! sudo -n true 2>/dev/null; then
+          echo "::error title=apply-claude-managed-settings::sudo is unavailable: run apply-claude-managed-settings before runner isolation"
+          exit 1
+        fi
+        target="/etc/claude-code/managed-settings.d/$DROP_IN_NAME.json"
+        sudo install -d -o root -g root -m 755 /etc/claude-code /etc/claude-code/managed-settings.d
+        printf '%s' "$json" | sudo tee "$target" >/dev/null
+        sudo chown root:root "$target"
+        sudo chmod 644 "$target"

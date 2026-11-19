@@ -931,6 +931,12 @@ consumer to audit it.
   before runner isolation; run-claude-cli refuses to run without the file.
   `loopback-base-url` lets the settings pin a loopback key proxy instead of
   the public API (see run-claude-cli's loopback key proxy above).
+  `drop-in-file` and `drop-in-name` instead write one root-owned
+  `/etc/claude-code/managed-settings.d/<drop-in-name>.json` and leave
+  `managed-settings.json` alone. The file may set only `pluginConfigs`, so a
+  drop-in never overrides a key the lane pin owns; a job that runs no Claude
+  CLI can hand a script its plugin options this way, from a default-branch
+  checkout.
 - `.github/actions/install-subprocess-isolation` — every Claude lane's
   bubblewrap and socat install: from the image's package lists first, the
   lists refreshed only when that fails, within one apt budget, failing closed
