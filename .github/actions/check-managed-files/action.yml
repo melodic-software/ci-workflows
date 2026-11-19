@@ -31,7 +31,9 @@ inputs:
     description: >-
       Token that lists the PR's commits in sync and Dependabot modes, and reads
       each queued pull request in a merge_group run. The job needs
-      `pull-requests: read`.
+      `pull-requests: read`. When it is the job token, each of those calls
+      leaves a `github-token` reading in $RUNNER_TEMP/api-budget for the
+      job's own report-api-budget step at its end.
     default: ${{ github.token }}
 
 runs:
@@ -79,9 +81,11 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         HEAD_SHA: ${{ inputs.head-ref }}
+        BUDGET_TOKEN: ${{ inputs.github-token == github.token && 'github-token' || '' }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          require(`${process.env.ACTION_PATH}/../report-api-budget/api-budget.cjs`).watch(github, process.env.BUDGET_TOKEN);
           const { dependabotMode } = require(`${process.env.ACTION_PATH}/sync-commits.cjs`);
           const mode = await dependabotMode({
             github,
@@ -102,9 +106,11 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         HEAD_SHA: ${{ inputs.head-ref }}
+        BUDGET_TOKEN: ${{ inputs.github-token == github.token && 'github-token' || '' }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          require(`${process.env.ACTION_PATH}/../report-api-budget/api-budget.cjs`).watch(github, process.env.BUDGET_TOKEN);
           const verify = require(`${process.env.ACTION_PATH}/sync-commits.cjs`);
           await verify({
             github,
@@ -143,9 +149,11 @@ runs:
         QUEUE_BASE_REF: ${{ github.event.merge_group.base_ref }}
         QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        BUDGET_TOKEN: ${{ inputs.github-token == github.token && 'github-token' || '' }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
+          require(`${process.env.ACTION_PATH}/../report-api-budget/api-budget.cjs`).watch(github, process.env.BUDGET_TOKEN);
           const fs = require("node:fs");
           const path = require("node:path");
           const { resolveMergeGroup } = require(`${process.env.ACTION_PATH}/merge-group.cjs`);
@@ -197,13 +205,16 @@ runs:
         fi
 
     # Self-hosted fleet runners ship no Node, so install the runtime the
-    # standards tree pins instead of relying on the runner image.
+    # standards tree pins instead of relying on the runner image. Not
+    # actions/setup-node: on a tool-cache miss it reads the node-versions
+    # manifest through the GitHub API with the job token (see
+    # setup-pinned-node's README).
     - name: Set up Node
       if: steps.engine.outputs.node == 'true'
-      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-      with:
-        node-version-file: .managed-files-guard-standards/.node-version
-        package-manager-cache: false
+      shell: bash
+      env:
+        VERSION_FILE: ${{ github.workspace }}/.managed-files-guard-standards/.node-version
+      run: bash "$GITHUB_ACTION_PATH/../setup-pinned-node/install-node.sh" "$VERSION_FILE"
 
     - name: Install engine dependencies
       if: steps.engine.outputs.node == 'true'
