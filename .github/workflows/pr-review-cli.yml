@@ -846,6 +846,8 @@ jobs:
           path: ${{ runner.temp }}/key-credit-probing/run-id
           if-no-files-found: error
           retention-days: 7
+          # The code and security lanes of one run share the key's name.
+          overwrite: true
 
       # The job token's api-budget notice, from the readings the gate's
       # requests left. It spends no request.
@@ -2901,6 +2903,8 @@ jobs:
           path: ${{ runner.temp }}/key-credit-stop/run-id
           if-no-files-found: error
           retention-days: 7
+          # The code and security lanes of one run share the key's name.
+          overwrite: true
 
       # END KEY-ONLY
       # The CLI's init message must report the mode asked for; dontAsk may
