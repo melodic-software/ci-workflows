@@ -287,6 +287,15 @@ name: PR Review CLI
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >-
+          Environment for the jobs that read the Claude secrets, such as a
+          main-only claude-lanes environment that holds them. Empty runs
+          them in no environment. A calling job cannot set environment, so
+          the caller names it here and still passes each secret by name
+          (https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+        type: string
+        default: ""
       lane:
         description: "`code` runs /review:code-review, `security` /review:security-review."
         type: string
@@ -862,6 +871,9 @@ jobs:
   review-key:
     name: Review Key
     needs: [check-kill-switch, resolve-pull-request, check-key-credit]
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-
@@ -3596,6 +3608,9 @@ jobs:
   review-subscription:
     name: Review Subscription
     needs: [check-kill-switch, resolve-pull-request, check-key-credit, review-key]
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-
@@ -6301,6 +6316,9 @@ jobs:
   review-fallback:
     name: Review Fallback
     needs: [check-kill-switch, resolve-pull-request, check-key-credit, review-key, review-subscription]
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.lane == 'security' && 346 || 306 }}
     if: >-

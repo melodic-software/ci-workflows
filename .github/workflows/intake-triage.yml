@@ -183,6 +183,15 @@ name: Intake Triage
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >-
+          Environment for the jobs that read the Claude secrets, such as a
+          main-only claude-lanes environment that holds them. Empty runs
+          them in no environment. A calling job cannot set environment, so
+          the caller names it here and still passes each secret by name
+          (https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+        type: string
+        default: ""
       runner:
         description: Runner label selected by the caller's governed selector.
         type: string
@@ -473,6 +482,9 @@ jobs:
   claude:
     name: Claude
     needs: check-key-credit
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ${{ inputs.runner }}
     # The triage step (12 minutes, CLI install included) and runner isolation
     # (12) leave five minutes for checkout, the github-script steps and the
@@ -1279,6 +1291,9 @@ jobs:
       ${{ !cancelled()
           && ((needs.claude.result == 'success' && needs.claude.outputs.next-leg == 'subscription')
               || (needs.claude.result == 'skipped' && needs.check-key-credit.outputs.next-leg == 'subscription')) }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: 29
     # The model's job reads and never writes: the token can read the issue
@@ -2038,6 +2053,9 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.triage-subscription.result == 'success'
           && needs.triage-subscription.outputs.next-leg == 'fallback' }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: 29
     # The model's job reads and never writes: the token can read the issue
