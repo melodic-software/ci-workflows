@@ -304,7 +304,7 @@ test("an extra selected repository is an over-grant finding, not a failed attest
   );
 });
 
-// azure-iac, a trust root, must stay out of the App's reach.
+// azure-iac, a trust root, may be selected only as a manifest target.
 test("an over-grant that reaches azure-iac fails the whole attestation", async () => {
   await assert.rejects(
     runAttestation({

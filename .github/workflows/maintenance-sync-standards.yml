@@ -612,6 +612,126 @@ jobs:
               "$STANDARDS_SHA" "$STANDARDS_SHA"
           } > "$PR_BODY"
 
+      # The tree the PR step will commit: the default branch plus the applied
+      # components, staged into a copy of the checkout's index: .target stays
+      # untouched, and unchanged files are not re-hashed, as in the PR step.
+      - name: Compute the prepared sync tree
+        id: prepared
+        working-directory: .target
+        env:
+          GIT_INDEX_FILE: ${{ runner.temp }}/standards-sync-prepared.index
+        run: |
+          set -euo pipefail
+          cp "$(git rev-parse --absolute-git-dir)/index" "$GIT_INDEX_FILE"
+          git add -A
+          base_sha="$(git rev-parse HEAD)"
+          base_tree="$(git rev-parse 'HEAD^{tree}')"
+          tree="$(git write-tree)"
+          {
+            echo "base-sha=$base_sha"
+            echo "base-tree=$base_tree"
+            echo "tree=$tree"
+          } >> "$GITHUB_OUTPUT"
+
+      # A target whose ruleset refuses this token any update of the sync branch
+      # gets a fresh branch instead: close its open sync PR, delete the branch,
+      # and let the PR step create both anew. It runs only when the PR step
+      # would otherwise write the existing ref, and never force-updates it.
+      - name: Replace the sync branch when the target refuses its update
+        id: replace
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BASE_SHA: ${{ steps.prepared.outputs.base-sha }}
+          BASE_TREE: ${{ steps.prepared.outputs.base-tree }}
+          BRANCH: chore/standards-sync
+          OWNER: ${{ matrix.repo_owner }}
+          PREPARED_TREE: ${{ steps.prepared.outputs.tree }}
+          REPO: ${{ matrix.repo_name }}
+        with:
+          github-token: ${{ steps.token.outputs.token }}
+          script: |
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
+            const branch = process.env.BRANCH;
+            const target = `${owner}/${repo}:${branch}`;
+            core.setOutput('branch-operation', 'kept');
+
+            // The rules endpoint lists the rules on the branch, not whether this
+            // token bypasses them, so an `update` rule means replace, never update.
+            let updateRules;
+            try {
+              const { data: rules } = await github.request(
+                'GET /repos/{owner}/{repo}/rules/branches/{branch}',
+                { owner, repo, branch },
+              );
+              updateRules = rules.filter((rule) => rule.type === 'update');
+            } catch (error) {
+              core.warning(`Could not read the rules on ${target}; updating the branch in place: ${error.message}`);
+              return;
+            }
+            if (updateRules.length === 0) return;
+            const shas = ['BASE_SHA', 'BASE_TREE', 'PREPARED_TREE'];
+            const malformed = shas.filter((name) => !/^[0-9a-f]{40}$/u.test(process.env[name] ?? ''));
+            if (malformed.length > 0) {
+              core.setFailed(`${malformed.join(', ')} for ${target} is not a commit or tree id; nothing was closed or deleted.`);
+              return;
+            }
+            const ruleNames = updateRules
+              .map((rule) => `${rule.ruleset_source} ruleset ${rule.ruleset_id}`)
+              .join(', ');
+
+            let head;
+            try {
+              ({ data: { commit: head } } = await github.rest.repos.getBranch({ owner, repo, branch }));
+            } catch (error) {
+              if (error.status === 404) return;
+              throw error;
+            }
+            // The PR step leaves a branch alone only when it already holds the
+            // prepared tree as one commit on the current default branch.
+            const preparedTree = process.env.PREPARED_TREE;
+            const unchanged = preparedTree !== process.env.BASE_TREE &&
+              head.commit.tree.sha === preparedTree &&
+              head.parents.length === 1 &&
+              head.parents[0].sha === process.env.BASE_SHA;
+            if (unchanged) {
+              core.info(`${target} already holds this sync; leaving it alone.`);
+              return;
+            }
+
+            const { data: pulls } = await github.rest.pulls.list({
+              owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 100,
+            });
+            const syncPulls = pulls.filter((pull) => pull.head?.repo?.full_name === `${owner}/${repo}`);
+            // Delete first: a refused delete then leaves the sync PR open and
+            // its review intact. Deleting a PR's head branch closes the PR; the
+            // explicit close below only confirms it.
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
+            } catch (error) {
+              core.setFailed(`Could not delete ${target}, which ${ruleNames} refuses this token any update of; no PR was closed: ${error.message}`);
+              return;
+            }
+            const closed = [];
+            for (const pull of syncPulls) {
+              try {
+                await github.rest.pulls.update({ owner, repo, pull_number: pull.number, state: 'closed' });
+              } catch (error) {
+                core.warning(`Could not confirm #${pull.number} closed after deleting its head branch: ${error.message}`);
+              }
+              closed.push(`#${pull.number}`);
+            }
+            const closedNote = closed.length > 0 ? `, closing ${closed.join(', ')},` : '';
+            // With nothing left to sync the PR step opens no PR: its `closed`.
+            const operation = preparedTree === process.env.BASE_TREE ? 'closed' : 'replaced';
+            core.setOutput('branch-operation', operation);
+            const next = operation === 'replaced'
+              ? 'for the PR step to create afresh'
+              : 'and no new PR opens, since the default branch already holds this sync';
+            const message = `${operation === 'replaced' ? 'Replaced' : 'Closed'} ${target}: ${ruleNames} refuses this token any update of it, so it was deleted${closedNote} ${next}.`;
+            core.info(message);
+            await core.summary.addRaw(`${message}\n`).write();
+
       - name: Open or update reviewed sync PR
         id: cpr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
