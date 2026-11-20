@@ -6228,9 +6228,11 @@ test("the executables-and-archives step runs on every scoped run and lists each 
   writeAt(
     origin,
     ".gitattributes",
-    "notes/secret.txt working-tree-encoding=UTF-16BE\n",
+    // An unset attribute (`-filter`) rewrites nothing: it passes.
+    "notes/secret.txt working-tree-encoding=UTF-16BE\nnotes/plain.txt -filter\n",
   );
   writeAt(origin, "notes/secret.txt", "hello\n");
+  writeAt(origin, "notes/plain.txt", "hello\n");
   writeAt(origin, "has space/tool.png", zip(1));
   // A text file with a listed extension.
   writeAt(origin, "scripts/build.exe", "echo hi\n");

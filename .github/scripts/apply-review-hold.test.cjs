@@ -466,7 +466,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       KEY_REVIEW: "",
       OPAQUE: "2",
       OPAQUE_FILES: files,
-      SCOPED: "success,,",
+      LEG_RESULTS: "success,skipped,skipped",
     }),
     { files: ["tools/run"] },
   );
@@ -488,7 +488,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       }),
       OPAQUE: "2",
       OPAQUE_FILES: files,
-      SCOPED: "success,,",
+      LEG_RESULTS: "success,skipped,skipped",
     }),
     { files: ["tools/run"] },
   );
@@ -505,12 +505,19 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       {
         OPAQUE: "1",
         OPAQUE_FILES: `tools/run\t${SUM}\tELF`,
-        SCOPED: "success,,",
+        LEG_RESULTS: "success,skipped,skipped",
       },
     ],
-    ["an error", { OPAQUE: "error", SCOPED: "success,," }],
-    ["one short", { OPAQUE: "3", OPAQUE_FILES: files, SCOPED: "success,," }],
-    ["no count", { OPAQUE: "", SCOPED: "success,," }],
+    ["an error", { OPAQUE: "error", LEG_RESULTS: "success,skipped,skipped" }],
+    [
+      "one short",
+      {
+        OPAQUE: "3",
+        OPAQUE_FILES: files,
+        LEG_RESULTS: "success,skipped,skipped",
+      },
+    ],
+    ["no count", { OPAQUE: "", LEG_RESULTS: "success,skipped,skipped" }],
   ]) {
     const held = await apply(
       baseEnv({ KEY_REVIEW: "", KEY_FAILED: "true", ...extra }),
@@ -529,17 +536,35 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
       OPAQUE: "2",
       OPAQUE_FILES: files,
-      SCOPED: "failure,,",
+      LEG_RESULTS: "success,skipped,skipped",
       HELD: "true",
     }),
     { files: ["tools/run"] },
   );
   assert.equal(held.core.outputs.criteria, "binary-artifact");
+  // A held, failed or cancelled run with no count labels nothing; the next
+  // run checks again.
+  for (const [what, extra] of [
+    [
+      "held error",
+      { OPAQUE: "error", LEG_RESULTS: "success,skipped,skipped", HELD: "true" },
+    ],
+    ["cancelled", { OPAQUE: "", LEG_RESULTS: "cancelled,skipped,skipped" }],
+    ["failed", { OPAQUE: "error", LEG_RESULTS: "failure,skipped,skipped" }],
+  ]) {
+    const quiet = await apply(
+      baseEnv({ KEY_REVIEW: "", KEY_FAILED: "true", ...extra }),
+      {
+        files: ["tools/run"],
+      },
+    );
+    assert.deepEqual(quiet.writes, [], what);
+  }
   // None found, or no leg scoped the pull request: no binary hold; and a
   // model that returns binary-artifact itself holds nothing.
   for (const [what, extra] of [
-    ["none", { OPAQUE: "none", SCOPED: "success,," }],
-    ["unscoped", { OPAQUE: "", SCOPED: "skipped,," }],
+    ["none", { OPAQUE: "none", LEG_RESULTS: "success,skipped,skipped" }],
+    ["unscoped", { OPAQUE: "", LEG_RESULTS: "skipped,skipped,skipped" }],
     [
       "model",
       {
@@ -547,7 +572,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
           hold: { criteria: ["binary-artifact"], reason: "R" },
         }),
         OPAQUE: "none",
-        SCOPED: "success,,",
+        LEG_RESULTS: "success,skipped,skipped",
       },
     ],
   ]) {

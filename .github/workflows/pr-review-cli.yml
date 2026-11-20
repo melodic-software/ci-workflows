@@ -968,7 +968,6 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
-      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -2154,7 +2153,7 @@ jobs:
               # the blob read here.
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
-                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+                if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi
               fi
             fi
             [ -n "$why" ] || continue
@@ -3981,7 +3980,6 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
-      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -5168,7 +5166,7 @@ jobs:
               # the blob read here.
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
-                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+                if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi
               fi
             fi
             [ -n "$why" ] || continue
@@ -6965,7 +6963,6 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
-      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -8152,7 +8149,7 @@ jobs:
               # the blob read here.
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
-                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+                if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi
               fi
             fi
             [ -n "$why" ] || continue
@@ -10134,9 +10131,10 @@ jobs:
           # first leg that ran it: the hold stands without the review.
           OPAQUE: ${{ needs.review-key.outputs.opaque || needs.review-subscription.outputs.opaque || needs.review-fallback.outputs.opaque }}
           OPAQUE_FILES: ${{ needs.review-key.outputs.opaque && needs.review-key.outputs.opaque-files || needs.review-subscription.outputs.opaque && needs.review-subscription.outputs.opaque-files || needs.review-fallback.outputs.opaque-files }}
-          # Each leg's scope step outcome: a leg that ran it and has no count
-          # failed to check, which holds.
-          SCOPED: ${{ needs.review-key.outputs.scoped }},${{ needs.review-subscription.outputs.scoped }},${{ needs.review-fallback.outputs.scoped }}
+          # Each leg job's result: a count of `error`, or none, holds only when
+          # a leg succeeded and none held; a held, failed or cancelled run
+          # leaves no completed review, and the next run checks again.
+          LEG_RESULTS: ${{ needs.review-key.result }},${{ needs.review-subscription.result }},${{ needs.review-fallback.result }}
           # A held leg's verdict is unknown: only the binary hold applies.
           HELD: ${{ steps.held.outcome == 'success' && 'true' || '' }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
