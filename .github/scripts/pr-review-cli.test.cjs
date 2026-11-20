@@ -6256,6 +6256,7 @@ test("the executables-and-archives step runs on every scoped run and lists each 
   git(origin, "commit", "--quiet", "-m", "head");
   const head = git(origin, "rev-parse", "HEAD");
   const expected = [
+    [".gitattributes", "checkout attribute rule"],
     ["assets/model.bin", "Git LFS pointer"],
     ["assets/old.bin", "Git LFS pointer"],
     ["has space/tool.png", "zip"],

@@ -2150,7 +2150,12 @@ jobs:
               esac
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
-              # the blob read here.
+              # the blob read here. A .gitattributes that sets either is held
+              # itself, since it can rewrite files this pull request does not
+              # change.
+              if [ -z "$why" ] && [ "$name" = .gitattributes ] && grep -qE '(^|[[:space:]])(filter|working-tree-encoding)=' "$opaque_blob"; then
+                why='checkout attribute rule'
+              fi
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
                 if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi
@@ -5163,7 +5168,12 @@ jobs:
               esac
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
-              # the blob read here.
+              # the blob read here. A .gitattributes that sets either is held
+              # itself, since it can rewrite files this pull request does not
+              # change.
+              if [ -z "$why" ] && [ "$name" = .gitattributes ] && grep -qE '(^|[[:space:]])(filter|working-tree-encoding)=' "$opaque_blob"; then
+                why='checkout attribute rule'
+              fi
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
                 if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi
@@ -8146,7 +8156,12 @@ jobs:
               esac
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
-              # the blob read here.
+              # the blob read here. A .gitattributes that sets either is held
+              # itself, since it can rewrite files this pull request does not
+              # change.
+              if [ -z "$why" ] && [ "$name" = .gitattributes ] && grep -qE '(^|[[:space:]])(filter|working-tree-encoding)=' "$opaque_blob"; then
+                why='checkout attribute rule'
+              fi
               if [ -z "$why" ]; then
                 attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
                 if grep -qvxE 'unspecified|unset' <<< "$attrs"; then why='checkout attribute'; fi

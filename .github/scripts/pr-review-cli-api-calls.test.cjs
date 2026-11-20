@@ -705,6 +705,7 @@ test("the hold reads no file list, with or without the scope list", async () => 
         KEY_CLASS: "",
         KEY_VERDICT: "complete",
         KEY_REVIEW: JSON.stringify(NONE),
+        OPAQUE: "none",
       },
     });
     assert.equal(outputs.hold, "false");

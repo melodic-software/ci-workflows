@@ -353,6 +353,8 @@ const baseEnv = (extra = {}) => ({
   KEY_CLASS: "",
   KEY_VERDICT: "complete",
   KEY_REVIEW: review(),
+  // No executable or archive changed.
+  OPAQUE: "none",
   ...extra,
 });
 
@@ -564,7 +566,15 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
   // model that returns binary-artifact itself holds nothing.
   for (const [what, extra] of [
     ["none", { OPAQUE: "none", LEG_RESULTS: "success,skipped,skipped" }],
-    ["unscoped", { OPAQUE: "", LEG_RESULTS: "skipped,skipped,skipped" }],
+    [
+      "unscoped",
+      {
+        OPAQUE: "",
+        LEG_RESULTS: "skipped,skipped,skipped",
+        KEY_REVIEW: "",
+        KEY_FAILED: "true",
+      },
+    ],
     [
       "model",
       {

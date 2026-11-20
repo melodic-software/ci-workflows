@@ -47,8 +47,8 @@ function modelHold(env, core) {
 // whatever the model returned and whether the review completed. OPAQUE is
 // `none`, a count, or `error`; OPAQUE_FILES up to 10 `<path>\t<sha256>\t<why>`
 // lines. A count always holds. `error`, or no count, holds only when a leg
-// job succeeded (LEG_RESULTS, each leg's result, comma-separated) and none
-// held (HELD): that run could otherwise let the pull request through
+// job succeeded (LEG_RESULTS, each leg's result, comma-separated) or the
+// counted leg's review is ok, and none held (HELD): that run could otherwise let the pull request through
 // unchecked. A held, failed or cancelled run leaves no completed review, and
 // the next run checks again, so it labels nothing a person must remove.
 const SHOWN = 10;
@@ -59,7 +59,8 @@ function binaryHold(env) {
   const succeeded = String(env.LEG_RESULTS ?? "")
     .split(",")
     .includes("success");
-  if (!counted && (env.HELD || !succeeded)) return null;
+  // A counted leg whose review is ok would publish: with no count, it holds.
+  if (!counted && (env.HELD || (!succeeded && !judge(env).ok))) return null;
   const rows = counted
     ? String(env.OPAQUE_FILES ?? "")
         .split("\n")
