@@ -5978,6 +5978,20 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     "fonts/long.ttf",
     Buffer.concat([polyglot, Buffer.from(`${"x".repeat(80)}\n`.repeat(250))]),
   );
+  // Runs of exactly the cap plus their newline: full --text, not a cut.
+  writeAt(
+    origin,
+    "fonts/edge.ttf",
+    Buffer.concat([
+      Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00]),
+      Buffer.from(`${"y".repeat(16384)}\n`),
+    ]),
+  );
+  // A link the head commits where a scratch file could go is never written.
+  const target = path.join(dir, "link-target");
+  fs.writeFileSync(target, "untouched\n");
+  fs.mkdirSync(path.join(origin, ".claude-lane"), { recursive: true });
+  fs.symlinkSync(target, path.join(origin, ".claude-lane/media-blob"));
   // A root path with no dot named like an extension is no media file.
   writeAt(origin, "png", png);
   writeAt(origin, "held/rain.wav", wav(3));
@@ -6093,6 +6107,8 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
       job.name,
     );
     assert.match(section("png"), /^\+/mu, job.name);
+    assert.match(section("fonts/edge.ttf"), /^\+.*y{16384}$/mu, job.name);
+    assert.equal(fs.readFileSync(target, "utf8"), "untouched\n", job.name);
     const media = fs.readFileSync(
       path.join(work, ".claude-lane/media-files.txt"),
       "utf8",
@@ -6114,7 +6130,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.match(media, /\tblob [0-9a-f]{40}$/mu, job.name);
     // Each media file still counts as a changed file in scope, the deletion excepted.
-    assert.match(out, /^files=12$/mu, job.name);
+    assert.match(out, /^files=14$/mu, job.name);
     assert.match(
       out,
       /6 media file\(s\) are in the diff by their section header only/u,

@@ -1667,7 +1667,8 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
-          media_blob=.claude-lane/media-blob
+          # Outside the checkout, so no link the head commits can redirect it.
+          media_blob="$(mktemp)"
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
@@ -1709,7 +1710,9 @@ jobs:
             rc=0
             runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
             [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
-            [ "${#runs}" -le 16384 ] || continue
+            # $(...) drops the last newline, so a cut at 16385 bytes reads as
+            # 16384: only fewer than 16384 is all of the runs.
+            [ "${#runs}" -lt 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
@@ -4516,7 +4519,8 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
-          media_blob=.claude-lane/media-blob
+          # Outside the checkout, so no link the head commits can redirect it.
+          media_blob="$(mktemp)"
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
@@ -4558,7 +4562,9 @@ jobs:
             rc=0
             runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
             [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
-            [ "${#runs}" -le 16384 ] || continue
+            # $(...) drops the last newline, so a cut at 16385 bytes reads as
+            # 16384: only fewer than 16384 is all of the runs.
+            [ "${#runs}" -lt 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
@@ -7335,7 +7341,8 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
-          media_blob=.claude-lane/media-blob
+          # Outside the checkout, so no link the head commits can redirect it.
+          media_blob="$(mktemp)"
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
@@ -7377,7 +7384,9 @@ jobs:
             rc=0
             runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
             [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
-            [ "${#runs}" -le 16384 ] || continue
+            # $(...) drops the last newline, so a cut at 16385 bytes reads as
+            # 16384: only fewer than 16384 is all of the runs.
+            [ "${#runs}" -lt 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
