@@ -428,6 +428,18 @@ on:
           SENSITIVE_PATHS match. Empty, none does.
         type: string
         default: ""
+      media-paths:
+        description: >-
+          Repository path of a file of globs, one per line (globbed as
+          hold-paths; blank lines and `#` comments skipped), naming where media
+          files live. It is read at the merge base, never the head. A changed
+          audio, image, video or font file under one of them, whose extension
+          and magic bytes name the same type, is shown by its diff header and
+          its printable text instead of its bytes; any other file keeps its
+          --text section. Empty, or a file the merge base does not hold, names
+          none.
+        type: string
+        default: ""
       generated-data:
         description: >-
           Repository path of a file of paths or globs, one per line (globbed
@@ -1471,6 +1483,7 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          MEDIA_PATHS: ${{ inputs.media-paths }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           SINCE: ${{ steps.scope.outputs.since }}
           SCOPE_LIST: .claude-lane/incremental-files.txt
@@ -1652,8 +1665,15 @@ jobs:
           # entry carrying its old path too, so both leave the --text diff and
           # it comes back as the one rename section the split step's
           # verified-renames rule expects.
-          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
-            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
+          # Only under the media-paths globs the merge base declares, so the
+          # head cannot choose which of its own files leave the --text diff.
+          declared=''
+          if [ -n "$MEDIA_PATHS" ] && ! declared="$(git cat-file blob "$base:$MEDIA_PATHS")"; then
+            echo "::warning::The merge base holds no media-paths file at $MEDIA_PATHS; no media file is declared."
+            declared=''
+          fi
+          [ -z "$declared" ] || mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | DECLARED="$declared" awk -F '\t' "$globs"'
+            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive); d = globs(ENVIRON["DECLARED"], media) }
             { split($1, f, " "); blob = ""; old = "" }
             s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
             NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
@@ -1662,6 +1682,8 @@ jobs:
             NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
             NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
+            { in_new = 0; in_old = old == ""; for (i = 1; i <= d; i++) { if ($NF ~ media[i]) in_new = 1; if (old != "" && old ~ media[i]) in_old = 1 } }
+            !in_new || !in_old { next }
             { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
               for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
@@ -4323,6 +4345,7 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          MEDIA_PATHS: ${{ inputs.media-paths }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           SINCE: ${{ steps.scope.outputs.since }}
           SCOPE_LIST: .claude-lane/incremental-files.txt
@@ -4504,8 +4527,15 @@ jobs:
           # entry carrying its old path too, so both leave the --text diff and
           # it comes back as the one rename section the split step's
           # verified-renames rule expects.
-          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
-            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
+          # Only under the media-paths globs the merge base declares, so the
+          # head cannot choose which of its own files leave the --text diff.
+          declared=''
+          if [ -n "$MEDIA_PATHS" ] && ! declared="$(git cat-file blob "$base:$MEDIA_PATHS")"; then
+            echo "::warning::The merge base holds no media-paths file at $MEDIA_PATHS; no media file is declared."
+            declared=''
+          fi
+          [ -z "$declared" ] || mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | DECLARED="$declared" awk -F '\t' "$globs"'
+            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive); d = globs(ENVIRON["DECLARED"], media) }
             { split($1, f, " "); blob = ""; old = "" }
             s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
             NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
@@ -4514,6 +4544,8 @@ jobs:
             NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
             NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
+            { in_new = 0; in_old = old == ""; for (i = 1; i <= d; i++) { if ($NF ~ media[i]) in_new = 1; if (old != "" && old ~ media[i]) in_old = 1 } }
+            !in_new || !in_old { next }
             { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
               for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
@@ -7145,6 +7177,7 @@ jobs:
           HOLD_PATHS: ${{ inputs.hold-paths }}
           GENERATED_COPIES: ${{ inputs.generated-copies }}
           GENERATED_DATA: ${{ inputs.generated-data }}
+          MEDIA_PATHS: ${{ inputs.media-paths }}
           SCOPE: ${{ steps.scope.outputs.scope }}
           SINCE: ${{ steps.scope.outputs.since }}
           SCOPE_LIST: .claude-lane/incremental-files.txt
@@ -7326,8 +7359,15 @@ jobs:
           # entry carrying its old path too, so both leave the --text diff and
           # it comes back as the one rename section the split step's
           # verified-renames rule expects.
-          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
-            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
+          # Only under the media-paths globs the merge base declares, so the
+          # head cannot choose which of its own files leave the --text diff.
+          declared=''
+          if [ -n "$MEDIA_PATHS" ] && ! declared="$(git cat-file blob "$base:$MEDIA_PATHS")"; then
+            echo "::warning::The merge base holds no media-paths file at $MEDIA_PATHS; no media file is declared."
+            declared=''
+          fi
+          [ -z "$declared" ] || mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | DECLARED="$declared" awk -F '\t' "$globs"'
+            BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive); d = globs(ENVIRON["DECLARED"], media) }
             { split($1, f, " "); blob = ""; old = "" }
             s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
             NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
@@ -7336,6 +7376,8 @@ jobs:
             NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
             NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
+            { in_new = 0; in_old = old == ""; for (i = 1; i <= d; i++) { if ($NF ~ media[i]) in_new = 1; if (old != "" && old ~ media[i]) in_old = 1 } }
+            !in_new || !in_old { next }
             { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
               for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()

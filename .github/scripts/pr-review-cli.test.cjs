@@ -5946,6 +5946,11 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
   writeAt(origin, "src/a.js", "a1\n");
   writeAt(origin, "sounds/old.wav", wav(1));
   writeAt(origin, "img/move-me.png", pngOf(6));
+  writeAt(
+    origin,
+    "scripts/media.txt",
+    "# media folders\nsounds/**\nimg/**\nfonts/**\nheld/**\nbin/**\npng\n",
+  );
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "base");
   const base = git(origin, "rev-parse", "HEAD");
@@ -5996,6 +6001,14 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
   writeAt(origin, "png", png);
   writeAt(origin, "held/rain.wav", wav(3));
   writeAt(origin, "bin/run.wav", wav(4));
+  // A recording outside the declared folders, and a head-only edit to the
+  // list that would declare it: the head cannot choose its own media files.
+  writeAt(origin, "other/clip.wav", wav(7));
+  writeAt(
+    origin,
+    "scripts/media.txt",
+    "sounds/**\nimg/**\nfonts/**\nheld/**\nbin/**\npng\nother/**\n",
+  );
   // The head asks for its recordings to be diffed as text.
   writeAt(origin, ".gitattributes", "*.wav diff\n");
   fs.rmSync(path.join(origin, "sounds/old.wav"));
@@ -6029,6 +6042,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
         SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
         GENERATED_COPIES: "",
         GENERATED_DATA: "",
+        MEDIA_PATHS: "scripts/media.txt",
         DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
       },
     });
@@ -6083,6 +6097,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.ok(section("held/rain.wav").length > 400000, job.name);
     assert.ok(section("bin/run.wav").length > 400000, job.name);
+    assert.ok(section("other/clip.wav").length > 400000, job.name);
     // The polyglot font is header-only, but its text is printed behind "| ".
     const brand = section("fonts/brand.ttf");
     assert.match(brand, /^Binary files .* differ$/mu, job.name);
@@ -6130,7 +6145,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.match(media, /\tblob [0-9a-f]{40}$/mu, job.name);
     // Each media file still counts as a changed file in scope, the deletion excepted.
-    assert.match(out, /^files=14$/mu, job.name);
+    assert.match(out, /^files=16$/mu, job.name);
     assert.match(
       out,
       /6 media file\(s\) are in the diff by their section header only/u,
