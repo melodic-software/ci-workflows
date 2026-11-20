@@ -348,6 +348,9 @@ async function spend({
         );
   const keySteps = {
     scope: { outputs: scopeOutputs },
+    // No executable or archive changed. The step reads its merge base from
+    // the full-diff or scope step and spends no request then.
+    opaque: { outputs: { count: "none" } },
     claude: { outputs: {} },
     credential: { outputs: { present: "true" } },
     "review-outcome": { outputs: { "review-failed": "false" } },

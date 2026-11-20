@@ -1065,7 +1065,7 @@ test("each pull request value reads the resolve-pull-request job's output with p
   // Each leg read the event 17 times (checkout, scope 4, full diff 2,
   // context, settled threads 4, prior findings 2, compose 2, handoff
   // upload); the status job 8 (download, hold note, publish 3, hold 3).
-  assert.equal(seen, 3 * 17 + 8);
+  assert.equal(seen, 3 * 19 + 8);
 });
 
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
@@ -2116,7 +2116,6 @@ async function extract(files, env = {}, job = key) {
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
-    OPAQUE: "0",
     ...env,
   };
   const summary = { addRaw: () => summary, write: async () => {} };
@@ -6155,7 +6154,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
   }
 });
 
-test("the full-diff step lists every changed executable and archive the base's allowlist does not name, in every leg", () => {
+test("the executables-and-archives step runs on every scoped run and lists each changed one the base's allowlist does not name, in every leg", () => {
   const { dir, origin } = originRepo("pr-review-cli-opaque-");
   const sha256 = (bytes) =>
     require("node:crypto").createHash("sha256").update(bytes).digest("hex");
@@ -6168,6 +6167,10 @@ test("the full-diff step lists every changed executable and archive the base's a
       Buffer.from([0x50, 0x4b, 0x03, 0x04]),
       Buffer.alloc(200, seed),
     ]);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(3000, 9),
+  ]);
   // A tar is named only by `ustar` at offset 257.
   const tar = Buffer.alloc(1024, 0);
   tar.write("hello.txt", 0);
@@ -6187,7 +6190,6 @@ test("the full-diff step lists every changed executable and archive the base's a
     "scripts/allow.txt",
     `# allowed\n${sha256(allowed)}  vendor/ok.zip\n${sha256(zip(4))} *vendor/wrong.zip\n`,
   );
-  writeAt(origin, "scripts/data.txt", "data/**\n");
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "base");
   const base = git(origin, "rev-parse", "HEAD");
@@ -6195,6 +6197,27 @@ test("the full-diff step lists every changed executable and archive the base's a
   writeAt(origin, "tools/run.txt", elf);
   writeAt(origin, "pkg/x.dat", tar);
   writeAt(origin, "pkg/big.log", big);
+  writeAt(
+    origin,
+    "pkg/thing",
+    Buffer.from("!<arch>\nfoo.o/  0  0  0  644  4  `\n"),
+  );
+  writeAt(
+    origin,
+    "assets/model.bin",
+    "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 12\n",
+  );
+  // An image with a zip appended is held; a plain image passes.
+  writeAt(
+    origin,
+    "img/shot.png",
+    Buffer.concat([
+      png,
+      Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+      Buffer.alloc(18),
+    ]),
+  );
+  writeAt(origin, "img/plain.png", png);
   writeAt(origin, "has space/tool.png", zip(1));
   // A text file with a listed extension.
   writeAt(origin, "scripts/build.exe", "echo hi\n");
@@ -6207,8 +6230,6 @@ test("the full-diff step lists every changed executable and archive the base's a
     path.join(origin, "scripts/allow.txt"),
     `${sha256(zip(6))}  vendor/head.zip\n`,
   );
-  // Under a generated-data glob: still checked.
-  writeAt(origin, "data/blob.json", zip(2));
   // A symlink turned into an archive.
   fs.rmSync(path.join(origin, "lib/link"));
   writeAt(origin, "lib/link", zip(7));
@@ -6219,65 +6240,74 @@ test("the full-diff step lists every changed executable and archive the base's a
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "head");
   const head = git(origin, "rev-parse", "HEAD");
+  const expected = [
+    ["assets/model.bin", "Git LFS pointer"],
+    ["has space/tool.png", "zip"],
+    ["img/shot.png", "zip appended"],
+    ["lib/link", "zip"],
+    ["move/new.bin", "zip"],
+    ["pkg/big.log", "gzip"],
+    ["pkg/thing", "ar archive"],
+    ["pkg/x.dat", "tar"],
+    ["scripts/build.exe", "extension .exe"],
+    ["tools/run.txt", "ELF"],
+    ["vendor/head.zip", "zip"],
+    ["vendor/wrong.zip", "zip"],
+  ];
   for (const job of [key, subscription, fallback]) {
-    const fullDiff = step(job, "full-diff");
+    const opaque = step(job, "opaque");
+    // It runs on a docs-only or no-change skip too, and the full-diff step
+    // no longer checks.
     assert.equal(
-      fullDiff.env.BINARY_ALLOWLIST,
+      opaque.if,
+      "always() && steps.scope.outcome == 'success'",
+      job.name,
+    );
+    assert.equal(
+      opaque.env.BINARY_ALLOWLIST,
       `\${{ inputs.binary-allowlist }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "full-diff").env.BINARY_ALLOWLIST,
+      undefined,
+      job.name,
+    );
+    assert.equal(
+      job.outputs.opaque,
+      `\${{ steps.opaque.outputs.count }}`,
       job.name,
     );
     const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
     git(dir, "clone", "--quiet", origin, work);
-    // A link the head plants where the list goes is replaced, never followed.
-    const target = path.join(dir, `target-${job.name}`);
-    fs.writeFileSync(target, "untouched\n");
-    fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
-    fs.symlinkSync(target, path.join(work, ".claude-lane/opaque-files.txt"));
     const output = `${work}.out`;
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        HOME: dir,
-        GH_TOKEN: "test-token",
-        GITHUB_SERVER_URL: "https://github.invalid",
-        GITHUB_OUTPUT: output,
-        MERGE_BASE: base,
-        HEAD_SHA: head,
-        DIFF_FILE: fullDiff.env.DIFF_FILE,
-        FILE_LIST: fullDiff.env.FILE_LIST,
-        HOLD_PATHS: "",
-        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
-        GENERATED_COPIES: "",
-        GENERATED_DATA: "scripts/data.txt",
-        MEDIA_PATHS: "",
-        BINARY_ALLOWLIST: "scripts/allow.txt",
-        DATA_FLOOR_BYTES: "0",
-      },
-    });
+    const run = (env) =>
+      spawnSync("bash", ["-e", "-c", opaque.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          BINARY_ALLOWLIST: "scripts/allow.txt",
+          ...env,
+        },
+      });
+    const result = run({});
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(fs.readFileSync(target, "utf8"), "untouched\n", job.name);
-    const rows = fs
-      .readFileSync(path.join(work, ".claude-lane/opaque-files.txt"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => line.split("\t"))
-      .sort((a, b) => a[0].localeCompare(b[0]));
+    const out = fs.readFileSync(output, "utf8");
+    assert.match(out, new RegExp(`^count=${expected.length}$`, "mu"), job.name);
+    const files = /^files<<(EOF_[0-9a-f]{16})\n([\s\S]*?)\n\1$/mu.exec(out);
+    assert.ok(files, job.name);
+    const rows = files[2].split("\n").map((line) => line.split("\t"));
+    // Up to 10, in git's path order.
     assert.deepEqual(
       rows.map(([p, , why]) => [p, why]),
-      [
-        ["data/blob.json", "zip"],
-        ["has space/tool.png", "zip"],
-        ["lib/link", "zip"],
-        ["move/new.bin", "zip"],
-        ["pkg/big.log", "gzip"],
-        ["pkg/x.dat", "tar"],
-        ["scripts/build.exe", "extension .exe"],
-        ["tools/run.txt", "ELF"],
-        ["vendor/head.zip", "zip"],
-        ["vendor/wrong.zip", "zip"],
-      ],
+      expected.slice(0, 10),
       job.name,
     );
     assert.equal(
@@ -6285,89 +6315,16 @@ test("the full-diff step lists every changed executable and archive the base's a
       sha256(elf),
       job.name,
     );
-    const out = fs.readFileSync(output, "utf8");
-    assert.match(out, /^opaque=10$/mu, job.name);
+    // A merge base it cannot read holds as an error.
+    fs.rmSync(output);
+    const broken = run({ MERGE_BASE: "f".repeat(40) });
+    assert.equal(broken.status, 0, broken.stderr);
+    assert.match(fs.readFileSync(output, "utf8"), /^count=error$/mu, job.name);
+    // Nothing changed: none.
+    fs.rmSync(output);
+    assert.equal(run({ HEAD_SHA: base }).status, 0);
+    assert.match(fs.readFileSync(output, "utf8"), /^count=none$/mu, job.name);
   }
-});
-
-test("the extract step adds the job's binary-artifact hold to the model's, and holds on a count it cannot back", async () => {
-  const dir = makeTemporaryDirectory("pr-review-cli-extract-opaque-");
-  const list = (name, text) => {
-    fs.writeFileSync(path.join(dir, name), text);
-    return path.join(dir, name);
-  };
-  const review = (hold) =>
-    JSON.stringify({
-      findings: 0,
-      files_read: 1,
-      summary: "S",
-      comments: [],
-      ...(hold ? { hold } : {}),
-    });
-  const SUM = "a".repeat(64);
-  const OPAQUE_LIST = list(
-    "ok.txt",
-    `tools/run\t${SUM}\tELF\nodd\`name\t${SUM}\tzip\n`,
-  );
-  const alone = await extract(
-    { structured: review() },
-    { OPAQUE: "2", OPAQUE_LIST },
-  );
-  assert.equal(alone.verdict, "complete");
-  const held = JSON.parse(alone.review).hold;
-  assert.deepEqual(held.criteria, ["binary-artifact"]);
-  assert.match(
-    held.reason,
-    /^2 changed file\(s\) are executables or archives/u,
-  );
-  assert.match(held.reason, /allowlist file on the base branch/u);
-  assert.match(
-    held.reason,
-    new RegExp(`^\`tools/run\` \\(ELF, sha256 ${SUM}\\)$`, "mu"),
-  );
-  assert.match(held.reason, /^a file with an unusual path \(zip/mu);
-  const both = await extract(
-    { structured: review({ criteria: ["cost"], reason: "Adds a runner." }) },
-    { OPAQUE: "2", OPAQUE_LIST },
-  );
-  const merged = JSON.parse(both.review).hold;
-  assert.deepEqual(merged.criteria, ["cost", "binary-artifact"]);
-  assert.match(merged.reason, /\nAdds a runner\.$/u);
-  // An incremental review holds too: the full-diff step reads the whole pull request.
-  const incremental = await extract(
-    { structured: review() },
-    { OPAQUE: "2", OPAQUE_LIST, SCOPE: "incremental", SCOPE_FILES: "1" },
-  );
-  assert.deepEqual(JSON.parse(incremental.review).hold.criteria, [
-    "binary-artifact",
-  ]);
-  // No count, an error, a count the list cannot back, or a list that is a
-  // link: held, naming no file.
-  fs.symlinkSync(OPAQUE_LIST, path.join(dir, "link.txt"));
-  for (const [what, env] of [
-    ["no count", { OPAQUE: "" }],
-    ["an error", { OPAQUE: "error", OPAQUE_LIST }],
-    ["one short", { OPAQUE: "3", OPAQUE_LIST }],
-    ["a link", { OPAQUE: "2", OPAQUE_LIST: path.join(dir, "link.txt") }],
-  ]) {
-    const unnamed = JSON.parse(
-      (await extract({ structured: review() }, env)).review,
-    ).hold;
-    assert.deepEqual(unnamed.criteria, ["binary-artifact"], what);
-    assert.match(unnamed.reason, /^The job could not name/u, what);
-  }
-  // None found: the model's hold, or none, as before.
-  assert.equal(
-    JSON.parse(
-      (await extract({ structured: review() }, { OPAQUE: "0" })).review,
-    ).hold,
-    undefined,
-  );
-  // The model cannot raise binary-artifact itself.
-  const forged = await extract({
-    structured: review({ criteria: ["binary-artifact"], reason: "R" }),
-  });
-  assert.equal(forged.verdict, "the review's hold is malformed");
 });
 
 test("the extract step names a whole review's binary files and changes no count", async () => {

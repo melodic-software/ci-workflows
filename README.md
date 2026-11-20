@@ -1941,16 +1941,20 @@ with:
 ```
 
 **Executables and archives.** Every changed regular file whose first bytes
-name an executable or archive (ELF, PE, Mach-O, Java class, WebAssembly, zip,
-gzip, xz, bzip2, 7z, zstd, rar, tar), or whose extension is one
+name an executable or archive (ELF, PE, Mach-O, Java class, WebAssembly, DEX,
+Lua bytecode, zip, gzip, xz, bzip2, 7z, zstd, rar, lz4, lzip, compress, ar,
+cpio, tar, CAB, xar, OLE), that ends in a zip directory, that is a Git LFS
+pointer, or whose extension
 [OpenSSF Scorecard's Binary-Artifacts check](https://github.com/ossf/scorecard/blob/main/docs/checks.md#binary-artifacts)
 lists, holds the pull request for a person with `hold-label`, criterion
-`binary-artifact`, whatever the model returns. The `binary-allowlist` input is
-a repository path to a file in `sha256sum` format, read at the merge base: a
+`binary-artifact`. The check runs on every run that scopes the pull request,
+docs-only and no-change skips included, and the hold applies whatever the
+review returns or whether it completes. The `binary-allowlist` input is a
+repository path to a file in `sha256sum` format, read at the merge base: a
 file passes when a `<sha256>  <path>` line names its path and the SHA-256 of
 its bytes at the head. A pull request cannot list its own file; a separate one
-adds the line first. `.claude-lane/opaque-files.txt` names each held file, its
-SHA-256 and why.
+adds the line first. The hold comment names up to 10 held files with their
+SHA-256.
 
 ```yaml
 with:
@@ -1981,7 +1985,7 @@ chunk for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
-for the ceiling (306 or 346 minutes, under the 6-hour job limit) and every
+for the ceiling (309 or 349 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one
