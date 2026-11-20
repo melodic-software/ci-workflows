@@ -1575,7 +1575,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   before. With `hold-label` set, comments mode also holds the
   pull request for a person: when the review returns a `hold` with criterion
   `cost` (only a change that can cause a real charge, as the compose step's
-  prompt lists) or `critical-security`, and a reason, the status job adds
+  prompt lists) or `critical-security`, and a reason, or when a changed
+  executable or archive is not on the `binary-allowlist` file the merge base
+  holds (path and SHA-256; criterion `binary-artifact`, added by the job,
+  never the model), the status job adds
   that label and one
   `<!-- claude-lane-hold lane=<lane> sha=<head> criteria=<list> -->`
   comment through `.github/actions/apply-review-hold`. It never removes a
@@ -1935,6 +1938,23 @@ the read budget.
 ```yaml
 with:
   media-paths: scripts/review-media-paths.txt
+```
+
+**Executables and archives.** Every changed regular file whose first bytes
+name an executable or archive (ELF, PE, Mach-O, Java class, WebAssembly, zip,
+gzip, xz, bzip2, 7z, zstd, rar, tar), or whose extension is one
+[OpenSSF Scorecard's Binary-Artifacts check](https://github.com/ossf/scorecard/blob/main/docs/checks.md#binary-artifacts)
+lists, holds the pull request for a person with `hold-label`, criterion
+`binary-artifact`, whatever the model returns. The `binary-allowlist` input is
+a repository path to a file in `sha256sum` format, read at the merge base: a
+file passes when a `<sha256>  <path>` line names its path and the SHA-256 of
+its bytes at the head. A pull request cannot list its own file; a separate one
+adds the line first. `.claude-lane/opaque-files.txt` names each held file, its
+SHA-256 and why.
+
+```yaml
+with:
+  binary-allowlist: scripts/review-binary-allowlist.txt
 ```
 
 **Binary files.** A whole review names the files in scope that

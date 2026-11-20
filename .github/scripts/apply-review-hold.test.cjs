@@ -478,6 +478,16 @@ test("a model trust-gate criterion alone holds nothing; the others still hold", 
   );
   assert.equal(security.core.outputs.criteria, "critical-security");
   assert.match(security.writes[1][1].body, /criteria=critical-security -->/u);
+  const binary = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["binary-artifact"], reason: "R" },
+      }),
+    }),
+    { files: ["CODEOWNERS"] },
+  );
+  assert.equal(binary.core.outputs.criteria, "binary-artifact");
+  assert.match(binary.writes[1][1].body, /criteria=binary-artifact -->/u);
   const cost = await apply(
     baseEnv({
       KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),

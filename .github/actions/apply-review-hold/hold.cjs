@@ -18,10 +18,11 @@ const {
   writeRecord,
 } = require("../publish-review/publish.cjs");
 
-// The criteria that stop a pull request: a real-charge cost and a CRITICAL
-// security finding. A trusted path (the review's trust-gate, or hold-paths)
+// The criteria that stop a pull request: a real-charge cost, a CRITICAL
+// security finding, and a changed executable or archive the base branch's
+// binary allowlist does not list (the extract step's own, never the model's). A trusted path (the review's trust-gate, or hold-paths)
 // is a reason for extra security scrutiny, never a stop by itself.
-const CRITERIA = ["cost", "critical-security"];
+const CRITERIA = ["cost", "critical-security", "binary-artifact"];
 const MAX_REASON = 2000;
 
 // The hold the counted leg's checked review returned, or null.
