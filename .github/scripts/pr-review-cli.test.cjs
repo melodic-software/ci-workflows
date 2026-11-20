@@ -6218,6 +6218,19 @@ test("the executables-and-archives step runs on every scoped run and lists each 
     ]),
   );
   writeAt(origin, "img/plain.png", png);
+  // A pointer with git-lfs's pre-release spec URL.
+  writeAt(
+    origin,
+    "assets/old.bin",
+    "version https://hawser.github.com/spec/v1\noid sha256:abc\nsize 12\n",
+  );
+  // Text the head's attributes re-encode on checkout.
+  writeAt(
+    origin,
+    ".gitattributes",
+    "notes/secret.txt working-tree-encoding=UTF-16BE\n",
+  );
+  writeAt(origin, "notes/secret.txt", "hello\n");
   writeAt(origin, "has space/tool.png", zip(1));
   // A text file with a listed extension.
   writeAt(origin, "scripts/build.exe", "echo hi\n");
@@ -6242,10 +6255,12 @@ test("the executables-and-archives step runs on every scoped run and lists each 
   const head = git(origin, "rev-parse", "HEAD");
   const expected = [
     ["assets/model.bin", "Git LFS pointer"],
+    ["assets/old.bin", "Git LFS pointer"],
     ["has space/tool.png", "zip"],
     ["img/shot.png", "zip appended"],
     ["lib/link", "zip"],
     ["move/new.bin", "zip"],
+    ["notes/secret.txt", "checkout attribute"],
     ["pkg/big.log", "gzip"],
     ["pkg/thing", "ar archive"],
     ["pkg/x.dat", "tar"],
@@ -6260,7 +6275,7 @@ test("the executables-and-archives step runs on every scoped run and lists each 
     // no longer checks.
     assert.equal(
       opaque.if,
-      "always() && steps.scope.outcome == 'success'",
+      "always() && steps.scope.outcome != 'skipped'",
       job.name,
     );
     assert.equal(
@@ -6311,8 +6326,8 @@ test("the executables-and-archives step runs on every scoped run and lists each 
       job.name,
     );
     assert.equal(
-      rows.find(([p]) => p === "tools/run.txt")[1],
-      sha256(elf),
+      rows.find(([p]) => p === "lib/link")[1],
+      sha256(zip(7)),
       job.name,
     );
     // A merge base it cannot read holds as an error.

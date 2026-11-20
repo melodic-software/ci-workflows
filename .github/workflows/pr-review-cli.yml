@@ -453,7 +453,8 @@ on:
           lists) holds the pull request for a person, criterion
           binary-artifact, unless a line names its path and the SHA-256 of its
           bytes at the head. Empty, or a file the merge base does not hold,
-          allows none.
+          allows none. The hold, like every hold, needs hold-label set and
+          comments mode.
         type: string
         default: ""
       generated-data:
@@ -967,6 +968,7 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
+      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -2049,7 +2051,7 @@ jobs:
       # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
-        if: always() && steps.scope.outcome == 'success'
+        if: always() && steps.scope.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 3
         env:
@@ -2130,7 +2132,7 @@ jobs:
               1f9d*) why='Unix compress' ;;
               303730373031* | 303730373032* | 303730373037* | c771* | 71c7*) why=cpio ;;
               1b4c7561*) why='Lua bytecode' ;;
-              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f*) why='Git LFS pointer' ;;
+              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f* | 76657273696f6e2068747470733a2f2f6861777365722e6769746875622e636f6d2f737065632f* | 76657273696f6e20687474703a2f2f6769742d6d656469612e696f2f762f*) why='Git LFS pointer' ;;
               *) [ "${magic:514:10}" != 7573746172 ] || why=tar ;;
               esac
               # A zip's end-of-central-directory record sits in its last
@@ -2147,6 +2149,13 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A filter (Git LFS among them) or working-tree-encoding the
+              # head's attributes set makes the checked-out bytes differ from
+              # the blob read here.
+              if [ -z "$why" ]; then
+                attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
+                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+              fi
             fi
             [ -n "$why" ] || continue
             sum=''
@@ -3972,6 +3981,7 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
+      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -5055,7 +5065,7 @@ jobs:
       # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
-        if: always() && steps.scope.outcome == 'success'
+        if: always() && steps.scope.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 3
         env:
@@ -5136,7 +5146,7 @@ jobs:
               1f9d*) why='Unix compress' ;;
               303730373031* | 303730373032* | 303730373037* | c771* | 71c7*) why=cpio ;;
               1b4c7561*) why='Lua bytecode' ;;
-              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f*) why='Git LFS pointer' ;;
+              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f* | 76657273696f6e2068747470733a2f2f6861777365722e6769746875622e636f6d2f737065632f* | 76657273696f6e20687474703a2f2f6769742d6d656469612e696f2f762f*) why='Git LFS pointer' ;;
               *) [ "${magic:514:10}" != 7573746172 ] || why=tar ;;
               esac
               # A zip's end-of-central-directory record sits in its last
@@ -5153,6 +5163,13 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A filter (Git LFS among them) or working-tree-encoding the
+              # head's attributes set makes the checked-out bytes differ from
+              # the blob read here.
+              if [ -z "$why" ]; then
+                attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
+                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+              fi
             fi
             [ -n "$why" ] || continue
             sum=''
@@ -6948,6 +6965,7 @@ jobs:
       held: ${{ steps.full-diff.outputs.held }}
       opaque: ${{ steps.opaque.outputs.count }}
       opaque-files: ${{ steps.opaque.outputs.files }}
+      scoped: ${{ steps.scope.outcome }}
       handoff-sha256: ${{ steps.handoff-file.outputs.sha256 }}
       turns: ${{ steps.extract.outputs.turns }}
       models: ${{ steps.extract.outputs.models }}
@@ -8031,7 +8049,7 @@ jobs:
       # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
-        if: always() && steps.scope.outcome == 'success'
+        if: always() && steps.scope.outcome != 'skipped'
         continue-on-error: true
         timeout-minutes: 3
         env:
@@ -8112,7 +8130,7 @@ jobs:
               1f9d*) why='Unix compress' ;;
               303730373031* | 303730373032* | 303730373037* | c771* | 71c7*) why=cpio ;;
               1b4c7561*) why='Lua bytecode' ;;
-              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f*) why='Git LFS pointer' ;;
+              76657273696f6e2068747470733a2f2f6769742d6c66732e6769746875622e636f6d2f737065632f* | 76657273696f6e2068747470733a2f2f6861777365722e6769746875622e636f6d2f737065632f* | 76657273696f6e20687474703a2f2f6769742d6d656469612e696f2f762f*) why='Git LFS pointer' ;;
               *) [ "${magic:514:10}" != 7573746172 ] || why=tar ;;
               esac
               # A zip's end-of-central-directory record sits in its last
@@ -8129,6 +8147,13 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A filter (Git LFS among them) or working-tree-encoding the
+              # head's attributes set makes the checked-out bytes differ from
+              # the blob read here.
+              if [ -z "$why" ]; then
+                attrs="$(git --attr-source="$HEAD_SHA" check-attr -z filter working-tree-encoding -- "$p" | tr '\0' '\n' | awk 'NR % 3 == 0')" || attrs=error
+                if grep -qvx unspecified <<< "$attrs"; then why='checkout attribute'; fi
+              fi
             fi
             [ -n "$why" ] || continue
             sum=''
@@ -10085,12 +10110,13 @@ jobs:
           SUB_WALL_MS: ${{ steps.token-leg.outputs.wall-ms }}
 
       # Add-only: in comments mode with hold-label set, the label and one
-      # marker comment when the counted leg's review returned a cost,
-      # critical-security or binary-artifact hold. It never removes a label. A failed write
+      # marker comment when the counted leg's review returned a cost or
+      # critical-security hold, or a leg found an executable or archive
+      # (binary-artifact; it alone applies when a leg held). It never removes a label. A failed write
       # fails the job.
       - name: Apply the hold
         id: hold
-        if: always() && inputs.hold-label != '' && inputs.publish == 'comments' && steps.held.outcome != 'success'
+        if: always() && inputs.hold-label != '' && inputs.publish == 'comments'
         continue-on-error: ${{ env.PUBLISH != 'comments' }}
         timeout-minutes: 2
         uses: $/.github/actions/apply-review-hold
@@ -10108,7 +10134,11 @@ jobs:
           # first leg that ran it: the hold stands without the review.
           OPAQUE: ${{ needs.review-key.outputs.opaque || needs.review-subscription.outputs.opaque || needs.review-fallback.outputs.opaque }}
           OPAQUE_FILES: ${{ needs.review-key.outputs.opaque && needs.review-key.outputs.opaque-files || needs.review-subscription.outputs.opaque && needs.review-subscription.outputs.opaque-files || needs.review-fallback.outputs.opaque-files }}
-          SCOPE_REVIEW: ${{ needs.review-key.outputs.scope-review || needs.review-subscription.outputs.scope-review || needs.review-fallback.outputs.scope-review }}
+          # Each leg's scope step outcome: a leg that ran it and has no count
+          # failed to check, which holds.
+          SCOPED: ${{ needs.review-key.outputs.scoped }},${{ needs.review-subscription.outputs.scoped }},${{ needs.review-fallback.outputs.scoped }}
+          # A held leg's verdict is unknown: only the binary hold applies.
+          HELD: ${{ steps.held.outcome == 'success' && 'true' || '' }}
           PR_NUMBER: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           BASE_REF: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.base-ref || github.event.pull_request.base.ref }}

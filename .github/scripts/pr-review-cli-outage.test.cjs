@@ -256,7 +256,7 @@ test("each leg passes its full-diff step's hold out as the job's held output", (
     );
 });
 
-test("a held leg notes the hold and the status job publishes and labels nothing", () => {
+test("a held leg notes the hold, and the status job publishes nothing and applies only the binary hold", () => {
   const note = statusStep("Note the hold");
   for (const held of [{ key: "x" }, { sub: "x" }, { fb: "x" }]) {
     assert.equal(
@@ -271,7 +271,11 @@ test("a held leg notes the hold and the status job publishes and labels nothing"
     inputs: { "hold-label": "needs-human", publish: "comments" },
   };
   assert.equal(evaluate(statusStep("Publish the review").if, after), false);
-  assert.equal(evaluate(statusStep("Apply the hold").if, after), false);
+  // The hold step still runs, so a leg's executables-and-archives count
+  // holds; HELD keeps it from reading the review's own hold.
+  const hold = statusStep("Apply the hold");
+  assert.equal(evaluate(hold.if, after), true);
+  assert.equal(evaluate(hold.env.HELD, after), "true");
   const unheld = { ...after, steps: { held: { outcome: "skipped" } } };
   assert.equal(evaluate(statusStep("Publish the review").if, unheld), true);
   assert.equal(evaluate(statusStep("Apply the hold").if, unheld), true);

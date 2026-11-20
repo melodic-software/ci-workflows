@@ -5,7 +5,8 @@
 // read the same way; a list with an empty name reads no run),
 // PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
 // counts), the legs' KEY_* and SUB_* outputs that publish-review's judge
-// reads, and OPAQUE, OPAQUE_FILES and SCOPE_REVIEW (binaryHold). It only adds: the label and one marker comment. Every write goes
+// reads, OPAQUE, OPAQUE_FILES and SCOPED (binaryHold), and HELD (a leg held:
+// its verdict is unknown, so only the binary hold applies). It only adds: the label and one marker comment. Every write goes
 // through issues.addLabels or issues.createComment.
 "use strict";
 
@@ -45,14 +46,17 @@ function modelHold(env, core) {
 // leg's `Find executables and archives` step, never the review, so it holds
 // whatever the model returned and whether the review completed. OPAQUE is
 // `none`, a count, or `error`; OPAQUE_FILES up to 10 `<path>\t<sha256>\t<why>`
-// lines. An empty OPAQUE holds too once a leg scoped the pull request
-// (SCOPE_REVIEW set), since its step then failed to count; with no leg
-// scoped, nothing was checked and nothing holds.
+// lines. An empty OPAQUE holds too once a leg ran its scope step (SCOPED,
+// each leg's outcome, comma-separated), since its step then failed to count;
+// with no leg scoped, nothing was checked and nothing holds.
 const SHOWN = 10;
 function binaryHold(env) {
   const count = String(env.OPAQUE ?? "");
   if (count === "none") return null;
-  if (count === "" && String(env.SCOPE_REVIEW ?? "") === "") return null;
+  const scoped = String(env.SCOPED ?? "")
+    .split(",")
+    .some((o) => o !== "" && o !== "skipped");
+  if (count === "" && !scoped) return null;
   const rows = /^[1-9][0-9]{0,5}$/u.test(count)
     ? String(env.OPAQUE_FILES ?? "")
         .split("\n")
@@ -681,7 +685,7 @@ async function run({ github, context, core, env = process.env }) {
   const number = Number(env.PR_NUMBER);
   const lane = env.LANE_ID;
 
-  const model = modelHold(env, core);
+  const model = env.HELD ? null : modelHold(env, core);
   const binary = binaryHold(env);
   // The pull request's comments, read once: for the cost decision and for
   // the marker this step posts.

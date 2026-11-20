@@ -466,7 +466,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       KEY_REVIEW: "",
       OPAQUE: "2",
       OPAQUE_FILES: files,
-      SCOPE_REVIEW: "true",
+      SCOPED: "success,,",
     }),
     { files: ["tools/run"] },
   );
@@ -488,7 +488,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       }),
       OPAQUE: "2",
       OPAQUE_FILES: files,
-      SCOPE_REVIEW: "true",
+      SCOPED: "success,,",
     }),
     { files: ["tools/run"] },
   );
@@ -505,12 +505,12 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
       {
         OPAQUE: "1",
         OPAQUE_FILES: `tools/run\t${SUM}\tELF`,
-        SCOPE_REVIEW: "false",
+        SCOPED: "success,,",
       },
     ],
-    ["an error", { OPAQUE: "error", SCOPE_REVIEW: "true" }],
-    ["one short", { OPAQUE: "3", OPAQUE_FILES: files, SCOPE_REVIEW: "true" }],
-    ["no count", { OPAQUE: "", SCOPE_REVIEW: "true" }],
+    ["an error", { OPAQUE: "error", SCOPED: "success,," }],
+    ["one short", { OPAQUE: "3", OPAQUE_FILES: files, SCOPED: "success,," }],
+    ["no count", { OPAQUE: "", SCOPED: "success,," }],
   ]) {
     const held = await apply(
       baseEnv({ KEY_REVIEW: "", KEY_FAILED: "true", ...extra }),
@@ -522,11 +522,24 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
     if (what !== "a skip")
       assert.match(held.writes[1][1].body, /The job could not name/u, what);
   }
+  // A held leg's verdict is unknown: the model's cost hold is not read, the
+  // binary hold still applies.
+  const held = await apply(
+    baseEnv({
+      KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+      OPAQUE: "2",
+      OPAQUE_FILES: files,
+      SCOPED: "failure,,",
+      HELD: "true",
+    }),
+    { files: ["tools/run"] },
+  );
+  assert.equal(held.core.outputs.criteria, "binary-artifact");
   // None found, or no leg scoped the pull request: no binary hold; and a
   // model that returns binary-artifact itself holds nothing.
   for (const [what, extra] of [
-    ["none", { OPAQUE: "none", SCOPE_REVIEW: "true" }],
-    ["unscoped", { OPAQUE: "", SCOPE_REVIEW: "" }],
+    ["none", { OPAQUE: "none", SCOPED: "success,," }],
+    ["unscoped", { OPAQUE: "", SCOPED: "skipped,," }],
     [
       "model",
       {
@@ -534,7 +547,7 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
           hold: { criteria: ["binary-artifact"], reason: "R" },
         }),
         OPAQUE: "none",
-        SCOPE_REVIEW: "true",
+        SCOPED: "success,,",
       },
     ],
   ]) {
