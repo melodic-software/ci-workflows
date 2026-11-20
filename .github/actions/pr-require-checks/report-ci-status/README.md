@@ -71,6 +71,12 @@ is a job name, and a job inside a reusable workflow would report as
   a full run is in flight, and the full run re-runs it on `success`. Above `0`
   it holds instead; the composite passes `0` on a contract-only run whose job,
   contract step or draft step already failed.
+- `rerun-contract-only-siblings` defaults to `true`. When this run's contract
+  step failed (a bad title, `do-not-merge`, the hold label), the composite
+  passes `aggregate-results` the time just before that read as
+  `rerun-created-after`: a sibling created earlier would fail the same way and
+  is not re-run, while one the clearing event started may have passed its
+  contract and is.
 - Fixed: `yield-to-full-run: 'true'` and `carry-forward-wait-seconds: '0'`.
 
 A consumer with steps of its own keeps them before this step and gives this
@@ -112,4 +118,4 @@ result.
 - `.github/scripts/ci-fanout-consolidation.test.cjs`: the step order, the
   `continue-on-error` contract and draft steps and their outputs, this
   repository's failing step, the aggregation's `!cancelled()`, the
-  contract-only copies and the hold drop.
+  contract-only copies, the hold drop and the contract-gated `rerun-created-after`.

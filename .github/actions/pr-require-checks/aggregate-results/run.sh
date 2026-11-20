@@ -1602,7 +1602,13 @@ fi
 rerun_failed_contract_only_siblings() {
   local skip='Not re-running failed contract-only runs.' candidates id contract_shaped rerun_count=0
   local runs="$scratch/rerun-runs.json" in_flight waiting wait_started waited remaining ran polls=0 attempt full_runs=" "
-  local wait_for_in_flight=false
+  local wait_for_in_flight=false created_after="${RERUN_CREATED_AFTER:-}" skipped
+  # A malformed value only widens the re-run set: a sibling re-run for nothing
+  # costs one short job, a skipped one can stay red.
+  if [[ -n "$created_after" && ! "$created_after" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "::warning::rerun-created-after must be YYYY-MM-DDTHH:MM:SSZ, got: $(escape_annotation "$created_after"); re-running every failed contract-only run."
+    created_after=""
+  fi
   if [[ "$RERUN_WAIT_SECONDS" -gt 0 && "$YIELD_WAIT_SECONDS" -eq 0 && ("$yield_to_full_run" == true || "$CARRY_FORWARD_WAIT_SECONDS" -eq 0) ]]; then
     wait_for_in_flight=true
   fi
@@ -1668,6 +1674,24 @@ rerun_failed_contract_only_siblings() {
     '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "failure" and (.id // $self) != $self) | .id ] | sort | join(" ")' \
     <"$runs")"
   echo "Failed run(s) of this workflow on ${SHA} to consider for a re-run: ${candidates:-none}."
+  # A sibling whose latest attempt started before this run's failed contract
+  # read saw the same failing title or labels, so it is skipped; one created or
+  # re-run later may have read them cleared. A sibling's time is the later of
+  # created_at and run_started_at. The 60 s margin absorbs clock skew toward
+  # re-running, and a created_at that does not parse is kept.
+  if [[ -n "$created_after" ]]; then
+    skipped="$(jq -r --argjson self "$GITHUB_RUN_ID" --arg after "$created_after" \
+      '($after | try (fromdateiso8601 - 60) catch null) as $cutoff
+       | [ .workflow_runs[]? | select($cutoff != null and .status == "completed" and .conclusion == "failure" and (.id // $self) != $self)
+           | ((.created_at // "") | try fromdateiso8601 catch null) as $c
+           | ((.run_started_at // "") | try fromdateiso8601 catch null) as $s
+           | select($c != null and ([$c, ($s // $c)] | max) < $cutoff) | .id ]
+       | sort | join(" ")' <"$runs")"
+    if [[ -n "$skipped" ]]; then
+      echo "Not re-running run(s) ${skipped} on ${SHA}: started before this run's failed contract read at ${created_after}, so they would fail it again."
+      candidates="$(jq -rn --arg all "$candidates" --arg skip "$skipped" '($skip | split(" ")) as $s | $all | split(" ") | map(select(. as $id | $s | index($id) | not)) | join(" ")')"
+    fi
+  fi
   for id in $candidates; do
     # shellcheck disable=SC2310 # gh_api handles its own errexit; the caller classifies the status.
     if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then

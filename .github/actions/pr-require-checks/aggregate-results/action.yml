@@ -153,6 +153,17 @@ inputs:
       for a runner. A sibling still in flight at the ceiling is not re-run.
       `0` never waits.
     default: '90'
+  rerun-created-after:
+    description: >-
+      A UTC time, `YYYY-MM-DDTHH:MM:SSZ`, from just before this run read a
+      pull-request contract that failed. With `rerun-contract-only-siblings`,
+      only failed siblings whose later of `created_at` and `run_started_at`
+      is at or after it, less 60 seconds for clock skew, are re-run: one
+      started earlier read the same failing title or labels and would fail
+      again, while a later one, or a later re-run, may have read them
+      cleared. Empty re-runs every candidate; a malformed value warns and
+      re-runs every candidate too.
+    default: ''
   record-pending:
     description: >-
       `true` to mark `status-context` `pending` on `sha` and stop, with no
@@ -315,6 +326,7 @@ runs:
         CARRY_FORWARD_WAIT_SECONDS: ${{ inputs.carry-forward-wait-seconds }}
         RERUN_CONTRACT_ONLY_SIBLINGS: ${{ inputs.rerun-contract-only-siblings }}
         RERUN_WAIT_SECONDS: ${{ inputs.rerun-wait-seconds }}
+        RERUN_CREATED_AFTER: ${{ inputs.rerun-created-after }}
         RATE_LIMIT_WAIT_SECONDS: ${{ inputs.rate-limit-wait-seconds }}
         RECORD_PENDING: ${{ inputs.record-pending }}
         YIELD_TO_FULL_RUN: ${{ inputs.yield-to-full-run }}
