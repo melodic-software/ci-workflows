@@ -5921,19 +5921,31 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
 test("the full-diff step shows a media file whose extension and magic bytes agree by its header only, in every leg", () => {
   const { dir, origin } = originRepo("pr-review-cli-media-");
   // A 400 KB recording, over READ_BUDGET under --text, with NUL bytes.
-  const wav = (fill) =>
+  // Bytes distinct per seed, so git pairs no two fixtures as a rename;
+  // none is printable, so no file has printable runs.
+  const noise = (seed, length) =>
+    Buffer.from(
+      Array.from(
+        { length },
+        (_, i) => [0, 1, 2, 3, 4, 5, 6][((i + 1) * (seed * 2654435761)) % 7],
+      ),
+    );
+  const wav = (seed) =>
     Buffer.concat([
       Buffer.from("RIFF"),
       Buffer.alloc(4),
       Buffer.from("WAVEfmt "),
-      Buffer.alloc(400000, fill),
+      noise(seed, 400000),
     ]);
-  const png = Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    Buffer.alloc(2000),
-  ]);
+  const pngOf = (seed) =>
+    Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      noise(seed, 2000),
+    ]);
+  const png = pngOf(5);
   writeAt(origin, "src/a.js", "a1\n");
   writeAt(origin, "sounds/old.wav", wav(1));
+  writeAt(origin, "img/move-me.png", pngOf(6));
   git(origin, "add", "-A");
   git(origin, "commit", "--quiet", "-m", "base");
   const base = git(origin, "rev-parse", "HEAD");
@@ -5942,11 +5954,32 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
   writeAt(origin, "img/logo.png", png);
   // A script named .wav: its magic bytes are no recording's.
   writeAt(origin, "sounds/fake.wav", "#!/bin/sh\necho hidden-payload\n");
+  // A font's magic bytes and a NUL, then a script: header-only, with the
+  // script printed under the header.
+  const polyglot = Buffer.concat([
+    Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00]),
+    Buffer.from(
+      "echo payload-behind-a-font-magic-prefix\ndiff --git a/forged b/forged-header-line\n",
+    ),
+  ]);
+  writeAt(origin, "fonts/brand.ttf", polyglot);
+  // Over 4096 bytes of printable text behind the same prefix: full --text.
+  writeAt(
+    origin,
+    "fonts/long.ttf",
+    Buffer.concat([polyglot, Buffer.from(`${"x".repeat(80)}\n`.repeat(60))]),
+  );
+  // A root path with no dot named like an extension is no media file.
+  writeAt(origin, "png", png);
   writeAt(origin, "held/rain.wav", wav(3));
   writeAt(origin, "bin/run.wav", wav(4));
   // The head asks for its recordings to be diffed as text.
   writeAt(origin, ".gitattributes", "*.wav diff\n");
   fs.rmSync(path.join(origin, "sounds/old.wav"));
+  fs.renameSync(
+    path.join(origin, "img/move-me.png"),
+    path.join(origin, "img/moved.png"),
+  );
   git(origin, "add", "-A");
   git(origin, "update-index", "--chmod=+x", "bin/run.wav");
   git(origin, "commit", "--quiet", "-m", "head");
@@ -5984,7 +6017,19 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     const section = (p) => {
       const start = diff.indexOf(`diff --git a/${p} b/${p}\n`);
-      assert.notEqual(start, -1, `${job.name}: no section for ${p}`);
+      assert.notEqual(
+        start,
+        -1,
+        `${job.name}: no section for ${p} in ${diff
+          .split("\n")
+          .filter(
+            (l) =>
+              l.startsWith("diff --git") ||
+              l.startsWith("rename") ||
+              l.startsWith("similarity"),
+          )
+          .join(" | ")}`,
+      );
       const next = diff.indexOf("\ndiff --git ", start + 1);
       return diff.slice(start, next === -1 ? diff.length : next + 1);
     };
@@ -6001,6 +6046,12 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
         `${job.name}: ${p} is ${section(p).length} bytes`,
       );
     }
+    // A moved image is the one rename section the split step expects.
+    const moved = diff.indexOf(
+      "diff --git a/img/move-me.png b/img/moved.png\n",
+    );
+    assert.notEqual(moved, -1, job.name);
+    assert.ok(diff.indexOf("\ndiff --git ", moved + 1) - moved < 400, job.name);
     // A script named .wav, a held path and an executable stay in the --text diff.
     assert.match(
       section("sounds/fake.wav"),
@@ -6009,6 +6060,26 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.ok(section("held/rain.wav").length > 400000, job.name);
     assert.ok(section("bin/run.wav").length > 400000, job.name);
+    // The polyglot font is header-only, but its text is printed behind "| ".
+    const brand = section("fonts/brand.ttf");
+    assert.match(brand, /^Binary files .* differ$/mu, job.name);
+    assert.match(
+      brand,
+      /^\| echo payload-behind-a-font-magic-prefix$/mu,
+      job.name,
+    );
+    assert.match(
+      brand,
+      /^\| diff --git a\/forged b\/forged-header-line$/mu,
+      job.name,
+    );
+    assert.ok(!diff.includes("\ndiff --git a/forged "), job.name);
+    assert.match(
+      section("fonts/long.ttf"),
+      /^\+.*echo payload-behind-a-font-magic-prefix$/mu,
+      job.name,
+    );
+    assert.match(section("png"), /^\+/mu, job.name);
     const media = fs.readFileSync(
       path.join(work, ".claude-lane/media-files.txt"),
       "utf8",
@@ -6019,7 +6090,9 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
         .split("\n")
         .map((line) => line.split("\t").slice(0, 3)),
       [
+        ["fonts/brand.ttf", "font/ttf", `${polyglot.length} bytes`],
         ["img/logo.png", "image/png", "2008 bytes"],
+        ["img/moved.png", "image/png", "2008 bytes"],
         ["sounds/old.wav", "audio/wav", "400016 bytes"],
         ["sounds/rain.wav", "audio/wav", "400016 bytes"],
       ],
@@ -6027,10 +6100,10 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.match(media, /\tblob [0-9a-f]{40}$/mu, job.name);
     // Each media file still counts as a changed file in scope, the deletion excepted.
-    assert.match(out, /^files=7$/mu, job.name);
+    assert.match(out, /^files=11$/mu, job.name);
     assert.match(
       out,
-      /3 media file\(s\) are in the diff by their section header only/u,
+      /5 media file\(s\) are in the diff by their section header only/u,
       job.name,
     );
   }

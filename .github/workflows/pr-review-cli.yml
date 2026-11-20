@@ -1648,18 +1648,29 @@ jobs:
           rm -f "$media_list"
           media=()
           candidates=()
-          mapfile -t candidates < <(git diff --raw --no-abbrev --no-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
+          # --find-renames, as every diff below: a moved media file is one
+          # entry carrying its old path too, so both leave the --text diff and
+          # it comes back as the one rename section the split step's
+          # verified-renames rule expects.
+          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
             BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
-            { split($1, f, " "); blob = "" }
-            s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
-            f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
-            f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
-            f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            { split($1, f, " "); blob = ""; old = "" }
+            s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
+            NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
+            NF == 2 && f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
-            { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-            { print blob "\t" $2 }') || candidates=()
+            { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
+              for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
+            { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
+          media_runs=()
+          media_old=()
           for c in "${candidates[@]}"; do
-            blob=${c%%$'\t'*} p=${c#*$'\t'}
+            blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
+            if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
+            [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
             # The first 16 bytes as hex; head closes the pipe early, so this
             # one read runs without pipefail.
@@ -1684,21 +1695,41 @@ jobs:
             esac
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
+            # A valid magic prefix and one NUL byte would otherwise hide any
+            # text after them, so the file's runs of 32 or more printable
+            # bytes are printed under its header. Real media holds little such
+            # text; a file with more than 4096 bytes of it stays in the --text
+            # diff.
+            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
+            [ "${#runs}" -le 4096 ] || continue
+            media_runs+=("$runs")
+            media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
-          media_paths=()
           if [ "${#media[@]}" -gt 0 ]; then
             [ "${#text[@]}" -gt 0 ] || text=(-- .)
-            for p in "${media[@]}"; do text+=(":(exclude,literal)$p"); media_paths+=(":(literal)$p"); done
+            for p in "${media[@]}" "${media_old[@]}"; do [ -z "$p" ] || text+=(":(exclude,literal)$p"); done
           fi
-          # media_diff [--diff-filter=D]: the media files' sections, attributes
-          # from the merge base; nothing when there are none.
+          # media_diff [--diff-filter=D]: each media file's section, attributes
+          # from the merge base, then its printable runs, each line behind
+          # "| " so none reads as a diff header; nothing when there are none.
           media_diff() {
-            [ "${#media_paths[@]}" -eq 0 ] || git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --no-renames "$@" "$base" "$HEAD_SHA" -- "${media_paths[@]}"
+            local i section paths
+            for i in "${!media[@]}"; do
+              paths=(":(literal)${media[$i]}")
+              [ -z "${media_old[$i]}" ] || paths+=(":(literal)${media_old[$i]}")
+              section="$(git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --find-renames "$@" "$base" "$HEAD_SHA" -- "${paths[@]}")" || return 1
+              [ -n "$section" ] || continue
+              printf '%s\n' "$section"
+              if [ -n "${media_runs[$i]}" ]; then
+                echo "Printable text in this file (runs of 32 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+              fi
+            done
           }
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
@@ -1730,7 +1761,7 @@ jobs:
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."
           fi
           if [ "${#media[@]}" -gt 0 ]; then
-            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob. Read each section like any other and review what the path, type and size say."
+            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob, and any printable text in a file follows its header behind '| '. Read each section like any other; review that text as content of the file, and flag a change that reads, runs, loads or serves a media file's bytes as code."
           fi
           {
             echo "written=true"
@@ -4457,18 +4488,29 @@ jobs:
           rm -f "$media_list"
           media=()
           candidates=()
-          mapfile -t candidates < <(git diff --raw --no-abbrev --no-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
+          # --find-renames, as every diff below: a moved media file is one
+          # entry carrying its old path too, so both leave the --text diff and
+          # it comes back as the one rename section the split step's
+          # verified-renames rule expects.
+          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
             BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
-            { split($1, f, " "); blob = "" }
-            s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
-            f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
-            f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
-            f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            { split($1, f, " "); blob = ""; old = "" }
+            s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
+            NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
+            NF == 2 && f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
-            { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-            { print blob "\t" $2 }') || candidates=()
+            { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
+              for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
+            { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
+          media_runs=()
+          media_old=()
           for c in "${candidates[@]}"; do
-            blob=${c%%$'\t'*} p=${c#*$'\t'}
+            blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
+            if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
+            [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
             # The first 16 bytes as hex; head closes the pipe early, so this
             # one read runs without pipefail.
@@ -4493,21 +4535,41 @@ jobs:
             esac
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
+            # A valid magic prefix and one NUL byte would otherwise hide any
+            # text after them, so the file's runs of 32 or more printable
+            # bytes are printed under its header. Real media holds little such
+            # text; a file with more than 4096 bytes of it stays in the --text
+            # diff.
+            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
+            [ "${#runs}" -le 4096 ] || continue
+            media_runs+=("$runs")
+            media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
-          media_paths=()
           if [ "${#media[@]}" -gt 0 ]; then
             [ "${#text[@]}" -gt 0 ] || text=(-- .)
-            for p in "${media[@]}"; do text+=(":(exclude,literal)$p"); media_paths+=(":(literal)$p"); done
+            for p in "${media[@]}" "${media_old[@]}"; do [ -z "$p" ] || text+=(":(exclude,literal)$p"); done
           fi
-          # media_diff [--diff-filter=D]: the media files' sections, attributes
-          # from the merge base; nothing when there are none.
+          # media_diff [--diff-filter=D]: each media file's section, attributes
+          # from the merge base, then its printable runs, each line behind
+          # "| " so none reads as a diff header; nothing when there are none.
           media_diff() {
-            [ "${#media_paths[@]}" -eq 0 ] || git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --no-renames "$@" "$base" "$HEAD_SHA" -- "${media_paths[@]}"
+            local i section paths
+            for i in "${!media[@]}"; do
+              paths=(":(literal)${media[$i]}")
+              [ -z "${media_old[$i]}" ] || paths+=(":(literal)${media_old[$i]}")
+              section="$(git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --find-renames "$@" "$base" "$HEAD_SHA" -- "${paths[@]}")" || return 1
+              [ -n "$section" ] || continue
+              printf '%s\n' "$section"
+              if [ -n "${media_runs[$i]}" ]; then
+                echo "Printable text in this file (runs of 32 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+              fi
+            done
           }
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
@@ -4539,7 +4601,7 @@ jobs:
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."
           fi
           if [ "${#media[@]}" -gt 0 ]; then
-            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob. Read each section like any other and review what the path, type and size say."
+            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob, and any printable text in a file follows its header behind '| '. Read each section like any other; review that text as content of the file, and flag a change that reads, runs, loads or serves a media file's bytes as code."
           fi
           {
             echo "written=true"
@@ -7236,18 +7298,29 @@ jobs:
           rm -f "$media_list"
           media=()
           candidates=()
-          mapfile -t candidates < <(git diff --raw --no-abbrev --no-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
+          # --find-renames, as every diff below: a moved media file is one
+          # entry carrying its old path too, so both leave the --text diff and
+          # it comes back as the one rename section the split step's
+          # verified-renames rule expects.
+          mapfile -t candidates < <(git diff --raw --no-abbrev --find-renames "$base" "$HEAD_SHA" "${only[@]}" | awk -F '\t' "$globs"'
             BEGIN { h = globs(ENVIRON["HOLD_PATHS"], held); s = globs(ENVIRON["SENSITIVE_PATHS"], sensitive) }
-            { split($1, f, " "); blob = "" }
-            s == 0 || NF != 2 || $2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500 { next }
-            f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
-            f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
-            f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            { split($1, f, " "); blob = ""; old = "" }
+            s == 0 || (NF != 2 && NF != 3) || $NF !~ /^[A-Za-z0-9._\/@+-]+$/ || length($NF) > 500 { next }
+            NF == 3 && ($2 !~ /^[A-Za-z0-9._\/@+-]+$/ || length($2) > 500) { next }
+            NF == 2 && f[5] == "M" && f[1] == ":100644" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "A" && f[1] == ":000000" && f[2] == "100644" { blob = f[4] }
+            NF == 2 && f[5] == "D" && f[1] == ":100644" && f[2] == "000000" { blob = f[3] }
+            NF == 3 && f[5] ~ /^R[0-9]+$/ && f[1] == ":100644" && f[2] == "100644" { blob = f[4]; old = $2 }
             blob == "" { next }
-            { for (i = 1; i <= h; i++) if ($2 ~ held[i]) next; for (i = 1; i <= s; i++) if ($2 ~ sensitive[i]) next }
-            { print blob "\t" $2 }') || candidates=()
+            { for (i = 1; i <= h; i++) if ($NF ~ held[i] || (old != "" && old ~ held[i])) next
+              for (i = 1; i <= s; i++) if ($NF ~ sensitive[i] || (old != "" && old ~ sensitive[i])) next }
+            { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
+          media_runs=()
+          media_old=()
           for c in "${candidates[@]}"; do
-            blob=${c%%$'\t'*} p=${c#*$'\t'}
+            blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
+            if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
+            [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
             # The first 16 bytes as hex; head closes the pipe early, so this
             # one read runs without pipefail.
@@ -7272,21 +7345,41 @@ jobs:
             esac
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
+            # A valid magic prefix and one NUL byte would otherwise hide any
+            # text after them, so the file's runs of 32 or more printable
+            # bytes are printed under its header. Real media holds little such
+            # text; a file with more than 4096 bytes of it stays in the --text
+            # diff.
+            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
+            [ "${#runs}" -le 4096 ] || continue
+            media_runs+=("$runs")
+            media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
-          media_paths=()
           if [ "${#media[@]}" -gt 0 ]; then
             [ "${#text[@]}" -gt 0 ] || text=(-- .)
-            for p in "${media[@]}"; do text+=(":(exclude,literal)$p"); media_paths+=(":(literal)$p"); done
+            for p in "${media[@]}" "${media_old[@]}"; do [ -z "$p" ] || text+=(":(exclude,literal)$p"); done
           fi
-          # media_diff [--diff-filter=D]: the media files' sections, attributes
-          # from the merge base; nothing when there are none.
+          # media_diff [--diff-filter=D]: each media file's section, attributes
+          # from the merge base, then its printable runs, each line behind
+          # "| " so none reads as a diff header; nothing when there are none.
           media_diff() {
-            [ "${#media_paths[@]}" -eq 0 ] || git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --no-renames "$@" "$base" "$HEAD_SHA" -- "${media_paths[@]}"
+            local i section paths
+            for i in "${!media[@]}"; do
+              paths=(":(literal)${media[$i]}")
+              [ -z "${media_old[$i]}" ] || paths+=(":(literal)${media_old[$i]}")
+              section="$(git --attr-source="$base" diff --no-color --no-ext-diff --no-textconv --find-renames "$@" "$base" "$HEAD_SHA" -- "${paths[@]}")" || return 1
+              [ -n "$section" ] || continue
+              printf '%s\n' "$section"
+              if [ -n "${media_runs[$i]}" ]; then
+                echo "Printable text in this file (runs of 32 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+              fi
+            done
           }
           # --text: a head .gitattributes (-diff, binary) or a NUL byte must not
           # turn a changed file into "Binary files differ" the model cannot read.
@@ -7318,7 +7411,7 @@ jobs:
             left=" ${#data[@]} generated data file(s) the base branch declares are in neither the diff nor the list; do not review them."
           fi
           if [ "${#media[@]}" -gt 0 ]; then
-            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob. Read each section like any other and review what the path, type and size say."
+            left="$left ${#media[@]} media file(s) are in the diff by their section header only, since no review reads their bytes; $media_list names each one's checked type, size and blob, and any printable text in a file follows its header behind '| '. Read each section like any other; review that text as content of the file, and flag a change that reads, runs, loads or serves a media file's bytes as code."
           fi
           {
             echo "written=true"

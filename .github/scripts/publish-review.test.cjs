@@ -756,15 +756,21 @@ const TEN_NAMED = BINARIES.slice(0, 10)
   .map((p) => `\`${p}\``)
   .join(", ");
 test("a partial review states its coverage first, records no head and fails, with no completion notice", async () => {
-  for (const [coverage, size] of [
-    [{ read: 2, changed: 1186 }, /^read 2 of 1186 changed file\(s\)\. /u],
+  const SPLIT =
+    " A re-run of this diff stays partial. Split the pull request into smaller ones.";
+  const BINARY_REMEDY =
+    " An audio, image, video or font file whose extension matches its content is shown by its header only; any other binary file counts in full, so list it in the caller's `generated-data` file by a pull request merged first, since that list is read at the merge base.";
+  for (const [coverage, size, remedy] of [
+    [{ read: 2, changed: 1186 }, /^read 2 of 1186 changed file\(s\)\. /u, ""],
     [
       { read: 3, changed: 3, over_budget: 1330000 },
       /^read 3 of 3 changed file\(s\); the diff is 1330000 bytes, over one review's read budget\. /u,
+      SPLIT,
     ],
     [
       { read: 170, changed: 170, over_files: 170 },
       /^read 170 of 170 changed file\(s\); one review faced 170 files that are not copies, more than it reads whole\. /u,
+      SPLIT,
     ],
     // Every unread file is binary: the reason names them, first 10 by name.
     [
@@ -773,6 +779,7 @@ test("a partial review states its coverage first, records no head and fails, wit
         `^read 73 of 84 changed file\\(s\\); 11 binary file\\(s\\) not reviewable as text: ${TEN_NAMED} and 1 more\\. `,
         "u",
       ),
+      "",
     ],
     // Mixed: the existing reason stays, then the binary count.
     [
@@ -783,6 +790,7 @@ test("a partial review states its coverage first, records no head and fails, wit
         binary_files: ["t/fixtures.tar.gz"],
       },
       /^read 3 of 4 changed file\(s\); the diff is 1330000 bytes, over one review's read budget; 1 binary file\(s\) not reviewable as text: `t\/fixtures\.tar\.gz`\. /u,
+      SPLIT + BINARY_REMEDY,
     ],
   ]) {
     const { writes, log } = await publishReview({
@@ -808,9 +816,11 @@ test("a partial review states its coverage first, records no head and fails, wit
     const prefix = `**claude-review** partial review of \`${HEAD}\`: `;
     assert.ok(status.startsWith(prefix), status);
     assert.match(status.slice(prefix.length), size);
-    assert.match(
+    assert.ok(
+      status.endsWith(
+        `0 finding(s) in what was read, 0 as inline comments. This head is not reviewed.${remedy}`,
+      ),
       status,
-      /0 finding\(s\) in what was read, 0 as inline comments\. This head is not reviewed\.(?: A re-run of this diff stays partial\. Split the pull request into smaller ones\.(?: .*)?)?$/u,
     );
   }
 });
