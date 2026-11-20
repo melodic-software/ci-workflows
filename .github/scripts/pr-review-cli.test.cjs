@@ -5918,6 +5918,124 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
   );
 });
 
+test("the full-diff step shows a media file whose extension and magic bytes agree by its header only, in every leg", () => {
+  const { dir, origin } = originRepo("pr-review-cli-media-");
+  // A 400 KB recording, over READ_BUDGET under --text, with NUL bytes.
+  const wav = (fill) =>
+    Buffer.concat([
+      Buffer.from("RIFF"),
+      Buffer.alloc(4),
+      Buffer.from("WAVEfmt "),
+      Buffer.alloc(400000, fill),
+    ]);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(2000),
+  ]);
+  writeAt(origin, "src/a.js", "a1\n");
+  writeAt(origin, "sounds/old.wav", wav(1));
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  writeAt(origin, "src/a.js", "a2\n");
+  writeAt(origin, "sounds/rain.wav", wav(2));
+  writeAt(origin, "img/logo.png", png);
+  // A script named .wav: its magic bytes are no recording's.
+  writeAt(origin, "sounds/fake.wav", "#!/bin/sh\necho hidden-payload\n");
+  writeAt(origin, "held/rain.wav", wav(3));
+  writeAt(origin, "bin/run.wav", wav(4));
+  // The head asks for its recordings to be diffed as text.
+  writeAt(origin, ".gitattributes", "*.wav diff\n");
+  fs.rmSync(path.join(origin, "sounds/old.wav"));
+  git(origin, "add", "-A");
+  git(origin, "update-index", "--chmod=+x", "bin/run.wav");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  for (const job of [key, subscription, fallback]) {
+    const fullDiff = step(job, "full-diff");
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    const output = `${work}.out`;
+    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+      cwd: work,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: dir,
+        GH_TOKEN: "test-token",
+        GITHUB_SERVER_URL: "https://github.invalid",
+        GITHUB_OUTPUT: output,
+        MERGE_BASE: base,
+        HEAD_SHA: head,
+        DIFF_FILE: fullDiff.env.DIFF_FILE,
+        FILE_LIST: fullDiff.env.FILE_LIST,
+        HOLD_PATHS: "held/**\n",
+        SENSITIVE_PATHS: workflow.env.SENSITIVE_PATHS,
+        GENERATED_COPIES: "",
+        GENERATED_DATA: "",
+        DATA_FLOOR_BYTES: workflow.env.DATA_FLOOR_BYTES,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const out = fs.readFileSync(output, "utf8");
+    const diff = fs.readFileSync(
+      path.join(work, ".claude-lane/pr.diff"),
+      "latin1",
+    );
+    const section = (p) => {
+      const start = diff.indexOf(`diff --git a/${p} b/${p}\n`);
+      assert.notEqual(start, -1, `${job.name}: no section for ${p}`);
+      const next = diff.indexOf("\ndiff --git ", start + 1);
+      return diff.slice(start, next === -1 ? diff.length : next + 1);
+    };
+    // The recordings and the image are header-only, the deletion included,
+    // whatever the head's .gitattributes asks.
+    for (const p of ["img/logo.png", "sounds/old.wav", "sounds/rain.wav"]) {
+      assert.match(
+        section(p),
+        /^Binary files .* differ$/mu,
+        `${job.name}: ${p}`,
+      );
+      assert.ok(
+        section(p).length < 400,
+        `${job.name}: ${p} is ${section(p).length} bytes`,
+      );
+    }
+    // A script named .wav, a held path and an executable stay in the --text diff.
+    assert.match(
+      section("sounds/fake.wav"),
+      /^\+echo hidden-payload$/mu,
+      job.name,
+    );
+    assert.ok(section("held/rain.wav").length > 400000, job.name);
+    assert.ok(section("bin/run.wav").length > 400000, job.name);
+    const media = fs.readFileSync(
+      path.join(work, ".claude-lane/media-files.txt"),
+      "utf8",
+    );
+    assert.deepEqual(
+      media
+        .trim()
+        .split("\n")
+        .map((line) => line.split("\t").slice(0, 3)),
+      [
+        ["img/logo.png", "image/png", "2008 bytes"],
+        ["sounds/old.wav", "audio/wav", "400016 bytes"],
+        ["sounds/rain.wav", "audio/wav", "400016 bytes"],
+      ],
+      job.name,
+    );
+    assert.match(media, /\tblob [0-9a-f]{40}$/mu, job.name);
+    // Each media file still counts as a changed file in scope, the deletion excepted.
+    assert.match(out, /^files=7$/mu, job.name);
+    assert.match(
+      out,
+      /3 media file\(s\) are in the diff by their section header only/u,
+      job.name,
+    );
+  }
+});
+
 test("the extract step names a whole review's binary files and changes no count", async () => {
   const dir = makeTemporaryDirectory("pr-review-cli-extract-binary-");
   const list = (name, text) => {

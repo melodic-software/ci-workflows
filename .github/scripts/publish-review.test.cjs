@@ -14,6 +14,7 @@ const test = require("node:test");
 
 const {
   commentableLines,
+  partialRemedy,
   placeComments,
   run,
   stripHtml,
@@ -809,7 +810,7 @@ test("a partial review states its coverage first, records no head and fails, wit
     assert.match(status.slice(prefix.length), size);
     assert.match(
       status,
-      /0 finding\(s\) in what was read, 0 as inline comments\. This head is not reviewed\.$/u,
+      /0 finding\(s\) in what was read, 0 as inline comments\. This head is not reviewed\.(?: A re-run of this diff stays partial\. Split the pull request into smaller ones\.(?: .*)?)?$/u,
     );
   }
 });
@@ -1011,4 +1012,28 @@ test("a finding moved to the summary loses its binding and footer there", async 
   const { writes } = await publishReview(review, { GITHUB_RUN_ID: "4242" });
   assert.match(writes[0][1].body, /`a\.js:9` \(RIGHT\): Off by one\.$/mu);
   assert.doesNotMatch(writes[0][1].body, /claude-lane-run|claude-lane: /u);
+});
+
+test("a partial review over the budget names what makes the next review complete", () => {
+  assert.equal(
+    partialRemedy({ read: 4, changed: 5, unread_files: ["src/a.js"] }),
+    "",
+  );
+  assert.equal(
+    partialRemedy({ read: 3, changed: 3, over_budget: 1330000 }),
+    " A re-run of this diff stays partial. Split the pull request into smaller ones.",
+  );
+  assert.match(
+    partialRemedy({ read: 170, changed: 170, over_files: 170 }),
+    /^ A re-run of this diff stays partial\. Split the pull request into smaller ones\.$/u,
+  );
+  assert.match(
+    partialRemedy({
+      read: 3,
+      changed: 4,
+      over_budget: 1330000,
+      binary_files: ["t/fixtures.tar.gz"],
+    }),
+    /shown by its header only; any other binary file counts in full, so list it in the caller's `generated-data` file by a pull request merged first/u,
+  );
 });
