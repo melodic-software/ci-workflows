@@ -1919,6 +1919,24 @@ with:
   generated-data: scripts/generated-data.txt
 ```
 
+**Media files.** The `media-paths` input is a repository path to a file of
+globs naming where audio, image, video and font files live, read at the merge
+base like `generated-data`, so a pull request cannot choose which of its own
+files skip text review. A changed file under one of them, whose extension and
+magic bytes name the same type, that is a non-executable regular file outside
+`hold-paths` and SENSITIVE_PATHS, keeps git's header-only section instead of
+its bytes under `--text`, followed by its runs of 10 or more printable bytes
+behind `|`; a file with 16384 or more bytes of such runs, and every other
+file, keeps its `--text` section. A moved file under the globs at both paths
+is one rename section. `.claude-lane/media-files.txt` names each one's type,
+size and blob. A recording or image then no longer puts a pull request over
+the read budget.
+
+```yaml
+with:
+  media-paths: scripts/review-media-paths.txt
+```
+
 **Binary files.** A whole review names the files in scope that
 `git diff --numstat` counts no lines for (`-<TAB>-`), at a path of letters,
 digits and `._/@+-`, as `binary_files` in its coverage. They stay in the diff,

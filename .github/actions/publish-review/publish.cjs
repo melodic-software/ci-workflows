@@ -272,7 +272,19 @@ function statusLine(lane, head, coverage, findings, inline) {
   const read = coverageText(coverage);
   if (!isPartial(coverage))
     return `**${lane}** reviewed \`${head}\`: ${read}; ${findings} finding(s), ${inline} as inline comments.`;
-  return `**${lane}** partial review of \`${head}\`: ${read}${partialReason(coverage)}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.`;
+  return `**${lane}** partial review of \`${head}\`: ${read}${partialReason(coverage)}. ${findings} finding(s) in what was read, ${inline} as inline comments. This head is not reviewed.${partialRemedy(coverage)}`;
+}
+
+// What makes the next review of a partial one complete, since a re-run of
+// the same diff stays partial: an empty string when only missing read
+// evidence made it partial.
+function partialRemedy(coverage) {
+  if (coverage.over_budget === undefined && coverage.over_files === undefined) return "";
+  const binary =
+    (coverage.binary_files ?? []).length === 0
+      ? ""
+      : " An audio, image, video or font file whose extension matches its content is shown by its header only; any other binary file counts in full, so list it in the caller's `generated-data` file by a pull request merged first, since that list is read at the merge base.";
+  return ` A re-run of this diff stays partial. Split the pull request into smaller ones.${binary}`;
 }
 
 // The leg whose outputs count: the subscription job's when it ran, else the
@@ -850,6 +862,7 @@ module.exports = {
   judge,
   loadGate,
   partialReason,
+  partialRemedy,
   placeComments,
   run,
   scan,
