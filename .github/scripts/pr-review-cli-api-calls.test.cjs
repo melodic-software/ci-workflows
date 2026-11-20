@@ -348,6 +348,9 @@ async function spend({
         );
   const keySteps = {
     scope: { outputs: scopeOutputs },
+    // No executable or archive changed. The step reads its merge base from
+    // the full-diff or scope step and spends no request then.
+    opaque: { outputs: { count: "none" } },
     claude: { outputs: {} },
     credential: { outputs: { present: "true" } },
     "review-outcome": { outputs: { "review-failed": "false" } },
@@ -702,6 +705,7 @@ test("the hold reads no file list, with or without the scope list", async () => 
         KEY_CLASS: "",
         KEY_VERDICT: "complete",
         KEY_REVIEW: JSON.stringify(NONE),
+        OPAQUE: "none",
       },
     });
     assert.equal(outputs.hold, "false");

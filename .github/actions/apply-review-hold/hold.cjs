@@ -4,8 +4,9 @@
 // STATUS_JOB_LEGACY (optional, the job's former names, comma-separated, each
 // read the same way; a list with an empty name reads no run),
 // PR_NUMBER, HEAD_SHA, BASE_REF (the pull request's base branch), PUBLISH_GATE, TRUSTED_AUTHOR_IDS (the people whose cost decision
-// counts), and the legs' KEY_* and SUB_* outputs that publish-review's judge
-// reads. It only adds: the label and one marker comment. Every write goes
+// counts), the legs' KEY_* and SUB_* outputs that publish-review's judge
+// reads, OPAQUE, OPAQUE_FILES and LEG_RESULTS (binaryHold), and HELD (a leg held:
+// its verdict is unknown, so only the binary hold applies). It only adds: the label and one marker comment. Every write goes
 // through issues.addLabels or issues.createComment.
 "use strict";
 
@@ -18,10 +19,11 @@ const {
   writeRecord,
 } = require("../publish-review/publish.cjs");
 
-// The criteria that stop a pull request: a real-charge cost and a CRITICAL
-// security finding. A trusted path (the review's trust-gate, or hold-paths)
+// The criteria that stop a pull request: a real-charge cost, a CRITICAL
+// security finding, and a changed executable or archive the base branch's
+// binary allowlist does not list (a leg's own step finds it, never the model). A trusted path (the review's trust-gate, or hold-paths)
 // is a reason for extra security scrutiny, never a stop by itself.
-const CRITERIA = ["cost", "critical-security"];
+const CRITERIA = ["cost", "critical-security", "binary-artifact"];
 const MAX_REASON = 2000;
 
 // The hold the counted leg's checked review returned, or null.
@@ -31,11 +33,63 @@ function modelHold(env, core) {
   if (!hold || !Array.isArray(hold.criteria)) return null;
   if (hold.criteria.includes("trust-gate"))
     core.info(`${env.LANE_ID}: the review returned trust-gate; trust-gate is not a hold.`);
-  const criteria = hold.criteria.filter((c) => CRITERIA.includes(c));
+  // binary-artifact is the job's own, never the model's.
+  const criteria = hold.criteria.filter((c) => CRITERIA.includes(c) && c !== "binary-artifact");
   if (criteria.length === 0) return null;
   return {
     criteria,
     reason: typeof hold.reason === "string" ? hold.reason : "",
+  };
+}
+
+// The job's own hold for changed executables and archives, or null: from a
+// leg's `Find executables and archives` step, never the review, so it holds
+// whatever the model returned and whether the review completed. OPAQUE is
+// `none`, a count, or `error`; OPAQUE_FILES up to 10 `<path>\t<sha256>\t<why>`
+// lines. A count always holds. `error`, or no count, holds only when a leg
+// job succeeded (LEG_RESULTS, each leg's result, comma-separated) or the
+// counted leg's review is ok, and none held (HELD): that run could otherwise let the pull request through
+// unchecked. A held, failed or cancelled run leaves no completed review, and
+// the next run checks again, so it labels nothing a person must remove.
+const SHOWN = 10;
+function binaryHold(env) {
+  const count = String(env.OPAQUE ?? "");
+  if (count === "none") return null;
+  const counted = /^[1-9][0-9]{0,5}$/u.test(count);
+  const succeeded = String(env.LEG_RESULTS ?? "")
+    .split(",")
+    .includes("success");
+  // A counted leg whose review is ok would publish: with no count, it holds.
+  if (!counted && (env.HELD || (!succeeded && !judge(env).ok))) return null;
+  const rows = counted
+    ? String(env.OPAQUE_FILES ?? "")
+        .split("\n")
+        .filter(Boolean)
+        .map((row) => row.split("\t"))
+        .filter(
+          (r) =>
+            r.length === 3 &&
+            /^(?:[0-9a-f]{64}|unread)$/u.test(r[1]) &&
+            /^[A-Za-z0-9 .-]{1,40}$/u.test(r[2]),
+        )
+    : [];
+  const total = Number(count);
+  if (rows.length === 0 || rows.length !== Math.min(total, SHOWN))
+    return {
+      reason:
+        "The job could not name the changed executables and archives, so it holds the pull request as if one changed. A person reviews the pull request's binary files.",
+    };
+  const named = rows.map(([name, sum, why]) =>
+    /^[A-Za-z0-9._/@+ -]{1,300}$/u.test(name)
+      ? `- \`${name}\` (${why}, sha256 ${sum})`
+      : `- a file with an unusual path (${why}, sha256 ${sum})`,
+  );
+  return {
+    reason: [
+      `${total} changed file(s) are executables or archives no review reads, and the base branch's binary allowlist does not list them. A person reviews each file. To allow one, a separate pull request adds its \`<sha256>  <path>\` line to the allowlist file on the base branch; this branch then updates from the base.`,
+      ...named,
+      ...(total > SHOWN ? [`- and ${total - SHOWN} more`] : []),
+    ].join("\n"),
   };
 }
 
@@ -635,7 +689,8 @@ async function run({ github, context, core, env = process.env }) {
   const number = Number(env.PR_NUMBER);
   const lane = env.LANE_ID;
 
-  const model = modelHold(env, core);
+  const model = env.HELD ? null : modelHold(env, core);
+  const binary = binaryHold(env);
   // The pull request's comments, read once: for the cost decision and for
   // the marker this step posts.
   let prComments;
@@ -670,12 +725,19 @@ async function run({ github, context, core, env = process.env }) {
       core.info(`${lane}: no recorded cost decision carries (${result.why}); the cost hold stays.`);
     }
   }
-  const criteria = CRITERIA.filter((c) => model?.criteria.includes(c));
+  const criteria = CRITERIA.filter((c) =>
+    c === "binary-artifact" ? binary !== null : model?.criteria.includes(c),
+  );
   core.setOutput("hold", criteria.length > 0 ? "true" : "false");
   core.setOutput("criteria", criteria.join(","));
   if (criteria.length === 0) return { hold: false, criteria };
 
-  let reason = stripHtml(model.reason).slice(0, 2 * MAX_REASON);
+  // The job's reason first, so the model's cannot push it past the cut.
+  let reason = stripHtml(
+    [binary?.reason, model?.criteria.length > 0 ? model.reason : ""]
+      .filter(Boolean)
+      .join("\n\n"),
+  ).slice(0, 2 * MAX_REASON);
   const findSecret = await loadGate(env);
   const scanned = findSecret
     ? scan(findSecret, [["the hold reason", reason]])

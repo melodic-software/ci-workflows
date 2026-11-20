@@ -1065,7 +1065,7 @@ test("each pull request value reads the resolve-pull-request job's output with p
   // Each leg read the event 17 times (checkout, scope 4, full diff 2,
   // context, settled threads 4, prior findings 2, compose 2, handoff
   // upload); the status job 8 (download, hold note, publish 3, hold 3).
-  assert.equal(seen, 3 * 17 + 8);
+  assert.equal(seen, 3 * 19 + 8);
 });
 
 test("the subscription job starts only on an exact handoff, a key job with no key or a credit skip", () => {
@@ -6151,6 +6151,197 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
       /6 media file\(s\) are in the diff by their section header only/u,
       job.name,
     );
+  }
+});
+
+test("the executables-and-archives step runs on every scoped run and lists each changed one the base's allowlist does not name, in every leg", () => {
+  const { dir, origin } = originRepo("pr-review-cli-opaque-");
+  const sha256 = (bytes) =>
+    require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+  const elf = Buffer.concat([
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+    Buffer.alloc(100, 1),
+  ]);
+  const zip = (seed) =>
+    Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.alloc(200, seed),
+    ]);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(3000, 9),
+  ]);
+  // A tar is named only by `ustar` at offset 257.
+  const tar = Buffer.alloc(1024, 0);
+  tar.write("hello.txt", 0);
+  tar.write("ustar", 257);
+  // Over 64 KB, so a read that pipes the whole blob would hit SIGPIPE.
+  const big = Buffer.concat([
+    Buffer.from([0x1f, 0x8b]),
+    Buffer.alloc(200000, 7),
+  ]);
+  const allowed = zip(3);
+  writeAt(origin, "src/a.js", "a1\n");
+  fs.mkdirSync(path.join(origin, "lib"), { recursive: true });
+  fs.symlinkSync("../src/a.js", path.join(origin, "lib/link"));
+  writeAt(origin, "move/old.bin", zip(9));
+  writeAt(
+    origin,
+    "scripts/allow.txt",
+    `# allowed\n${sha256(allowed)}  vendor/ok.zip\n${sha256(zip(4))} *vendor/wrong.zip\n`,
+  );
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  writeAt(origin, "src/a.js", "a2\n");
+  writeAt(origin, "tools/run.txt", elf);
+  writeAt(origin, "pkg/x.dat", tar);
+  writeAt(origin, "pkg/big.log", big);
+  writeAt(
+    origin,
+    "pkg/thing",
+    Buffer.from("!<arch>\nfoo.o/  0  0  0  644  4  `\n"),
+  );
+  writeAt(
+    origin,
+    "assets/model.bin",
+    "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 12\n",
+  );
+  // An image with a zip appended is held; a plain image passes.
+  writeAt(
+    origin,
+    "img/shot.png",
+    Buffer.concat([
+      png,
+      Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+      Buffer.alloc(18),
+    ]),
+  );
+  writeAt(origin, "img/plain.png", png);
+  // A pointer with git-lfs's pre-release spec URL.
+  writeAt(
+    origin,
+    "assets/old.bin",
+    "version https://hawser.github.com/spec/v1\noid sha256:abc\nsize 12\n",
+  );
+  // Text the head's attributes re-encode on checkout.
+  writeAt(
+    origin,
+    ".gitattributes",
+    // An unset attribute (`-filter`) rewrites nothing: it passes.
+    "notes/secret.txt working-tree-encoding=UTF-16BE\nnotes/plain.txt -filter\n",
+  );
+  writeAt(origin, "notes/secret.txt", "hello\n");
+  writeAt(origin, "notes/plain.txt", "hello\n");
+  writeAt(origin, "has space/tool.png", zip(1));
+  // A text file with a listed extension.
+  writeAt(origin, "scripts/build.exe", "echo hi\n");
+  writeAt(origin, "vendor/ok.zip", allowed);
+  // Listed path, other bytes.
+  writeAt(origin, "vendor/wrong.zip", zip(5));
+  // Listed only by the head's copy of the allowlist.
+  writeAt(origin, "vendor/head.zip", zip(6));
+  fs.appendFileSync(
+    path.join(origin, "scripts/allow.txt"),
+    `${sha256(zip(6))}  vendor/head.zip\n`,
+  );
+  // A symlink turned into an archive.
+  fs.rmSync(path.join(origin, "lib/link"));
+  writeAt(origin, "lib/link", zip(7));
+  fs.renameSync(
+    path.join(origin, "move/old.bin"),
+    path.join(origin, "move/new.bin"),
+  );
+  git(origin, "add", "-A");
+  git(origin, "commit", "--quiet", "-m", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  const expected = [
+    [".gitattributes", "checkout attribute rule"],
+    ["assets/model.bin", "Git LFS pointer"],
+    ["assets/old.bin", "Git LFS pointer"],
+    ["has space/tool.png", "zip"],
+    ["img/shot.png", "zip appended"],
+    ["lib/link", "zip"],
+    ["move/new.bin", "zip"],
+    ["notes/secret.txt", "checkout attribute"],
+    ["pkg/big.log", "gzip"],
+    ["pkg/thing", "ar archive"],
+    ["pkg/x.dat", "tar"],
+    ["scripts/build.exe", "extension .exe"],
+    ["tools/run.txt", "ELF"],
+    ["vendor/head.zip", "zip"],
+    ["vendor/wrong.zip", "zip"],
+  ];
+  for (const job of [key, subscription, fallback]) {
+    const opaque = step(job, "opaque");
+    // It runs on a docs-only or no-change skip too, and the full-diff step
+    // no longer checks.
+    assert.equal(
+      opaque.if,
+      "always() && steps.scope.outcome != 'skipped'",
+      job.name,
+    );
+    assert.equal(
+      opaque.env.BINARY_ALLOWLIST,
+      `\${{ inputs.binary-allowlist }}`,
+      job.name,
+    );
+    assert.equal(
+      step(job, "full-diff").env.BINARY_ALLOWLIST,
+      undefined,
+      job.name,
+    );
+    assert.equal(
+      job.outputs.opaque,
+      `\${{ steps.opaque.outputs.count }}`,
+      job.name,
+    );
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    const output = `${work}.out`;
+    const run = (env) =>
+      spawnSync("bash", ["-e", "-c", opaque.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          BINARY_ALLOWLIST: "scripts/allow.txt",
+          ...env,
+        },
+      });
+    const result = run({});
+    assert.equal(result.status, 0, result.stderr);
+    const out = fs.readFileSync(output, "utf8");
+    assert.match(out, new RegExp(`^count=${expected.length}$`, "mu"), job.name);
+    const files = /^files<<(EOF_[0-9a-f]{16})\n([\s\S]*?)\n\1$/mu.exec(out);
+    assert.ok(files, job.name);
+    const rows = files[2].split("\n").map((line) => line.split("\t"));
+    // Up to 10, in git's path order.
+    assert.deepEqual(
+      rows.map(([p, , why]) => [p, why]),
+      expected.slice(0, 10),
+      job.name,
+    );
+    assert.equal(
+      rows.find(([p]) => p === "lib/link")[1],
+      sha256(zip(7)),
+      job.name,
+    );
+    // A merge base it cannot read holds as an error.
+    fs.rmSync(output);
+    const broken = run({ MERGE_BASE: "f".repeat(40) });
+    assert.equal(broken.status, 0, broken.stderr);
+    assert.match(fs.readFileSync(output, "utf8"), /^count=error$/mu, job.name);
+    // Nothing changed: none.
+    fs.rmSync(output);
+    assert.equal(run({ HEAD_SHA: base }).status, 0);
+    assert.match(fs.readFileSync(output, "utf8"), /^count=none$/mu, job.name);
   }
 });
 

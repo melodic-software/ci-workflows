@@ -353,6 +353,8 @@ const baseEnv = (extra = {}) => ({
   KEY_CLASS: "",
   KEY_VERDICT: "complete",
   KEY_REVIEW: review(),
+  // No executable or archive changed.
+  OPAQUE: "none",
   ...extra,
 });
 
@@ -452,6 +454,141 @@ test("a changed file matching hold-paths holds nothing and reads no file list", 
     assert.deepEqual(core.outputs, { hold: "false", criteria: "" });
     assert.deepEqual(writes, []);
     assert.deepEqual(github.calls, [], JSON.stringify(file));
+  }
+});
+
+test("a leg's executables-and-archives count holds binary-artifact whatever the review returned", async () => {
+  const SUM = "a".repeat(64);
+  const files = `tools/run\t${SUM}\tELF\nodd\`name\t${SUM}\tzip`;
+  // No review at all: the leg failed, and the job's own count still holds.
+  const failed = await apply(
+    baseEnv({
+      KEY_FAILED: "true",
+      KEY_CLASS: "timeout",
+      KEY_REVIEW: "",
+      OPAQUE: "2",
+      OPAQUE_FILES: files,
+      LEG_RESULTS: "success,skipped,skipped",
+    }),
+    { files: ["tools/run"] },
+  );
+  assert.equal(failed.error, undefined);
+  assert.equal(failed.core.outputs.criteria, "binary-artifact");
+  const body = failed.writes[1][1].body;
+  assert.match(body, /criteria=binary-artifact -->/u);
+  assert.match(body, /^2 changed file\(s\) are executables or archives/mu);
+  assert.match(
+    body,
+    new RegExp(`^- \`tools/run\` \\(ELF, sha256 ${SUM}\\)$`, "mu"),
+  );
+  assert.match(body, /^- a file with an unusual path \(zip/mu);
+  // With a model cost hold: both, the job's reason first.
+  const both = await apply(
+    baseEnv({
+      KEY_REVIEW: review({
+        hold: { criteria: ["cost"], reason: "Adds a runner." },
+      }),
+      OPAQUE: "2",
+      OPAQUE_FILES: files,
+      LEG_RESULTS: "success,skipped,skipped",
+    }),
+    { files: ["tools/run"] },
+  );
+  assert.equal(both.core.outputs.criteria, "cost,binary-artifact");
+  assert.ok(
+    both.writes[1][1].body.indexOf("executables or archives") <
+      both.writes[1][1].body.indexOf("Adds a runner."),
+  );
+  // A docs-only skip still holds; an error, a count the list cannot back,
+  // or no count after a leg scoped the pull request holds naming no file.
+  for (const [what, extra] of [
+    [
+      "a skip",
+      {
+        OPAQUE: "1",
+        OPAQUE_FILES: `tools/run\t${SUM}\tELF`,
+        LEG_RESULTS: "success,skipped,skipped",
+      },
+    ],
+    ["an error", { OPAQUE: "error", LEG_RESULTS: "success,skipped,skipped" }],
+    [
+      "one short",
+      {
+        OPAQUE: "3",
+        OPAQUE_FILES: files,
+        LEG_RESULTS: "success,skipped,skipped",
+      },
+    ],
+    ["no count", { OPAQUE: "", LEG_RESULTS: "success,skipped,skipped" }],
+  ]) {
+    const held = await apply(
+      baseEnv({ KEY_REVIEW: "", KEY_FAILED: "true", ...extra }),
+      {
+        files: ["tools/run"],
+      },
+    );
+    assert.equal(held.core.outputs.criteria, "binary-artifact", what);
+    if (what !== "a skip")
+      assert.match(held.writes[1][1].body, /The job could not name/u, what);
+  }
+  // A held leg's verdict is unknown: the model's cost hold is not read, the
+  // binary hold still applies.
+  const held = await apply(
+    baseEnv({
+      KEY_REVIEW: review({ hold: { criteria: ["cost"], reason: "R" } }),
+      OPAQUE: "2",
+      OPAQUE_FILES: files,
+      LEG_RESULTS: "success,skipped,skipped",
+      HELD: "true",
+    }),
+    { files: ["tools/run"] },
+  );
+  assert.equal(held.core.outputs.criteria, "binary-artifact");
+  // A held, failed or cancelled run with no count labels nothing; the next
+  // run checks again.
+  for (const [what, extra] of [
+    [
+      "held error",
+      { OPAQUE: "error", LEG_RESULTS: "success,skipped,skipped", HELD: "true" },
+    ],
+    ["cancelled", { OPAQUE: "", LEG_RESULTS: "cancelled,skipped,skipped" }],
+    ["failed", { OPAQUE: "error", LEG_RESULTS: "failure,skipped,skipped" }],
+  ]) {
+    const quiet = await apply(
+      baseEnv({ KEY_REVIEW: "", KEY_FAILED: "true", ...extra }),
+      {
+        files: ["tools/run"],
+      },
+    );
+    assert.deepEqual(quiet.writes, [], what);
+  }
+  // None found, or no leg scoped the pull request: no binary hold; and a
+  // model that returns binary-artifact itself holds nothing.
+  for (const [what, extra] of [
+    ["none", { OPAQUE: "none", LEG_RESULTS: "success,skipped,skipped" }],
+    [
+      "unscoped",
+      {
+        OPAQUE: "",
+        LEG_RESULTS: "skipped,skipped,skipped",
+        KEY_REVIEW: "",
+        KEY_FAILED: "true",
+      },
+    ],
+    [
+      "model",
+      {
+        KEY_REVIEW: review({
+          hold: { criteria: ["binary-artifact"], reason: "R" },
+        }),
+        OPAQUE: "none",
+        LEG_RESULTS: "success,skipped,skipped",
+      },
+    ],
+  ]) {
+    const clear = await apply(baseEnv(extra), { files: ["tools/run"] });
+    assert.deepEqual(clear.core.outputs, { hold: "false", criteria: "" }, what);
+    assert.deepEqual(clear.writes, [], what);
   }
 });
 
