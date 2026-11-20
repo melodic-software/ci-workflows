@@ -1667,14 +1667,16 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
+          media_blob=.claude-lane/media-blob
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
             [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
-            # The first 16 bytes as hex; head closes the pipe early, so this
-            # one read runs without pipefail.
-            magic="$(set +o pipefail; git cat-file blob "$blob" | head -c 16 | od -An -tx1 | tr -d ' \n')" || continue
+            # The blob is read once; a read that fails leaves the file in the
+            # --text diff.
+            git cat-file blob "$blob" > "$media_blob" || continue
+            magic="$(head -c 16 "$media_blob" | od -An -tx1 | tr -d ' \n')" || continue
             type=''
             case ${ext,,} in
             wav) [[ $magic == 52494646????????57415645* ]] && type=audio/wav ;;
@@ -1696,17 +1698,24 @@ jobs:
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
             # A valid magic prefix and one NUL byte would otherwise hide any
-            # text after them, so the file's runs of 32 or more printable
-            # bytes are printed under its header. Real media holds little such
-            # text; a file with more than 4096 bytes of it stays in the --text
-            # diff.
-            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
-            [ "${#runs}" -le 4096 ] || continue
+            # text after them, so the file's runs of 10 or more printable,
+            # tab, CR or newline bytes are printed under its header; a script
+            # of short lines is one run. Every other byte ends a run, and a
+            # newline inside one is kept as \001 until it is printed. The
+            # bedroom recordings hold at most 7,333 bytes of such runs, so a
+            # file with more than 16384 bytes of them stays in the --text
+            # diff. grep's 1 (no run) and 141 (the cap cut the pipe) are not
+            # failures; any other leaves the file in the --text diff.
+            rc=0
+            runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
+            [ "${#runs}" -le 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
+          rm -f "$media_blob"
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
@@ -1726,8 +1735,8 @@ jobs:
               [ -n "$section" ] || continue
               printf '%s\n' "$section"
               if [ -n "${media_runs[$i]}" ]; then
-                echo "Printable text in this file (runs of 32 or more characters):"
-                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+                echo "Printable text in this file (runs of 10 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | tr '\001' '\n' | sed 's/^/| /'
               fi
             done
           }
@@ -4507,14 +4516,16 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
+          media_blob=.claude-lane/media-blob
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
             [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
-            # The first 16 bytes as hex; head closes the pipe early, so this
-            # one read runs without pipefail.
-            magic="$(set +o pipefail; git cat-file blob "$blob" | head -c 16 | od -An -tx1 | tr -d ' \n')" || continue
+            # The blob is read once; a read that fails leaves the file in the
+            # --text diff.
+            git cat-file blob "$blob" > "$media_blob" || continue
+            magic="$(head -c 16 "$media_blob" | od -An -tx1 | tr -d ' \n')" || continue
             type=''
             case ${ext,,} in
             wav) [[ $magic == 52494646????????57415645* ]] && type=audio/wav ;;
@@ -4536,17 +4547,24 @@ jobs:
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
             # A valid magic prefix and one NUL byte would otherwise hide any
-            # text after them, so the file's runs of 32 or more printable
-            # bytes are printed under its header. Real media holds little such
-            # text; a file with more than 4096 bytes of it stays in the --text
-            # diff.
-            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
-            [ "${#runs}" -le 4096 ] || continue
+            # text after them, so the file's runs of 10 or more printable,
+            # tab, CR or newline bytes are printed under its header; a script
+            # of short lines is one run. Every other byte ends a run, and a
+            # newline inside one is kept as \001 until it is printed. The
+            # bedroom recordings hold at most 7,333 bytes of such runs, so a
+            # file with more than 16384 bytes of them stays in the --text
+            # diff. grep's 1 (no run) and 141 (the cap cut the pipe) are not
+            # failures; any other leaves the file in the --text diff.
+            rc=0
+            runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
+            [ "${#runs}" -le 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
+          rm -f "$media_blob"
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
@@ -4566,8 +4584,8 @@ jobs:
               [ -n "$section" ] || continue
               printf '%s\n' "$section"
               if [ -n "${media_runs[$i]}" ]; then
-                echo "Printable text in this file (runs of 32 or more characters):"
-                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+                echo "Printable text in this file (runs of 10 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | tr '\001' '\n' | sed 's/^/| /'
               fi
             done
           }
@@ -7317,14 +7335,16 @@ jobs:
             { print blob "\t" $NF (old == "" ? "" : "\t" old) }') || candidates=()
           media_runs=()
           media_old=()
+          media_blob=.claude-lane/media-blob
           for c in "${candidates[@]}"; do
             blob=${c%%$'\t'*} p=${c#*$'\t'} old=''
             if [[ $p == *$'\t'* ]]; then old=${p#*$'\t'} p=${p%%$'\t'*}; fi
             [[ ${p##*/} == *.* ]] || continue
             ext=${p##*.}
-            # The first 16 bytes as hex; head closes the pipe early, so this
-            # one read runs without pipefail.
-            magic="$(set +o pipefail; git cat-file blob "$blob" | head -c 16 | od -An -tx1 | tr -d ' \n')" || continue
+            # The blob is read once; a read that fails leaves the file in the
+            # --text diff.
+            git cat-file blob "$blob" > "$media_blob" || continue
+            magic="$(head -c 16 "$media_blob" | od -An -tx1 | tr -d ' \n')" || continue
             type=''
             case ${ext,,} in
             wav) [[ $magic == 52494646????????57415645* ]] && type=audio/wav ;;
@@ -7346,17 +7366,24 @@ jobs:
             [ -n "$type" ] || continue
             size="$(git cat-file -s "$blob")" || continue
             # A valid magic prefix and one NUL byte would otherwise hide any
-            # text after them, so the file's runs of 32 or more printable
-            # bytes are printed under its header. Real media holds little such
-            # text; a file with more than 4096 bytes of it stays in the --text
-            # diff.
-            runs="$(set +o pipefail; git cat-file blob "$blob" | LC_ALL=C grep -aoE '[[:print:]]{32,}' | head -c 4097)" || runs=''
-            [ "${#runs}" -le 4096 ] || continue
+            # text after them, so the file's runs of 10 or more printable,
+            # tab, CR or newline bytes are printed under its header; a script
+            # of short lines is one run. Every other byte ends a run, and a
+            # newline inside one is kept as \001 until it is printed. The
+            # bedroom recordings hold at most 7,333 bytes of such runs, so a
+            # file with more than 16384 bytes of them stays in the --text
+            # diff. grep's 1 (no run) and 141 (the cap cut the pipe) are not
+            # failures; any other leaves the file in the --text diff.
+            rc=0
+            runs="$(tr '\n' '\001' < "$media_blob" | LC_ALL=C tr -c '\1\11\15\40-\176' '\n' | LC_ALL=C grep -aE '^.{10,}$' | head -c 16385)" || rc=$?
+            [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 141 ] || continue
+            [ "${#runs}" -le 16384 ] || continue
             media_runs+=("$runs")
             media_old+=("$old")
             media+=("$p")
             printf '%s\t%s\t%s bytes\tblob %s\n' "$p" "$type" "$size" "$blob" >> "$media_list"
           done
+          rm -f "$media_blob"
           # The --text diff leaves the media files out; each comes back below
           # as its own section.
           text=("${only[@]}")
@@ -7376,8 +7403,8 @@ jobs:
               [ -n "$section" ] || continue
               printf '%s\n' "$section"
               if [ -n "${media_runs[$i]}" ]; then
-                echo "Printable text in this file (runs of 32 or more characters):"
-                printf '%s\n' "${media_runs[$i]}" | sed 's/^/| /'
+                echo "Printable text in this file (runs of 10 or more characters):"
+                printf '%s\n' "${media_runs[$i]}" | tr '\001' '\n' | sed 's/^/| /'
               fi
             done
           }

