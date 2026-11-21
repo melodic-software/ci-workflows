@@ -376,8 +376,6 @@ conforming_body=$'No related issue: melodic-software/github-iac#396 tracks the p
 
 set_comments '[]'
 
-# --- step 0: no pull request in this event ---------------------------------
-
 # Without the empty-pr-number short circuit this fails on the missing PR fetch.
 echo 'case: an event with no pull request skips every check'
 set_pull 'feat: something' "$conforming_body" someone ''
@@ -387,8 +385,6 @@ expect_output 'title=skipped'
 expect_output 'do-not-merge=skipped'
 expect_output 'linkage=skipped'
 expect_no_gh_calls_at_all
-
-# --- merge group -------------------------------------------------------------
 
 queue_ref="refs/heads/gh-readonly-queue/main/pr-${pr_number}-0123456789abcdef0123456789abcdef01234567"
 
@@ -439,8 +435,6 @@ printf '%s\n' 'gh: Not Found (HTTP 404)' >"$fixtures/${pull_key}.err"
 run_case 1 PR_NUMBER='' EVENT_NAME=merge_group MERGE_GROUP_HEAD_REF="$queue_ref"
 expect_log "could not read pull request ${repository}#${pr_number} (HTTP 404)"
 rm -f -- "$fixtures/${pull_key}.err"
-
-# --- title check -----------------------------------------------------------
 
 # Without the title regex an unknown type would pass, so each accepted type has
 # to be shown accepted individually.
@@ -506,8 +500,6 @@ run_case 1 REQUIRE_SCOPE=true
 expect_output 'title=fail'
 expect_log 'a scope is REQUIRED'
 
-# --- do-not-merge label ----------------------------------------------------
-
 # Without the label check this exits 0.
 echo 'case: the do-not-merge label fails the step'
 set_pull 'feat: add check-contract' "$conforming_body" someone 'do-not-merge'
@@ -526,8 +518,6 @@ echo 'case: the blocking label name is configurable'
 set_pull 'feat: add check-contract' "$conforming_body" someone 'hold'
 run_case 1 DO_NOT_MERGE_LABEL=hold
 expect_output 'do-not-merge=fail'
-
-# --- linkage: closing keywords --------------------------------------------
 
 # Without the nine-form closing-keyword regex the past-tense and singular forms
 # fail linkage.
@@ -551,8 +541,6 @@ set_pull 'feat: add check-contract' "This prefixes #12 nothing"$'\n\n## Summary\
 run_case 0
 expect_output 'linkage=fail'
 expect_log 'Missing a native closing keyword'
-
-# --- linkage: no-issue markers and Refs ------------------------------------
 
 # Without the no-issue marker both phrasings fail linkage.
 echo 'case: both no-issue markers satisfy linkage'
@@ -583,8 +571,6 @@ echo 'case: a Refs marker with trailing prose does not satisfy linkage'
 set_pull 'feat: add check-contract' "Refs: #12 and some prose"$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
-
-# --- linkage: negated closers ----------------------------------------------
 
 # Without the negation window a disclaimer would pass while GitHub still closes
 # the issue on merge.
@@ -674,8 +660,6 @@ fi
 if ! awk -v a="$time_4000" -v b="$time_8000" 'BEGIN { exit !(b < 3 * a) }'; then
   fail_case "8000 repeats took ${time_8000} s, at least 3x the ${time_4000} s for 4000"
 fi
-
-# --- linkage: issue-ref-pattern --------------------------------------------
 
 sections=$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n'
 tracker_pattern='[a-z][a-z0-9]*-[0-9]+'
@@ -800,8 +784,6 @@ if [[ -e "$injected" ]]; then
   fail_case 'the issue-ref-pattern input executed as awk code'
 fi
 
-# --- linkage: masking ------------------------------------------------------
-
 # Without HTML-comment masking a PR template's commented-out example satisfies
 # the gate vacuously.
 echo 'case: a closing keyword only inside an HTML comment does not satisfy linkage'
@@ -823,8 +805,6 @@ echo 'case: a closing keyword only inside an inline code span does not satisfy l
 set_pull 'feat: add check-contract' 'Write `Closes #12` in the body.'$'\n\n## Summary\n\ns\n\n## Fix\n\nf\n\n## Verification\n\nv\n\n## Related\n\nr\n' someone ''
 run_case 0
 expect_output 'linkage=fail'
-
-# --- linkage: contract sections --------------------------------------------
 
 # Without the four-section check a body with only linkage passes.
 echo 'case: each missing contract section is reported by name'
@@ -856,8 +836,6 @@ set_pull 'feat: add check-contract' 'Closes #12'$'\n\n## Summary\n\n### Detail\n
 run_case 0
 expect_output 'linkage=pass'
 
-# --- linkage: exempt authors ----------------------------------------------
-
 # Without the exempt-author short circuit a bot body fails linkage.
 echo 'case: an exempt author skips the linkage check entirely'
 set_pull 'build: bump a dependency' 'Bumps a thing.' 'dependabot[bot]' ''
@@ -876,8 +854,6 @@ echo 'case: the last entry of a multi-author exempt list still matches'
 set_pull 'build: bump a dependency' 'Bumps a thing.' 'renovate[bot]' ''
 run_case 0 'EXEMPT_AUTHORS=dependabot[bot],renovate[bot]'
 expect_output 'linkage=exempt'
-
-# --- advisory outcome ------------------------------------------------------
 
 # Without the create branch no comment is posted on the first failing run.
 echo 'case: an advisory failure creates the marker comment and adds the label'
@@ -1039,8 +1015,6 @@ expect_log "::error::check-contract: could not read pull request ${repository}#$
 rm -f -- "$fixtures/${pull_key}.err"
 mv -- "$fixtures/${pull_key}.json.bak" "$fixtures/${pull_key}.json"
 
-# --- rate limits -----------------------------------------------------------
-
 primary_limit_message='gh: API rate limit exceeded for installation ID 1 (HTTP 403)'
 
 # Without the wait the first limited read fails a good pull request red.
@@ -1111,8 +1085,6 @@ if [[ "$(cat "$sleep_log")" != 60 ]]; then
 fi
 rm -f -- "$fixtures/GET_${comments_key}.1.err" "$fixtures/POST_${comments_key}.1.err"
 set_comments '[]'
-
-# --- the GraphQL read ------------------------------------------------------
 
 # Without reading the GraphQL `errors` array a primary rate limit, which
 # GraphQL answers with HTTP 200, is neither reported nor waited out, and a good
@@ -1221,8 +1193,6 @@ expect_gh_call "PATCH repos/${repository}/issues/comments/1001"
 expect_no_gh_call '-X GET '
 set_comments '[]'
 
-# --- comment-upsert capture ------------------------------------------------
-
 # Without the `.user.type == "Bot"` filter the gate edits a stranger's planted
 # comment instead of posting its own, and its guidance is never shown.
 echo 'case: a planted marker comment from a user account does not capture the upsert'
@@ -1252,8 +1222,6 @@ expect_gh_call "PATCH repos/${repository}/issues/comments/1200 "
 expect_no_gh_call 'comments/900'
 rm -f -- "$fixtures/GET_${comments_key}.pages.json"
 
-# --- annotation escaping ---------------------------------------------------
-
 # Without escaping, a title carrying a newline closes the annotation and the
 # rest of the title is interpreted as a second workflow command.
 echo 'case: an attacker-controlled title is escaped inside the annotation'
@@ -1266,8 +1234,6 @@ expect_output 'title=fail'
 expect_log '100%25 broken'
 expect_log '%0A::set-output'
 
-# --- input validation ------------------------------------------------------
-#
 # Every one of these values is interpolated into a `gh api` path.
 
 echo 'case: a malformed repository is rejected before any API call'
@@ -1280,8 +1246,6 @@ run_case 1 PR_NUMBER='7/../8'
 expect_log '::error::check-contract: pr-number must be a positive integer'
 expect_no_gh_calls_at_all
 
-# --- labels are not validated ----------------------------------------------
-#
 # GitHub labels may legally contain spaces and colons. Neither label reaches an
 # API path unencoded, so rejecting those characters would break real consumers
 # for no gain.
@@ -1307,8 +1271,6 @@ set_pull 'feat: add check-contract' "$conforming_body" someone 'needs-issue-link
 run_case 0 'LINKAGE_LABEL=needs-issue-linkage-é'
 expect_output 'linkage=pass'
 expect_gh_call "DELETE repos/${repository}/issues/${pr_number}/labels/needs-issue-linkage-%C3%A9"
-
-# --- hold label ------------------------------------------------------------
 
 # Without the opt-in default every caller on main would start failing held pull
 # requests at merge.
@@ -1445,8 +1407,6 @@ expect_output 'hold=pass'
 expect_gh_call '-f branch=release/v1'
 clear_queue
 
-# --- metadata contract -----------------------------------------------------
-
 echo 'case: action.yml still wires every input this harness exercises'
 action_metadata="$script_directory/action.yml"
 for input_name in token repository pr-number types require-scope do-not-merge-label enforce-hold-label hold-label exempt-authors linkage-label linkage-mode issue-ref-pattern rate-limit-wait-seconds; do
@@ -1473,8 +1433,6 @@ runner_default="$(sed -n "s/^DEFAULT_ISSUE_REF_PATTERN='\(.*\)'\$/\1/p" "$script
 if [[ -z "$metadata_default" || "$metadata_default" != "$runner_default" ]]; then
   fail_case "action.yml default '${metadata_default}' differs from run.sh default '${runner_default}'"
 fi
-
-# --- api-calls count -------------------------------------------------------
 
 summary_file="$temporary_directory/step-summary"
 

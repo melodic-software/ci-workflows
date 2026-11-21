@@ -1137,8 +1137,6 @@ test("names that would take the review past 100000 bytes are dropped, and the co
   assert.deepEqual(review.coverage, { read: 4, changed: 5 });
 });
 
-// --- report mode: logs the check, passes the extract step's review on ---
-
 const SHORT = {
   workspace: JOB_FILES,
   transcripts: { first: read(".claude-lane/pr.diff", DIFF, 8, 37) },
@@ -1259,8 +1257,6 @@ test("the format fallback is the same in both modes", () => {
     );
   }
 });
-
-// --- the fallback is reachable only by a real format change ---
 
 // fixtures/check-review-reads/notices.json: a local CLI 2.1.322 run's Reads
 // of a diff with offset 100 past its end, of an empty file, and of a file the

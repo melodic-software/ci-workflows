@@ -23,8 +23,6 @@ function rejects(source, expected) {
   );
 }
 
-// --- The subset ------------------------------------------------------------
-
 test("a step sequence is enumerated positionally, not by name", () => {
   const document = parseWorkflow(`jobs:
   build:
@@ -169,8 +167,6 @@ test("every workflow in this repository parses to the same shape it is read as",
     }
   }
 });
-
-// --- Failing closed --------------------------------------------------------
 
 test("constructs outside the subset are rejected rather than approximated", () => {
   rejects("a: &anchor\n  b: 1\n", /unsupported node indicator/u);

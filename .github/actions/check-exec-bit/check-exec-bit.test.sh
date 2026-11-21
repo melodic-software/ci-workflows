@@ -60,7 +60,6 @@ commit_all() {
   git -C "$repo" -c user.name='CI Test' -c user.email='ci-test@example.invalid' commit -qm 'test'
 }
 
-# 100755 shebang script is clean.
 good="$temporary_directory/good"
 init_repo "$good"
 printf '#!/usr/bin/env bash\necho ok\n' >"$good/tool.sh"
@@ -69,7 +68,6 @@ commit_all "$good"
 run_case '100755 shebang is clean' 0 "$good"
 expect_contains 'success message on a clean tree' 'All shebang files are mode 100755 in the index.'
 
-# 100644 shebang script fails with the exact annotation.
 bad="$temporary_directory/bad"
 init_repo "$bad"
 printf '#!/usr/bin/env bash\necho bad\n' >"$bad/tool.sh"
@@ -92,7 +90,6 @@ commit_all "$docs"
 run_case 'later-line #! in 100644 markdown is clean' 0 "$docs"
 expect_contains 'docs with a fenced shebang pass' 'All shebang files are mode 100755 in the index.'
 
-# Path containing a space.
 space="$temporary_directory/space"
 init_repo "$space"
 mkdir -p -- "$space/bin dir"
@@ -101,7 +98,6 @@ commit_all "$space"
 run_case '100644 shebang whose path contains a space fails' 1 "$space"
 expect_contains 'space path in the annotation' '::error file=bin dir/run me.sh::bin dir/run me.sh has a shebang but git index mode is 100644'
 
-# PATHS pathspec that excludes the bad file.
 scoped="$temporary_directory/scoped"
 init_repo "$scoped"
 mkdir -p -- "$scoped/keep" "$scoped/skip"
@@ -116,7 +112,6 @@ PATHS='skip' run_case 'PATHS still fails an in-scope 100644 shebang' 1 "$scoped"
 expect_contains 'scoped scan reports skip/bad.sh' '::error file=skip/bad.sh::'
 unset PATHS
 
-# Empty repo / no shebang files.
 empty="$temporary_directory/empty"
 init_repo "$empty"
 printf 'plain text\n' >"$empty/notes.txt"
@@ -124,7 +119,6 @@ commit_all "$empty"
 run_case 'no shebang files is clean' 0 "$empty"
 expect_contains 'empty shebang set prints success' 'All shebang files are mode 100755 in the index.'
 
-# Mixed: one good 100755 and one bad 100644.
 mixed="$temporary_directory/mixed"
 init_repo "$mixed"
 printf '#!/usr/bin/env bash\necho good\n' >"$mixed/good.sh"

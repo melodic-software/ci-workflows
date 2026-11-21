@@ -333,8 +333,6 @@ test("no leg assumes a fixed chunk count", () => {
   assert.equal(workflow.env.MAX_CHUNKS, "20");
 });
 
-// --- the chunk loop ---
-
 const ACTION_DIR = path.join(__dirname, "..", "actions", "run-review-chunks");
 const { runChunks } = require(path.join(ACTION_DIR, "chunks.cjs"));
 
@@ -536,8 +534,6 @@ test("the loop gives every leg run-claude-cli's launcher environment and preambl
       assert.ok(name in chunks.inputs, name);
 });
 
-// --- chunk counts end to end: split, then extract over the loop's results ---
-
 test("a 178-file diff left after verified renames are discounted is reviewed in 5 chunks", () => {
   for (const job of LEGS) {
     const cut = split(job, 178, {}, { renames: 42 });
@@ -635,8 +631,6 @@ test("a 6-chunk review with one failed chunk is partial: no verdict, no review",
   }
 });
 
-// --- timeouts ---
-
 const minutes = (value, context) => Number(evaluate(String(value), context));
 
 test("a 1-chunk review keeps today's step limits, and the loop's limit grows with the chunk count", async () => {
@@ -710,8 +704,6 @@ test("each leg's job limit holds every step's limit at the chunk ceiling, inside
     }
   }
 });
-
-// --- merging the chunks' comments ---
 
 const finding = (path, line, level, text, pad = 0) => ({
   path,

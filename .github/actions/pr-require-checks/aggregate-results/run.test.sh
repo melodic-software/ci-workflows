@@ -451,8 +451,6 @@ install_step_fixtures() {
 }
 install_step_fixtures
 
-# --- carry-forward wait fixtures -------------------------------------------
-
 statuses_key="GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses"
 current_run_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242'
 # The run's workflow is read over GraphQL, the only GraphQL call this step makes.
@@ -518,8 +516,6 @@ attempt_entry() {
 
 earlier_full_run="$(run_entry 4000 in_progress 2026-09-05T12:00:00Z)"
 
-# --- full mode -------------------------------------------------------------
-
 # Without the lane-aggregation loop this passes anyway; without the status
 # write it fails on the missing payload assertion.
 echo 'case: full mode aggregates green lanes and records ci-lanes success'
@@ -553,8 +549,6 @@ expect_log "POST repos/${repository}/statuses/${sha} failed (HTTP 500); sending 
 expect_log "Recorded ci-lanes=success on ${sha}."
 rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_statuses_${sha}.fail-times"
 
-# --- rate limits -----------------------------------------------------------
-#
 # A 403 or 429 is classified from its message and headers, not its status, and
 # a rate limit waits once inside rate-limit-wait-seconds, then fails closed.
 status_post_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"
@@ -712,8 +706,6 @@ run_case 1 'success' pass false yes
 expect_log "::error::same-repo must be 'true' or 'false', got: yes"
 expect_no_gh_call 'statuses/'
 
-# --- fork pull requests ----------------------------------------------------
-
 # Without the same-repo branch the write is attempted, the fork's read-only
 # token refuses it, and the load-bearing failure turns every fork PR red.
 echo 'case: same-repo false skips the status write and passes on the lanes verdict'
@@ -738,8 +730,6 @@ status_list "[$(full_run_success 100)]"
 run_case 0 'skipped skipped' fail true false
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 expect_no_gh_call 'statuses/'
-
-# --- carry-forward mode ----------------------------------------------------
 
 # Without the carry-forward branch, `skipped skipped` under treat-skipped-as
 # fail would go red.
@@ -789,8 +779,6 @@ run_case 1 'skipped skipped' pass true
 expect_log "${fail_prefix}${absent_remedy}"
 rm -f -- "$fixtures/GET_repos_melodic-software_ci-workflows_commits_${sha}_statuses.err"
 
-# --- carry-forward: forged statuses ----------------------------------------
-#
 # Any collaborator with write can POST a commit status. Without the creator
 # filter, one forged `ci-lanes=success` plus a label flip turns the sole
 # required check green over failing lanes.
@@ -855,8 +843,6 @@ echo 'case: an oldest-first status list still carries a newer bot success forwar
 status_list "[$(bot_status 10 failure),$(full_run_success 20)]"
 run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
-
-# --- carry-forward: the writer must be this workflow -------------------------
 
 # Without the writer check this passes before any Actions call: the creator
 # check alone accepts the success.
@@ -984,8 +970,6 @@ expect_no_log 'Carried forward'
 expect_no_gh_call 'actions/runs/4100'
 rm -f -- "$fixtures/${graphql_key}.err"
 
-# --- GraphQL reads -------------------------------------------------------------
-
 # Without the GraphQL read this run's workflow costs a REST call. The same
 # case made 6 REST calls and no GraphQL call at 8b41a59
 # (origin/main before this read moved to GraphQL); the status re-read after
@@ -1051,8 +1035,6 @@ expect_log '::warning::run 4242 reported no workflow_id.'
 expect_no_log 'Carried forward'
 current_run
 
-# --- carry-forward: pagination -----------------------------------------------
-
 # Without `--slurp` jq runs once per page, so the filter never sees both pages
 # together and the newest entry on a later page is not selected.
 echo 'case: the newest bot entry is selected across pages (failure on a later page)'
@@ -1067,8 +1049,6 @@ run_case 0 'skipped skipped' pass true
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 rm -f -- "$fixtures/${statuses_key}.pages.json"
 
-# --- carry-forward: the bounded wait ---------------------------------------
-#
 # Every case here sets the ceiling explicitly; the harness default is 0, which
 # keeps every case above on the fail-immediately path.
 
@@ -1307,8 +1287,6 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=soon
 expect_log '::error::carry-forward-wait-seconds must be a non-negative integer number of seconds, got: soon'
 expect_no_gh_calls_at_all
 
-# --- carry-forward: waiting on ANY in-flight sibling ------------------------
-
 # Without waiting on a HIGHER-id sibling this reads the absent status on the
 # first poll and exits 1. The sibling is same-second AND higher-id, so
 # neither a `created_at` term nor a run-id term puts it in the wait set.
@@ -1374,8 +1352,6 @@ run_case 1 'skipped skipped' pass true true CARRY_FORWARD_WAIT_SECONDS=60
 expect_no_log 'Waiting '
 expect_log "${fail_prefix}the lanes verdict is error; fix the failing lane"
 
-# --- carry-forward: a stale failure while its writer re-runs ----------------
-#
 # Full run 4000 fails and records ci-lanes=failure at 12:00:10Z. Someone re-runs
 # it: attempt 2 starts at 12:00:20Z. A contract-only run arrives meanwhile.
 
@@ -1583,8 +1559,6 @@ expect_no_log 'Waiting '
 
 clear_status_fixtures
 
-# --- pending mode ----------------------------------------------------------
-
 status_write_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"
 
 # Without pending mode, a contract-only run that reads the status while a full
@@ -1638,8 +1612,6 @@ echo 'case: an unrecognized record-pending value is rejected'
 run_case 1 '' pass false true RECORD_PENDING=yes
 expect_log "::error::record-pending must be 'true' or 'false', got: yes"
 expect_no_gh_calls_at_all
-
-# --- full mode: re-running failed contract-only siblings -------------------
 
 # completed_run <id> <conclusion>
 completed_run() {
@@ -1840,8 +1812,6 @@ expect_no_gh_calls_at_all
 clear_run_fixtures
 clear_rerun_fixtures
 
-# --- input validation ------------------------------------------------------
-#
 # Every one of these values is interpolated into a `gh api` path.
 
 echo 'case: a malformed repository is rejected before any API call'
@@ -1860,10 +1830,6 @@ echo 'case: a status-context carrying a space is accepted and used verbatim'
 run_case 0 'success success' pass false true STATUS_CONTEXT='CI Lanes'
 expect_log 'Recorded CI Lanes=success'
 expect_status_payload '"context": "CI Lanes"'
-
-# --- metadata contract -----------------------------------------------------
-
-# --- carry-forward: yield to a full run in flight ----------------------------
 
 # jobs_raw <id> <json-array-of-job-objects>
 # The latest attempt's jobs of an in-flight run, where a running job's
@@ -2560,8 +2526,6 @@ expect_log "Failed run(s) of this workflow on ${sha} to consider for a re-run: 5
 expect_log "Re-running failed contract-only run 5000 on ${sha}."
 expect_log "Not re-running failed run 5100 on ${sha}: its latest attempt is not contract-only"
 
-# --- full mode: waiting for in-flight contract-only siblings -----------------
-
 rerun_runs_count="$calls/${workflow_runs_key}.count"
 inflight_contract_only_jobs='[{"name":"lint","status":"completed","conclusion":"skipped"},{"name":"ci-status","status":"in_progress","conclusion":null}]'
 inflight_full_jobs='[{"name":"changes","status":"completed","conclusion":"success"},{"name":"lint","status":"in_progress","conclusion":null},{"name":"ci-status","status":"queued","conclusion":null}]'
@@ -2736,9 +2700,6 @@ for bad_ceiling in soon 08; do
 done
 
 reset_yield_fixtures
-
-# --- carry-forward: the writer must be a full run, and no newer full run on
-# the SHA may disagree ---------------------------------------------------------
 
 runs_key_prefix='GET_repos_melodic-software_ci-workflows_actions_runs'
 # writer_run <run-id> <run_started_at> [run_attempt]
@@ -2965,8 +2926,6 @@ clear_writer_fixtures
 run_of_workflow 4100 777
 reset_yield_fixtures
 
-# --- carry-forward: reads reused across the writer check and the polls --------
-
 # row_of_run <id> <workflow-id> <head-sha> [status]
 # A run as the run listing shows it, with the fields the writer check reads.
 row_of_run() {
@@ -3042,8 +3001,6 @@ clear_writer_fixtures
 run_of_workflow 4100 777
 run_of_workflow 4000 777
 reset_yield_fixtures
-
-# --- this run's own gate job and step ------------------------------------------
 
 own_jobs_key='GET_repos_melodic-software_ci-workflows_actions_runs_4242_jobs'
 # own_jobs <json-array-of-job-objects> [call-number]
@@ -3554,8 +3511,6 @@ step_name_default="$(awk '$0 == "  step-name:" { found = 1; next } found && /^  
 if [[ "$step_name_default" != "    default: ''" ]]; then
   fail_case "action.yml does not default step-name to '' (got: ${step_name_default})"
 fi
-
-# --- api-calls count -------------------------------------------------------
 
 summary_file="$temporary_directory/step-summary"
 calls_post_key="POST_repos_melodic-software_ci-workflows_statuses_${sha}"

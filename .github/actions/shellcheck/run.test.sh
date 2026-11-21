@@ -211,8 +211,6 @@ run_action 1 EXTRA_GLOBS=dot_bashrc FAKE_STATUS=1
 [[ -e "$captures/1.args" && -e "$captures/2.args" ]]
 printf 'PASS: ShellCheck findings propagate after both lanes run\n'
 
-# --- explicit file list -------------------------------------------------------
-
 for spelling in $'script.sh\nnested/tool.bash' 'script.sh nested/tool.bash'; do
   run_action 0 FILES="$spelling"
   load_args 1
@@ -287,8 +285,6 @@ run_action 0 FILES=script.sh EXTRA_GLOBS=$'dot_bash*\ndot bash*'
 load_args 1
 [[ ! -e "$captures/2.args" ]]
 assert_contains 'the standard lane still runs when the extra lane is empty' script.sh "${captured_args[@]}"
-
-# --- fan-out ------------------------------------------------------------------
 
 run_action 2 SHELLCHECK_JOBS=0
 [[ ! -e "$captures/1.args" ]]

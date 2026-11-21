@@ -167,11 +167,9 @@ best_effort() {
   fi
 }
 
-# ---------------------------------------------------------------------------
 # Step 1 — fetch the pull request, and its comments for the marker upsert,
 # in one GraphQL query. GraphQL, not `pulls/N`: the REST bucket is the one
 # that runs out during a burst of pull request CI.
-# ---------------------------------------------------------------------------
 # shellcheck disable=SC2016 # `$owner`, `$name` and `$number` are GraphQL variables.
 pr_query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { title body author { __typename login } labels(first: 100) { totalCount nodes { name } } comments(last: 100) { totalCount nodes { databaseId body author { __typename } } } } } }'
 pr_read="pull request ${REPOSITORY}#${PR_NUMBER}"
@@ -242,9 +240,7 @@ pr_author="$(jq -r .user.login <"$pr_json")"
 jq -r .body <"$pr_json" >"$scratch/body.txt"
 jq -r '.labels[].name' <"$pr_json" >"$scratch/labels.txt"
 
-# ---------------------------------------------------------------------------
 # Step 2 — title against Conventional Commits with the caller's type list.
-# ---------------------------------------------------------------------------
 types_list="$(printf '%s' "$TYPES" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
 if [[ -z "$types_list" ]]; then
   echo "::error::check-contract: types is empty; list at least one allowed Conventional Commits type"
@@ -270,22 +266,18 @@ if [[ ! "$pr_title" =~ $title_regex ]]; then
   echo "::error::check-contract: the PR title does not follow Conventional Commits: \"$(escape_annotation "$pr_title")\". Expected \"<type>: <subject>\" with a non-empty subject; allowed types: ${types_human}. ${scope_hint} A breaking change marks the type with \"!\"."
 fi
 
-# ---------------------------------------------------------------------------
 # Step 3 — do-not-merge label.
-# ---------------------------------------------------------------------------
 do_not_merge_result=pass
 if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
   do_not_merge_result=fail
   echo "::error::check-contract: this PR carries the '${DO_NOT_MERGE_LABEL}' label; remove it to merge."
 fi
 
-# ---------------------------------------------------------------------------
 # Step 3b — the hold label, when `enforce-hold-label` is on. Only a person
 # removing the label releases the hold. On a merge group it is read for every
 # queue entry at or ahead of the queued pull request: the group holds their
 # changes, and a passing group merges them all, whatever their own groups
 # read earlier. Lower `position` is nearer the front.
-# ---------------------------------------------------------------------------
 if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
   if [[ "${EVENT_NAME:-}" != merge_group ]]; then
     hold_result=pass
@@ -327,11 +319,9 @@ if [[ "$ENFORCE_HOLD_LABEL" == true ]]; then
   fi
 fi
 
-# ---------------------------------------------------------------------------
 # Merge group — the title and the live do-not-merge label, both re-read because
 # either can change after enqueue; a failure makes the queue drop the pull
 # request. Linkage is advisory and a group run writes no comment or label.
-# ---------------------------------------------------------------------------
 if [[ "${EVENT_NAME:-}" == merge_group ]]; then
   emit_results "$title_result" "$do_not_merge_result" skipped "$hold_result"
   if [[ "$title_result" == fail || "$do_not_merge_result" == fail || "$hold_result" == fail ]]; then
@@ -345,7 +335,6 @@ if [[ "${EVENT_NAME:-}" == merge_group ]]; then
   exit 0
 fi
 
-# ---------------------------------------------------------------------------
 # Step 4 — issue linkage.
 #
 # The body must
@@ -358,7 +347,6 @@ fi
 # The analyzer masks rendered HTML comments, fenced and indented code blocks,
 # and inline code spans before matching, so a PR template's commented-out
 # example cannot satisfy the gate.
-# ---------------------------------------------------------------------------
 analyze_body() {
   awk '
 # Whitespace includes newlines: section content is joined before trimming, so a
@@ -716,9 +704,7 @@ else
   fi
 fi
 
-# ---------------------------------------------------------------------------
 # Step 5 — advisory outcome: one marker comment, upserted, plus the label.
-# ---------------------------------------------------------------------------
 # Each call below is sent once: the outcome is advisory, and resending its
 # calls could push the step past a short ci-status job's timeout.
 GH_API_RETRY_ERRORS=false
@@ -807,12 +793,10 @@ else
   fi
 fi
 
-# ---------------------------------------------------------------------------
 # Step 6 — outputs and the single exit decision.
 #
 # Every check runs before any exit so all four outputs are always emitted; an
 # early exit on the title would leave `linkage` unset for the caller.
-# ---------------------------------------------------------------------------
 emit_results "$title_result" "$do_not_merge_result" "$linkage_result" "$hold_result"
 
 if [[ "$linkage_result" == fail && "$LINKAGE_MODE" == advisory ]]; then

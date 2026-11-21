@@ -5306,8 +5306,6 @@ test("a chunk that failed, did not run or returned no verdict keeps the review i
   assert.equal(JSON.parse(one.review).coverage.over_budget, 700000);
 });
 
-// --- every model leg keeps a sealed transcript ---
-
 test("every model leg uploads its sealed transcript under a job id unique in the run", () => {
   const artifact = /^lane-transcript-(.+)-([1-9][0-9]{0,4})$/u;
   const jobId = /^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u;
@@ -5372,8 +5370,6 @@ test("every model leg uploads its sealed transcript under a job id unique in the
     "",
   );
 });
-
-// --- every artifact the lane uploads is scanned for credentials first ---
 
 const SCAN_ACTION = "$/.github/actions/scan-upload";
 const isUpload = (s) =>
@@ -7674,8 +7670,6 @@ test("the compose step reads the full-diff step's to-read count, in every leg", 
   );
 });
 
-// --- the kill switch (kill-switch input) ---
-
 const KILL_GATE =
   "&& (!inputs.kill-switch || needs.check-kill-switch.outputs.proceed == 'true')";
 const KILLED_JOBS = () => [
@@ -7944,8 +7938,6 @@ test("with kill-switch set, each switch stops check-key-credit and every model j
     }
   }
 });
-
-// --- review levels (review-level input, CLAUDE_REVIEW_LEVEL(S) variables) ---
 
 const NO_EXPLICIT = { MODEL: "", EFFORT: "", MAX_TURNS: "" };
 const ran = (outputs) => [outputs.model, outputs.effort, outputs["max-turns"]];

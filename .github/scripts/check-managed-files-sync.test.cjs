@@ -16,8 +16,6 @@ const BOT_EMAIL =
   "300666570+melodic-standards-sync[bot]@users.noreply.github.com";
 const HEAD_SHA = "fedcba9876543210fedcba9876543210fedcba98";
 
-// --- commit checks ---------------------------------------------------------
-
 function commit(
   sha,
   {
@@ -184,8 +182,6 @@ test("an unreadable commit list fails", async () => {
     "could not list the PR's commits: Resource not accessible",
   );
 });
-
-// --- content checks --------------------------------------------------------
 
 const TARGET = "melodic-software/target";
 
@@ -537,8 +533,6 @@ test("a target the manifest does not manage fails", () => {
   );
 });
 
-// --- hand-edit check -------------------------------------------------------
-
 test("a hand-edit points at the sync workflow, not a label", () => {
   const fx = fixture();
   const result = runScript("run.sh", fx);
@@ -579,8 +573,6 @@ test("renaming a managed file reports its old path", () => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /- managed\/config\.txt/u);
 });
-
-// --- Dependabot mode -------------------------------------------------------
 
 const { dependabotMode } = verifySyncCommits;
 const DEPENDABOT_ID = 49699333;
@@ -674,8 +666,6 @@ test("an empty or unreadable Dependabot commit list is not skipped", async () =>
     "hand-edit",
   );
 });
-
-// --- merge-group mode ------------------------------------------------------
 
 const { resolveMergeGroup } = require(path.join(actionDir, "merge-group.cjs"));
 const QUEUE_SHA = "0123456789abcdef0123456789abcdef01234567";

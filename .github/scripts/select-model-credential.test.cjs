@@ -31,8 +31,6 @@ const load = (name) =>
     fs.readFileSync(path.join(__dirname, "..", "workflows", name), "utf8"),
   );
 
-// --- the rules ---------------------------------------------------------------
-
 // run-claude-cli lane.cjs readConfig names them `<ROLE>_<suffix>`, the role
 // upper-snake, and the fallback leg FALLBACK_CLAUDE_CODE_OAUTH_TOKEN.
 test("the secret names are the ones run-claude-cli derives from the role", () => {
@@ -127,7 +125,6 @@ test("the next leg follows the chain and each leg's handoff reasons", () => {
       handoffReason: why,
     });
   const none = { "next-leg": "", "next-reason": "" };
-  // Key leg.
   assert.deepEqual(next("key", {}, "true", "credit-stop"), {
     "next-leg": "subscription",
     "next-reason": "credit-stop",
@@ -154,7 +151,6 @@ test("the next leg follows the chain and each leg's handoff reasons", () => {
     "next-leg": "subscription",
     "next-reason": "credit-stop",
   });
-  // Subscription leg.
   for (const why of ["limit-stop", "credit-stop", "auth"]) {
     assert.deepEqual(
       next("subscription", { fallbackSet: "true" }, "true", why),
@@ -190,8 +186,6 @@ test("the next leg follows the chain and each leg's handoff reasons", () => {
     );
   }
 });
-
-// --- the action's calls --------------------------------------------------------
 
 const KEY_JOB = "claude-review-key";
 const NOW = Date.parse("2026-11-06T12:00:00Z");
@@ -494,8 +488,6 @@ test("the action passes every input to the script and holds the job token back u
   }
 });
 
-// --- both reusables pick what their old copies picked --------------------------
-
 // Every launcher outcome a leg can produce: run-claude-cli's own handoff rule
 // over its classes, API statuses and stop flags, so the table never tests a
 // state the launcher cannot reach.
@@ -595,7 +587,6 @@ test("pr-review-cli picks the same legs, credentials and reasons as its old copi
             gate === "skip" ? "true" : gate === "ok" ? "false" : "";
           const start =
             gate === "failed" ? {} : select.start({ skipKey: gate === "skip" });
-          // The key job.
           const oldKeyRuns = Boolean(
             evaluate(REVIEW_OLD.keyRuns, {
               needs: {

@@ -256,13 +256,11 @@ write_status() {
   return 1
 }
 
-# ---------------------------------------------------------------------------
 # Pending mode. Only the full run a contract-only run would wait for marks its
 # verdict pending: a contract-only run marking it would fail itself and every
 # sibling with nothing coming to replace the marker, a fork's token cannot
 # write, and a push has no contract-only sibling to protect. Each of those
 # passes with a notice, so the step is safe in a job that runs on every event.
-# ---------------------------------------------------------------------------
 if [[ "$record_pending" == true ]]; then
   if [[ "$contract_only" == true ]]; then
     echo "::notice::contract-only event: ${STATUS_CONTEXT} is not marked pending; only a full run marks its own verdict pending."
@@ -287,14 +285,12 @@ if [[ "$record_pending" == true ]]; then
   exit 0
 fi
 
-# ---------------------------------------------------------------------------
 # Carry-forward mode. Branched on first, before `same-repo`: the caller's
 # predicate makes `contract-only` false for every fork event, so the
 # true/false combination is unreachable from the defaults — but a caller that
 # overrides `contract-only` owns the claim that the lanes did not run, and the
 # runner honors it rather than second-guessing it into an aggregation over
 # results that are all `skipped`.
-# ---------------------------------------------------------------------------
 
 # Newest `status-context` state written by the Actions bot on this SHA, or the
 # empty string when the context is absent. Sets `carried_state` rather than
@@ -1488,9 +1484,6 @@ if [[ "$contract_only" == true ]]; then
   finish_carry_forward
 fi
 
-# ---------------------------------------------------------------------------
-# Full mode — aggregate the lane results.
-# ---------------------------------------------------------------------------
 # Unquoted expansion word-splits on all of IFS (space, tab, newline), so a YAML
 # block scalar spanning lines is parsed in full. `read` would stop at the first
 # newline and silently skip every later lane.
@@ -1536,13 +1529,11 @@ if [[ "$lanes_state" == success ]]; then
   echo "$lanes_description"
 fi
 
-# ---------------------------------------------------------------------------
 # Record the verdict as a commit status (see `write_status`).
 #
 # A fork pull request is the one exception: its token cannot write a status at
 # all, and nothing will ever read one for it, so the run reports the lanes
 # verdict and stops.
-# ---------------------------------------------------------------------------
 if [[ "$same_repo" != true ]]; then
   echo "::notice::fork pull request: lane state is not recorded; every event runs the full workflow"
   if [[ "$lanes_state" == failure ]]; then
