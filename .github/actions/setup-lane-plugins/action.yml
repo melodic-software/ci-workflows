@@ -1,0 +1,52 @@
+name: Setup Lane Plugins
+description: >-
+  Copy one or more Claude Code plugins into a read-only workspace directory
+  for `run-claude-cli` (`--plugin-dir` and `--add-dir`). Refuses any
+  pre-existing or git-tracked staging root (such as `.lane`), rejects symbolic
+  links and special files inside any staged plugin, writes an empty
+  `{"mcpServers":{}}` `.mcp.json` into each plugin that does not ship one (so
+  Claude Code's bubblewrap sandbox can enforce its write denial on read-only
+  `--add-dir` paths), strips all write bits recursively, and appends the
+  staging root to `.git/info/exclude` when the workspace is a Git checkout.
+  Rolls back the staging directory if any step fails.
+
+inputs:
+  source-dir:
+    description: >-
+      Directory containing the plugin subdirectories to stage (for example
+      `.base/plugins` or a cloned marketplace directory under runner temp).
+      Relative paths resolve against GITHUB_WORKSPACE.
+    required: true
+  plugins:
+    description: >-
+      Plugin directory names under `source-dir`, one per line. Blank lines are
+      ignored and duplicates are collapsed while preserving order. Must name at
+      least one plugin; names may contain only letters, digits, `.`, `_` and
+      `-`, starting with a letter or digit.
+    required: true
+  destination:
+    description: >-
+      Workspace-relative directory where plugins are staged read-only. Defaults
+      to `.lane/plugins`. Its top-level directory (`.lane` by default) must not
+      already exist on disk or be tracked by Git, and must not be `.git`.
+    required: false
+    default: .lane/plugins
+
+outputs:
+  plugin-dirs:
+    description: >-
+      Workspace-relative staged plugin directories, one per line in the order
+      requested, ready to pass to `run-claude-cli`'s `plugin-dirs` input.
+    value: ${{ steps.stage.outputs.plugin-dirs }}
+
+runs:
+  using: composite
+  steps:
+    - name: Stage lane plugins
+      id: stage
+      shell: bash
+      env:
+        STAGE_SOURCE_DIR: ${{ inputs.source-dir }}
+        STAGE_PLUGINS: ${{ inputs.plugins }}
+        STAGE_DESTINATION: ${{ inputs.destination }}
+      run: node "$GITHUB_ACTION_PATH/stage.cjs"

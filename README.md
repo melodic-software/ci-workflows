@@ -810,7 +810,11 @@ consumer to audit it.
   than `watchdog-max-wait-ms` away (a 429 retry follows it with no model
   output between), which ends as the limit stop above. `tools`,
   `allowed-tools`, `disallowed-tools` and `json-schema-file` pass through to
-  the CLI flags of the same names. `plugin-dirs` passes each directory to
+  the CLI flags of the same names. `disallow-mcp` (`true` by default) appends
+  `mcp__*` to `--disallowedTools` (deduplicated when `disallowed-tools`
+  already lists it), so MCP tools stay blocked alongside `--strict-mcp-config`
+  unless a lane explicitly sets `disallow-mcp: false`; `run-review-chunks`
+  forwards the same input to every chunk's leg. `plugin-dirs` passes each directory to
   `--plugin-dir` and `--add-dir`, so a plugin's skills can read their own
   files under `--restricted`; `add-dirs` passes more `--add-dir` directories.
   Each entry must resolve, with no `..` part, to an existing directory inside
@@ -923,6 +927,15 @@ consumer to audit it.
   else job B's, else job A's. With the fallback secret empty, job B never
   hands off and job C never runs. `intake-triage.yml` is the reference
   implementation.
+- `.github/actions/setup-lane-plugins` — copies one or more trusted plugin
+  directories into a read-only workspace tree (`.lane/plugins` by default) for
+  `run-claude-cli`: refuses any pre-existing or Git-tracked staging root,
+  rejects symbolic links and special files inside any staged plugin, writes an
+  empty `{"mcpServers":{}}` `.mcp.json` when absent so bubblewrap can enforce
+  its write denial on read-only `--add-dir` paths, strips all write bits
+  recursively, excludes the staging root in `.git/info/exclude` when the
+  workspace is a Git checkout, rolls back on error, and outputs `plugin-dirs`
+  ([its README](.github/actions/setup-lane-plugins/README.md)).
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
