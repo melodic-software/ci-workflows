@@ -1115,10 +1115,45 @@ jobs:
           git cat-file -e "$base^{commit}" 2>/dev/null ||
             git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base" ||
             fail "the merge base could not be fetched"
+          # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
+          # writes, matching both exactly; no glob.
+          allowlist_has() {
+            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+            SUM="$1" P="$2" awk '
+              BEGIN { found = 1 }
+              { sub(/\r$/, "") }
+              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
+              END { exit found }' <<< "$3"
+          }
           allowed=''
-          if [ -n "$BINARY_ALLOWLIST" ] && ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
-            echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
-            allowed=''
+          allowed_tip=''
+          if [ -n "$BINARY_ALLOWLIST" ]; then
+            if ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
+              echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+              allowed=''
+            fi
+            # Also require the line at the base branch tip (BASE_SHA) so
+            # removing an entry revokes it even for a stale branch that has
+            # not merged or rebased from base.
+            if [ -n "$allowed" ]; then
+              if [ "$BASE_SHA" = "$base" ]; then
+                allowed_tip="$allowed"
+              elif [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
+                  git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$BASE_SHA"; then
+                  if ! allowed_tip="$(git cat-file blob "$BASE_SHA:$BINARY_ALLOWLIST")"; then
+                    echo "::warning::The base branch tip holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+                    allowed_tip=''
+                  fi
+                else
+                  echo "::warning::The base branch tip could not be fetched; no binary-allowlist entry is honored."
+                  allowed_tip=''
+                fi
+              else
+                echo "::warning::BASE_SHA is missing or invalid; no binary-allowlist entry is honored."
+                allowed_tip=''
+              fi
+            fi
           fi
           # Outside the checkout, so no link the head commits can redirect them.
           opaque_raw="$(mktemp)"
@@ -1133,6 +1168,13 @@ jobs:
             IFS= read -r -d '' p || { opaque=error; break; }
             if [[ $status == [RC]* ]]; then IFS= read -r -d '' p || { opaque=error; break; }; fi
             [[ $status == [AMRCT]* ]] || continue
+            # A new or changed submodule (gitlink, mode 160000) points to an
+            # external commit whose bytes are not in this diff; hold it for a person.
+            if [[ $mode == 160000 ]]; then
+              printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "unread" "submodule" >> "$opaque_list"
+              [ "$opaque" = error ] || opaque=$((opaque + 1))
+              continue
+            fi
             [[ $mode == 100644 || $mode == 100755 ]] || continue
             why=''
             if ! git cat-file blob "$blob" > "$opaque_blob"; then
@@ -1181,6 +1223,56 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A makeself-style self-extracting script appends a gzip, tar,
+              # xz or bzip2 archive after a shell prologue. Scan scripts
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
+                why="$(python3 -I - "$opaque_blob" <<'PY'
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          pos = 0
+          while True:
+            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            if idx < 0:
+              break
+            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+              print("gzip appended")
+              sys.exit(0)
+            pos = idx + 1
+          if b"\n\xfd7zXZ\x00" in data:
+            print("xz appended")
+            sys.exit(0)
+          pos = 0
+          while True:
+            idx = data.find(b"\nBZh", pos)
+            if idx < 0:
+              break
+            if idx + 11 <= len(data) and 0x31 <= data[idx + 4] <= 0x39 and data[idx + 5:idx + 11] == b"1AY&SY":
+              print("bzip2 appended")
+              sys.exit(0)
+            pos = idx + 1
+          for marker in (b"ustar\x00", b"ustar "):
+            pos = 258
+            while True:
+              idx = data.find(marker, pos)
+              if idx < 0:
+                break
+              start = idx - 257
+              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+                hdr = data[start:start + 512]
+                raw = hdr[148:156].strip(b"\x00 ")
+                if raw and all(48 <= b <= 55 for b in raw):
+                  expected = int(raw.decode("ascii"), 8)
+                  actual = sum(hdr[:148]) + 8 * 32 + sum(hdr[156:])
+                  if actual == expected:
+                    print("tar appended")
+                    sys.exit(0)
+              pos = idx + 1
+          PY
+          )" || why='appended archive check failed'
+              fi
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
               # the blob read here. A .gitattributes that sets either is held
@@ -1197,14 +1289,8 @@ jobs:
             [ -n "$why" ] || continue
             sum=''
             if [ "$why" != unreadable ]; then sum="$(sha256sum < "$opaque_blob")" sum=${sum%% *}; fi
-            # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
-            # writes, matching both exactly; no glob.
-            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
-            if [ -n "$sum" ] && [ -n "$allowed" ] && SUM="$sum" P="$p" awk '
-              BEGIN { found = 1 }
-              { sub(/\r$/, "") }
-              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
-              END { exit found }' <<< "$allowed"; then
+            if [ -n "$sum" ] && [ -n "$allowed" ] && [ -n "$allowed_tip" ] &&
+              allowlist_has "$sum" "$p" "$allowed" && allowlist_has "$sum" "$p" "$allowed_tip"; then
               continue
             fi
             printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "${sum:-unread}" "$why" >> "$opaque_list"
@@ -2153,10 +2239,45 @@ jobs:
           git cat-file -e "$base^{commit}" 2>/dev/null ||
             git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base" ||
             fail "the merge base could not be fetched"
+          # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
+          # writes, matching both exactly; no glob.
+          allowlist_has() {
+            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+            SUM="$1" P="$2" awk '
+              BEGIN { found = 1 }
+              { sub(/\r$/, "") }
+              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
+              END { exit found }' <<< "$3"
+          }
           allowed=''
-          if [ -n "$BINARY_ALLOWLIST" ] && ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
-            echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
-            allowed=''
+          allowed_tip=''
+          if [ -n "$BINARY_ALLOWLIST" ]; then
+            if ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
+              echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+              allowed=''
+            fi
+            # Also require the line at the base branch tip (BASE_SHA) so
+            # removing an entry revokes it even for a stale branch that has
+            # not merged or rebased from base.
+            if [ -n "$allowed" ]; then
+              if [ "$BASE_SHA" = "$base" ]; then
+                allowed_tip="$allowed"
+              elif [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
+                  git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$BASE_SHA"; then
+                  if ! allowed_tip="$(git cat-file blob "$BASE_SHA:$BINARY_ALLOWLIST")"; then
+                    echo "::warning::The base branch tip holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+                    allowed_tip=''
+                  fi
+                else
+                  echo "::warning::The base branch tip could not be fetched; no binary-allowlist entry is honored."
+                  allowed_tip=''
+                fi
+              else
+                echo "::warning::BASE_SHA is missing or invalid; no binary-allowlist entry is honored."
+                allowed_tip=''
+              fi
+            fi
           fi
           # Outside the checkout, so no link the head commits can redirect them.
           opaque_raw="$(mktemp)"
@@ -2171,6 +2292,13 @@ jobs:
             IFS= read -r -d '' p || { opaque=error; break; }
             if [[ $status == [RC]* ]]; then IFS= read -r -d '' p || { opaque=error; break; }; fi
             [[ $status == [AMRCT]* ]] || continue
+            # A new or changed submodule (gitlink, mode 160000) points to an
+            # external commit whose bytes are not in this diff; hold it for a person.
+            if [[ $mode == 160000 ]]; then
+              printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "unread" "submodule" >> "$opaque_list"
+              [ "$opaque" = error ] || opaque=$((opaque + 1))
+              continue
+            fi
             [[ $mode == 100644 || $mode == 100755 ]] || continue
             why=''
             if ! git cat-file blob "$blob" > "$opaque_blob"; then
@@ -2219,6 +2347,56 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A makeself-style self-extracting script appends a gzip, tar,
+              # xz or bzip2 archive after a shell prologue. Scan scripts
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
+                why="$(python3 -I - "$opaque_blob" <<'PY'
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          pos = 0
+          while True:
+            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            if idx < 0:
+              break
+            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+              print("gzip appended")
+              sys.exit(0)
+            pos = idx + 1
+          if b"\n\xfd7zXZ\x00" in data:
+            print("xz appended")
+            sys.exit(0)
+          pos = 0
+          while True:
+            idx = data.find(b"\nBZh", pos)
+            if idx < 0:
+              break
+            if idx + 11 <= len(data) and 0x31 <= data[idx + 4] <= 0x39 and data[idx + 5:idx + 11] == b"1AY&SY":
+              print("bzip2 appended")
+              sys.exit(0)
+            pos = idx + 1
+          for marker in (b"ustar\x00", b"ustar "):
+            pos = 258
+            while True:
+              idx = data.find(marker, pos)
+              if idx < 0:
+                break
+              start = idx - 257
+              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+                hdr = data[start:start + 512]
+                raw = hdr[148:156].strip(b"\x00 ")
+                if raw and all(48 <= b <= 55 for b in raw):
+                  expected = int(raw.decode("ascii"), 8)
+                  actual = sum(hdr[:148]) + 8 * 32 + sum(hdr[156:])
+                  if actual == expected:
+                    print("tar appended")
+                    sys.exit(0)
+              pos = idx + 1
+          PY
+          )" || why='appended archive check failed'
+              fi
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
               # the blob read here. A .gitattributes that sets either is held
@@ -2235,14 +2413,8 @@ jobs:
             [ -n "$why" ] || continue
             sum=''
             if [ "$why" != unreadable ]; then sum="$(sha256sum < "$opaque_blob")" sum=${sum%% *}; fi
-            # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
-            # writes, matching both exactly; no glob.
-            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
-            if [ -n "$sum" ] && [ -n "$allowed" ] && SUM="$sum" P="$p" awk '
-              BEGIN { found = 1 }
-              { sub(/\r$/, "") }
-              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
-              END { exit found }' <<< "$allowed"; then
+            if [ -n "$sum" ] && [ -n "$allowed" ] && [ -n "$allowed_tip" ] &&
+              allowlist_has "$sum" "$p" "$allowed" && allowlist_has "$sum" "$p" "$allowed_tip"; then
               continue
             fi
             printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "${sum:-unread}" "$why" >> "$opaque_list"
@@ -3161,10 +3333,45 @@ jobs:
           git cat-file -e "$base^{commit}" 2>/dev/null ||
             git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$base" ||
             fail "the merge base could not be fetched"
+          # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
+          # writes, matching both exactly; no glob.
+          allowlist_has() {
+            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
+            SUM="$1" P="$2" awk '
+              BEGIN { found = 1 }
+              { sub(/\r$/, "") }
+              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
+              END { exit found }' <<< "$3"
+          }
           allowed=''
-          if [ -n "$BINARY_ALLOWLIST" ] && ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
-            echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
-            allowed=''
+          allowed_tip=''
+          if [ -n "$BINARY_ALLOWLIST" ]; then
+            if ! allowed="$(git cat-file blob "$base:$BINARY_ALLOWLIST")"; then
+              echo "::warning::The merge base holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+              allowed=''
+            fi
+            # Also require the line at the base branch tip (BASE_SHA) so
+            # removing an entry revokes it even for a stale branch that has
+            # not merged or rebased from base.
+            if [ -n "$allowed" ]; then
+              if [ "$BASE_SHA" = "$base" ]; then
+                allowed_tip="$allowed"
+              elif [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null ||
+                  git fetch --quiet --no-tags --depth=1 --filter=blob:none origin "$BASE_SHA"; then
+                  if ! allowed_tip="$(git cat-file blob "$BASE_SHA:$BINARY_ALLOWLIST")"; then
+                    echo "::warning::The base branch tip holds no binary-allowlist file at $BINARY_ALLOWLIST; no file is allowed."
+                    allowed_tip=''
+                  fi
+                else
+                  echo "::warning::The base branch tip could not be fetched; no binary-allowlist entry is honored."
+                  allowed_tip=''
+                fi
+              else
+                echo "::warning::BASE_SHA is missing or invalid; no binary-allowlist entry is honored."
+                allowed_tip=''
+              fi
+            fi
           fi
           # Outside the checkout, so no link the head commits can redirect them.
           opaque_raw="$(mktemp)"
@@ -3179,6 +3386,13 @@ jobs:
             IFS= read -r -d '' p || { opaque=error; break; }
             if [[ $status == [RC]* ]]; then IFS= read -r -d '' p || { opaque=error; break; }; fi
             [[ $status == [AMRCT]* ]] || continue
+            # A new or changed submodule (gitlink, mode 160000) points to an
+            # external commit whose bytes are not in this diff; hold it for a person.
+            if [[ $mode == 160000 ]]; then
+              printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "unread" "submodule" >> "$opaque_list"
+              [ "$opaque" = error ] || opaque=$((opaque + 1))
+              continue
+            fi
             [[ $mode == 100644 || $mode == 100755 ]] || continue
             why=''
             if ! git cat-file blob "$blob" > "$opaque_blob"; then
@@ -3227,6 +3441,56 @@ jobs:
               crx | deb | dex | dey | elf | o | a | so | macho | iso | class | jar | bundle | dylib | lib | msi | dll | drv | efi | exe | ocx | pyc | pyo | par | rpm | wasm | whl)
                 [ -n "$why" ] || why="extension .$ext" ;;
               esac
+              # A makeself-style self-extracting script appends a gzip, tar,
+              # xz or bzip2 archive after a shell prologue. Scan scripts
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
+                why="$(python3 -I - "$opaque_blob" <<'PY'
+          import sys
+          from pathlib import Path
+
+          data = Path(sys.argv[1]).read_bytes()
+          pos = 0
+          while True:
+            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            if idx < 0:
+              break
+            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+              print("gzip appended")
+              sys.exit(0)
+            pos = idx + 1
+          if b"\n\xfd7zXZ\x00" in data:
+            print("xz appended")
+            sys.exit(0)
+          pos = 0
+          while True:
+            idx = data.find(b"\nBZh", pos)
+            if idx < 0:
+              break
+            if idx + 11 <= len(data) and 0x31 <= data[idx + 4] <= 0x39 and data[idx + 5:idx + 11] == b"1AY&SY":
+              print("bzip2 appended")
+              sys.exit(0)
+            pos = idx + 1
+          for marker in (b"ustar\x00", b"ustar "):
+            pos = 258
+            while True:
+              idx = data.find(marker, pos)
+              if idx < 0:
+                break
+              start = idx - 257
+              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+                hdr = data[start:start + 512]
+                raw = hdr[148:156].strip(b"\x00 ")
+                if raw and all(48 <= b <= 55 for b in raw):
+                  expected = int(raw.decode("ascii"), 8)
+                  actual = sum(hdr[:148]) + 8 * 32 + sum(hdr[156:])
+                  if actual == expected:
+                    print("tar appended")
+                    sys.exit(0)
+              pos = idx + 1
+          PY
+          )" || why='appended archive check failed'
+              fi
               # A filter (Git LFS among them) or working-tree-encoding the
               # head's attributes set makes the checked-out bytes differ from
               # the blob read here. A .gitattributes that sets either is held
@@ -3243,14 +3507,8 @@ jobs:
             [ -n "$why" ] || continue
             sum=''
             if [ "$why" != unreadable ]; then sum="$(sha256sum < "$opaque_blob")" sum=${sum%% *}; fi
-            # A `<sha256>  <path>` or `<sha256> *<path>` line, as sha256sum
-            # writes, matching both exactly; no glob.
-            # shellcheck disable=SC2016 # An awk program, expanded by awk, not the shell.
-            if [ -n "$sum" ] && [ -n "$allowed" ] && SUM="$sum" P="$p" awk '
-              BEGIN { found = 1 }
-              { sub(/\r$/, "") }
-              substr($0, 1, 64) == ENVIRON["SUM"] && (substr($0, 65, 2) == "  " || substr($0, 65, 2) == " *") && substr($0, 67) == ENVIRON["P"] { found = 0; exit }
-              END { exit found }' <<< "$allowed"; then
+            if [ -n "$sum" ] && [ -n "$allowed" ] && [ -n "$allowed_tip" ] &&
+              allowlist_has "$sum" "$p" "$allowed" && allowlist_has "$sum" "$p" "$allowed_tip"; then
               continue
             fi
             printf '%s\t%s\t%s\n' "${p//[[:cntrl:]]/?}" "${sum:-unread}" "$why" >> "$opaque_list"

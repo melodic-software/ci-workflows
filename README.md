@@ -1963,18 +1963,22 @@ with:
 **Executables and archives.** Every changed regular file whose first bytes
 name an executable or archive (ELF, PE, Mach-O, Java class, WebAssembly, DEX,
 Lua bytecode, zip, gzip, xz, bzip2, 7z, zstd, rar, lz4, lzip, compress, ar,
-cpio, tar, CAB, xar, OLE), that ends in a zip directory, that is a Git LFS
-pointer, or whose extension
+cpio, tar, CAB, xar, OLE), that ends in a zip directory, that appends a gzip,
+tar, xz or bzip2 archive after a shell prologue (`#!`, `.sh`, `.bash`, `.zsh` or
+`.ksh`), that is a Git LFS pointer, or whose extension
 [OpenSSF Scorecard's Binary-Artifacts check](https://github.com/ossf/scorecard/blob/main/docs/checks.md#binary-artifacts)
-lists, holds the pull request for a person with `hold-label`, criterion
+lists — as well as every new or changed submodule (gitlink, mode `160000`) —
+holds the pull request for a person with `hold-label`, criterion
 `binary-artifact`. The check runs on every run that scopes the pull request,
 docs-only and no-change skips included, and the hold applies whatever the
 review returns or whether it completes. The `binary-allowlist` input is a
-repository path to a file in `sha256sum` format, read at the merge base: a
-file passes when a `<sha256>  <path>` line names its path and the SHA-256 of
-its bytes at the head. A pull request cannot list its own file; a separate one
-adds the line first. The hold comment names up to 10 held files with their
-SHA-256.
+repository path to a file in `sha256sum` format, read at both the merge base
+and the base branch tip (`BASE_SHA`): a file passes only when a
+`<sha256>  <path>` line names its path and the SHA-256 of its bytes at the head
+on both commits, so removing a line from the base branch revokes it even for a
+stale branch. A pull request cannot list its own file; a separate one adds the
+line first. The hold comment names up to 10 held files with their SHA-256
+(`unread` for unreadable blobs and submodules, which cannot be allowlisted).
 
 ```yaml
 with:
