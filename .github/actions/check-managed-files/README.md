@@ -53,21 +53,28 @@ use `grouping_strategy: ALLGREEN`, as for
 `HEADGREEN`, a pull request that failed its own group can still merge inside a
 later group, whose diff starts after it.
 
-## Transient read errors
+## Transient read errors and rate limits
 
 Every GitHub read the guard makes, in pull request and merge-group runs alike,
-is retried on HTTP 500, 502, 503 or 504 (a network failure counts as 500):
+is retried on transient server errors and GitHub API rate limits:
 
-- Up to 3 attempts, after 2 s and then 5 s, or after the response's
-  `Retry-After` when it asks for 30 s or less. A longer `Retry-After`, a rate
-  limit (403, 429) or any other error fails at once, and the failure names the
-  attempts made.
+- **Server errors (HTTP 500, 502, 503 or 504; a network failure counts as
+  500)**: up to 3 attempts, after 2 s and then 5 s, or after the response's
+  `Retry-After` when it asks for 30 s or less. A longer `Retry-After` fails
+  without a retry. Server-error waits cap at 59 s per read and 120 s per job.
+- **Primary rate limits (HTTP 403/429 with `x-ratelimit-remaining: 0`)**: wait
+  until `x-ratelimit-reset` (or `Retry-After` when present, else 60 s) and retry
+  once. If the retry is still rate limited, or the reset is beyond the job wait
+  budget, the read fails at once and names the reset time.
+- **Secondary rate limits (HTTP 429 or rate-limit 403)**: wait `Retry-After`
+  when present, else back off exponentially (60 s, then 120 s) per GitHub's
+  guidance, up to 3 attempts.
+- **Non-rate-limit 4xx errors** (such as a 403 permission failure, 404 or 422)
+  fail at once, and every final failure names the attempts made.
 - Each wait logs a warning naming the read, the answer and the wait, so a read
   the retry saved still shows in the run.
-- One read waits at most 59 s. A pull request run makes one read, the commit
-  list in sync and Dependabot modes. The reads of one merge-group run (each
-  pull request, the stack walk, the file lists and the commit lists) share a
-  120 s wait budget.
+- All waits across one run's reads (5xx and rate limits combined) share a 420 s
+  (7 minute) job wait budget, leaving margin inside a 10-minute job timeout.
 
 ## Why standards `main`, not a SHA the PR names
 
