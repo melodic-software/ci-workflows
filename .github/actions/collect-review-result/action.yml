@@ -1,0 +1,49 @@
+name: Collect Review Result
+description: >-
+  pr-review-cli's extract step, with no model: reads structured output from
+  single or chunked review runs, validates coverage, counts and schema shape,
+  merges chunk reviews, and emits the review JSON, verdict and run metrics.
+  Every value arrives through env; extract.cjs documents what it reads.
+
+outputs:
+  turns:
+    description: Total agent turns across all executed chunks, or empty.
+    value: ${{ steps.extract.outputs.turns }}
+  cost:
+    description: Total USD cost across all executed chunks, or empty.
+    value: ${{ steps.extract.outputs.cost }}
+  leg-ms:
+    description: Total model leg duration in milliseconds, or empty.
+    value: ${{ steps.extract.outputs.leg-ms }}
+  wall-ms:
+    description: Total wall-clock duration in milliseconds, or empty.
+    value: ${{ steps.extract.outputs.wall-ms }}
+  models:
+    description: Comma-separated distinct model names reported by the run, or empty.
+    value: ${{ steps.extract.outputs.models }}
+  verdict:
+    description: "`complete`, or the reason no completed review was found."
+    value: ${{ steps.extract.outputs.verdict }}
+  verdict-class:
+    description: Normalized failure class when the verdict is not complete, else empty.
+    value: ${{ steps.extract.outputs.verdict-class }}
+  skipped:
+    description: Number of verified copies and renames counted as read.
+    value: ${{ steps.extract.outputs.skipped }}
+  review:
+    description: Validated review JSON string when complete, else empty.
+    value: ${{ steps.extract.outputs.review }}
+
+runs:
+  using: composite
+  steps:
+    - name: Extract the review
+      id: extract
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { run } = require(path.join(process.env.ACTION_PATH, "extract.cjs"));
+          await run({ core });

@@ -555,12 +555,26 @@ test("pr-review-cli.yml: every model leg writes the settled threads after the pl
       /sparse-checkout set plugins\/review \.github\/actions \.github\/scripts\/pr-review-main\n/u,
     );
     const compose = job.steps.find((s) => s.id === "compose");
+    assert.equal(compose.uses, "$/.github/actions/build-review-prompt", name);
     assert.equal(
       compose.env.SETTLED_NOTE,
       `\${{ steps.settled.outputs.note }}`,
       name,
     );
-    assert.match(compose.with.script, /env\.SETTLED_NOTE,/u, name);
+    assert.match(
+      fs.readFileSync(
+        path.join(
+          __dirname,
+          "..",
+          "actions",
+          "build-review-prompt",
+          "compose.cjs",
+        ),
+        "utf8",
+      ),
+      /env\.SETTLED_NOTE,/u,
+      name,
+    );
   }
 });
 

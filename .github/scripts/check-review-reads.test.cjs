@@ -816,8 +816,21 @@ test("every leg checks the reads after the extract step and before the review le
         `${job.name} ${id}`,
       );
     }
+    assert.equal(
+      step(job, "extract").uses,
+      "$/.github/actions/collect-review-result",
+    );
     assert.match(
-      step(job, "extract").with.script,
+      fs.readFileSync(
+        path.join(
+          __dirname,
+          "..",
+          "actions",
+          "collect-review-result",
+          "extract.cjs",
+        ),
+        "utf8",
+      ),
       /core\.setOutput\("skipped", String\(skipped\)\);/u,
     );
   }
@@ -841,9 +854,17 @@ test("every leg checks the reads after the extract step and before the review le
 });
 
 test("the prompt tells the model the job checks its Read calls, in every leg", () => {
+  const composeScript = fs.readFileSync(
+    path.join(__dirname, "..", "actions", "build-review-prompt", "compose.cjs"),
+    "utf8",
+  );
   for (const job of LEGS) {
+    assert.equal(
+      step(job, "compose").uses,
+      "$/.github/actions/build-review-prompt",
+    );
     assert.match(
-      step(job, "compose").with.script,
+      composeScript,
       /" {2}The job checks this against the Read calls of the review and its subagents: a listed file counts as read",\n\s*" {2}only when Read showed every line of its section, its diff --git line through its last line, in the diff",\n\s*" {2}file you review or the scope's diff \(the REVIEW SCOPE file for an incremental review, else the FULL DIFF",\n\s*" {2}file\)\. Grep output, a summary, or a count does not show a line\.",/u,
     );
   }

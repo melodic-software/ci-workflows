@@ -170,13 +170,23 @@ test("pr-review-cli.yml: every model leg writes the prior findings after the plu
       name,
     );
     const compose = job.steps.find((s) => s.id === "compose");
+    assert.equal(compose.uses, "$/.github/actions/build-review-prompt", name);
     assert.equal(
       compose.env.PRIOR_NOTE,
       `\${{ steps.prior.outputs.note }}`,
       name,
     );
     assert.match(
-      compose.with.script,
+      fs.readFileSync(
+        path.join(
+          __dirname,
+          "..",
+          "actions",
+          "build-review-prompt",
+          "compose.cjs",
+        ),
+        "utf8",
+      ),
       /env\.SETTLED_NOTE,\n\s*env\.PRIOR_NOTE,/u,
       name,
     );

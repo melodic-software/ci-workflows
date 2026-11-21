@@ -100,6 +100,23 @@ const outputsOf = (file) =>
       ]),
   );
 
+const SPLIT_SCRIPT = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "generate-review-chunks",
+  "split.sh",
+);
+const COMPOSE_MODULE = require("../actions/build-review-prompt/compose.cjs");
+const EXTRACT_FILE = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "collect-review-result",
+  "extract.cjs",
+);
+const EXTRACT_MODULE = require(EXTRACT_FILE);
+
 // The split step as shipped, over a diff of `files` added one-line files
 // and `renames` pure renames the full-diff step listed as verified.
 function split(job, files, env = {}, { renames = 0 } = {}) {
@@ -136,7 +153,8 @@ function split(job, files, env = {}, { renames = 0 } = {}) {
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
   const s = job.steps.find((candidate) => candidate.id === "split");
-  const result = spawnSync("bash", ["-e", "-c", s.run], {
+  assert.equal(s.uses, "$/.github/actions/generate-review-chunks", job.name);
+  const result = spawnSync("bash", [SPLIT_SCRIPT], {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -178,7 +196,7 @@ test("a diff over the chunk ceiling is reviewed unsplit, with the count and the 
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
-// A github-script step's script, run with `values` in its env.
+// A composite action's JS step, run with `values` in its env.
 async function runScript(s, values) {
   const outputs = {};
   const saved = Object.fromEntries(
@@ -186,18 +204,25 @@ async function runScript(s, values) {
   );
   Object.assign(process.env, values);
   const summary = { addRaw: () => summary, write: async () => {} };
+  const core = {
+    setOutput: (k, v) => {
+      outputs[k] = v;
+    },
+    setFailed: (m) => {
+      throw new Error(m);
+    },
+    info: () => {},
+    warning: () => {},
+    summary,
+  };
   try {
-    await new AsyncFunction("require", "core", s.with.script)(require, {
-      setOutput: (k, v) => {
-        outputs[k] = v;
-      },
-      setFailed: (m) => {
-        throw new Error(m);
-      },
-      info: () => {},
-      warning: () => {},
-      summary,
-    });
+    if (s.uses === "$/.github/actions/build-review-prompt") {
+      await COMPOSE_MODULE.run({ core });
+    } else if (s.uses === "$/.github/actions/collect-review-result") {
+      await EXTRACT_MODULE.run({ core });
+    } else {
+      await new AsyncFunction("require", "core", s.with.script)(require, core);
+    }
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
@@ -951,8 +976,14 @@ test("the merge reads a comment's severity as publish-review does", () => {
   };
   const severityRegex = /const SEVERITY = (\/.+\/gmu);/u;
   const criticalRegex = /const CRITICAL_LINE = (\/.+\/gmu);/u;
+  const extractScript = fs.readFileSync(EXTRACT_FILE, "utf8");
   for (const job of LEGS) {
-    const script = job.steps.find((s) => s.id === "extract").with.script;
+    assert.equal(
+      job.steps.find((s) => s.id === "extract").uses,
+      "$/.github/actions/collect-review-result",
+      job.name,
+    );
+    const script = extractScript;
     assert.equal(
       source(severityRegex, script, "extract SEVERITY"),
       source(severityRegex, publish, "publish SEVERITY"),
@@ -1032,8 +1063,14 @@ function demotedSummary(review) {
 }
 
 test("the merge's summary limit is publish-review's, read from its file", () => {
+  const extractScript = fs.readFileSync(EXTRACT_FILE, "utf8");
   for (const job of LEGS) {
-    const script = job.steps.find((s) => s.id === "extract").with.script;
+    assert.equal(
+      job.steps.find((s) => s.id === "extract").uses,
+      "$/.github/actions/collect-review-result",
+      job.name,
+    );
+    const script = extractScript;
     assert.equal(
       Number(/const PUBLISH_SUMMARY = ([0-9]+);/u.exec(script)?.[1]),
       PUBLISH_MAX,

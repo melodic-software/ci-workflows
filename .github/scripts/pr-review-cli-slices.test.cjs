@@ -68,6 +68,16 @@ const SPLITTER = [
   "",
 ].join("\n");
 
+const SPLIT_SCRIPT = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "generate-review-chunks",
+  "split.sh",
+);
+const COMPOSE_MODULE = require("../actions/build-review-prompt/compose.cjs");
+const EXTRACT_MODULE = require("../actions/collect-review-result/extract.cjs");
+
 // The split step of `job` over `diff` (a string or bytes) as the scope's
 // diff; `env` overrides the workflow's limits and the step's inputs.
 function split(job, diff, env = {}, prepare = () => {}) {
@@ -89,7 +99,8 @@ function split(job, diff, env = {}, prepare = () => {}) {
   fs.writeFileSync(output, "");
   const record = path.join(dir, "splitter-input.patch");
   const s = job.steps.find((candidate) => candidate.id === "split");
-  const result = spawnSync("bash", ["-e", "-c", s.run], {
+  assert.equal(s.uses, "$/.github/actions/generate-review-chunks", job.name);
+  const result = spawnSync("bash", [SPLIT_SCRIPT], {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -389,18 +400,21 @@ test("with verified renames left out, the splitter gets the distinct diff byte f
 const { isPartial } = require("../actions/publish-review/publish.cjs");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
-// The github-script step `id` of `job`, run with `values` in its env.
+// The composite action step `id` of `job`, run with `values` in its env.
 async function runStep(job, id, values, core) {
+  const s = job.steps.find((candidate) => candidate.id === id);
   const saved = Object.fromEntries(
     Object.keys(values).map((k) => [k, process.env[k]]),
   );
   Object.assign(process.env, values);
   try {
-    await new AsyncFunction(
-      "require",
-      "core",
-      job.steps.find((s) => s.id === id).with.script,
-    )(require, core);
+    if (s.uses === "$/.github/actions/build-review-prompt") {
+      await COMPOSE_MODULE.run({ core });
+    } else if (s.uses === "$/.github/actions/collect-review-result") {
+      await EXTRACT_MODULE.run({ core });
+    } else {
+      await new AsyncFunction("require", "core", s.with.script)(require, core);
+    }
   } finally {
     for (const [k, v] of Object.entries(saved)) {
       if (v === undefined) delete process.env[k];
