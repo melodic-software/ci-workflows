@@ -482,6 +482,30 @@ test("a leg's executables-and-archives count holds binary-artifact whatever the 
     new RegExp(`^- \`tools/run\` \\(ELF, sha256 ${SUM}\\)$`, "mu"),
   );
   assert.match(body, /^- a file with an unusual path \(zip/mu);
+  // Submodule (unread) and appended-archive rows pass the format filter cleanly.
+  const subHeld = await apply(
+    baseEnv({
+      KEY_FAILED: "true",
+      KEY_CLASS: "timeout",
+      KEY_REVIEW: "",
+      OPAQUE: "2",
+      OPAQUE_FILES: `deps/added\tunread\tsubmodule\nscripts/install.run\t${SUM}\tgzip appended`,
+      LEG_RESULTS: "success,skipped,skipped",
+    }),
+    { files: ["deps/added", "scripts/install.run"] },
+  );
+  assert.equal(subHeld.core.outputs.criteria, "binary-artifact");
+  assert.match(
+    subHeld.writes[1][1].body,
+    /^- `deps\/added` \(submodule, sha256 unread\)$/mu,
+  );
+  assert.match(
+    subHeld.writes[1][1].body,
+    new RegExp(
+      `^- \`scripts/install\\.run\` \\(gzip appended, sha256 ${SUM}\\)$`,
+      "mu",
+    ),
+  );
   // With a model cost hold: both, the job's reason first.
   const both = await apply(
     baseEnv({

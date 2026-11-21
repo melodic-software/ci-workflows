@@ -6396,6 +6396,7 @@ test("the executables-and-archives step runs on every scoped run and lists each 
           GH_TOKEN: "test-token",
           GITHUB_SERVER_URL: "https://github.invalid",
           GITHUB_OUTPUT: output,
+          BASE_SHA: base,
           MERGE_BASE: base,
           HEAD_SHA: head,
           BINARY_ALLOWLIST: "scripts/allow.txt",
@@ -6429,6 +6430,272 @@ test("the executables-and-archives step runs on every scoped run and lists each 
     fs.rmSync(output);
     assert.equal(run({ HEAD_SHA: base }).status, 0);
     assert.match(fs.readFileSync(output, "utf8"), /^count=none$/mu, job.name);
+  }
+});
+
+test("the executables-and-archives step revokes allowlist lines removed at BASE_SHA, holds changed submodules, and catches appended archives after shell prologues, in every leg", () => {
+  const zlib = require("node:zlib");
+  const { dir, origin } = originRepo("pr-review-cli-opaque-gaps-");
+  const sha256 = (bytes) =>
+    crypto.createHash("sha256").update(bytes).digest("hex");
+  const zip = (seed) =>
+    Buffer.concat([
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.alloc(200, seed),
+    ]);
+  const tarHeader = (name) => {
+    const hdr = Buffer.alloc(512, 0);
+    hdr.write(name, 0, "ascii");
+    hdr.write("0000644\0", 100, "ascii");
+    hdr.write("0000000\0", 108, "ascii");
+    hdr.write("0000000\0", 116, "ascii");
+    hdr.write("00000000000\0", 124, "ascii");
+    hdr.write("00000000000\0", 136, "ascii");
+    hdr.fill(0x20, 148, 156);
+    hdr.write("0", 156, "ascii");
+    hdr.write("ustar\0", 257, "ascii");
+    hdr.write("00", 263, "ascii");
+    let sum = 0;
+    for (const byte of hdr) sum += byte;
+    hdr.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+    return hdr;
+  };
+  const allowedZip = zip(3);
+  writeAt(origin, "src/a.txt", "base\n");
+  writeAt(
+    origin,
+    "scripts/allow.txt",
+    `${sha256(allowedZip)}  vendor/ok.zip\n`,
+  );
+  git(origin, "add", "-A");
+  git(
+    origin,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${"1".repeat(40)},deps/kept`,
+  );
+  git(
+    origin,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${"2".repeat(40)},deps/bumped`,
+  );
+  git(
+    origin,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${"3".repeat(40)},deps/removed`,
+  );
+  git(origin, "commit", "--quiet", "-m", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+
+  // Feature branch branched from `base`.
+  git(origin, "checkout", "--quiet", "-b", "feature", base);
+  writeAt(origin, "vendor/ok.zip", allowedZip);
+  // A `.gitmodules` entry with `ignore = all` on the checked-out PR head must
+  // not hide a changed submodule from `git diff --raw --ignore-submodules=none`.
+  writeAt(
+    origin,
+    ".gitmodules",
+    '[submodule "deps/bumped"]\n\tpath = deps/bumped\n\turl = https://example.invalid/bumped.git\n\tignore = all\n',
+  );
+  writeAt(
+    origin,
+    "scripts/install.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0\n"),
+      zlib.gzipSync(Buffer.from("payload")),
+    ]),
+  );
+  // Inline-comment appended archives (no preceding newline) are caught too.
+  writeAt(
+    origin,
+    "scripts/inline-gzip.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0 #"),
+      zlib.gzipSync(Buffer.from("payload")),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/inline-tar.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0 #"),
+      tarHeader("inline.bin"),
+      Buffer.alloc(1024, 0),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/bundle.run",
+    Buffer.concat([
+      Buffer.from("#!/usr/bin/env bash\nexit 0\n"),
+      tarHeader("payload.bin"),
+      Buffer.alloc(1024, 0),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/xz.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0 #"),
+      Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0x00]),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/bz2.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0\n"),
+      Buffer.from("BZh91AY&SY\0"),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/sourced.sh",
+    Buffer.concat([
+      Buffer.from("# no shebang\necho hi\n"),
+      zlib.gzipSync(Buffer.from("payload")),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/clean.sh",
+    "#!/usr/bin/env bash\n# mentions ustar, gzip and BZh9\necho ok\n",
+  );
+  git(origin, "add", ".gitmodules", "vendor", "scripts");
+  git(
+    origin,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${"4".repeat(40)},deps/added`,
+  );
+  git(
+    origin,
+    "update-index",
+    "--cacheinfo",
+    `160000,${"5".repeat(40)},deps/bumped`,
+  );
+  git(origin, "update-index", "--force-remove", "deps/removed");
+  git(origin, "commit", "--quiet", "-m", "feature");
+  const head = git(origin, "rev-parse", "HEAD");
+
+  // Simulate the base branch advancing after `feature` branched.
+  git(origin, "checkout", "--quiet", "-b", "base-kept", base);
+  writeAt(origin, "src/a.txt", "base-kept\n");
+  git(origin, "add", "src/a.txt");
+  git(origin, "commit", "--quiet", "-m", "base-kept");
+  const baseKept = git(origin, "rev-parse", "HEAD");
+
+  git(origin, "checkout", "--quiet", "-b", "base-revoked", base);
+  writeAt(origin, "scripts/allow.txt", "# revoked\n");
+  git(origin, "add", "scripts/allow.txt");
+  git(origin, "commit", "--quiet", "-m", "base-revoked");
+  const baseRevoked = git(origin, "rev-parse", "HEAD");
+
+  git(origin, "checkout", "--quiet", "-b", "base-deleted", base);
+  git(origin, "rm", "--quiet", "scripts/allow.txt");
+  git(origin, "commit", "--quiet", "-m", "base-deleted");
+  const baseDeleted = git(origin, "rev-parse", "HEAD");
+
+  const expectedAlways = [
+    ["deps/added", "submodule"],
+    ["deps/bumped", "submodule"],
+    ["scripts/bundle.run", "tar appended"],
+    ["scripts/bz2.run", "bzip2 appended"],
+    ["scripts/inline-gzip.run", "gzip appended"],
+    ["scripts/inline-tar.run", "tar appended"],
+    ["scripts/install.run", "gzip appended"],
+    ["scripts/sourced.sh", "gzip appended"],
+    ["scripts/xz.run", "xz appended"],
+  ];
+
+  for (const job of [key, subscription, fallback]) {
+    const opaque = step(job, "opaque");
+    const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
+    git(dir, "clone", "--quiet", origin, work);
+    git(work, "checkout", "--quiet", "feature");
+    const output = `${work}.out`;
+    const run = (env) => {
+      if (fs.existsSync(output)) fs.rmSync(output);
+      const res = spawnSync("bash", ["-e", "-c", opaque.run], {
+        cwd: work,
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: dir,
+          GH_TOKEN: "test-token",
+          GITHUB_SERVER_URL: "https://github.invalid",
+          GITHUB_OUTPUT: output,
+          BASE_SHA: baseKept,
+          MERGE_BASE: base,
+          HEAD_SHA: head,
+          BINARY_ALLOWLIST: "scripts/allow.txt",
+          ...env,
+        },
+      });
+      assert.equal(res.status, 0, res.stderr);
+      const out = fs.readFileSync(output, "utf8");
+      const count = /^count=(.+)$/mu.exec(out)?.[1];
+      const files = /^files<<(EOF_[0-9a-f]{16})\n([\s\S]*?)\n\1$/mu.exec(out);
+      assert.ok(files, job.name);
+      return {
+        count,
+        rows: files[2].split("\n").map((line) => line.split("\t")),
+      };
+    };
+
+    // Base advanced while keeping the allowlist entry: vendor/ok.zip passes;
+    // changed submodules and appended-archive scripts are held; clean script
+    // and untouched/deleted submodules pass.
+    const kept = run({ BASE_SHA: baseKept });
+    assert.equal(kept.count, String(expectedAlways.length), job.name);
+    assert.deepEqual(
+      kept.rows.map(([p, , why]) => [p, why]),
+      expectedAlways,
+      job.name,
+    );
+    assert.equal(
+      kept.rows.find(([p]) => p === "deps/added")[1],
+      "unread",
+      job.name,
+    );
+    assert.equal(
+      kept.rows.find(([p]) => p === "deps/bumped")[1],
+      "unread",
+      job.name,
+    );
+
+    // Base revoked the allowlist line, deleted the allowlist, or BASE_SHA is
+    // missing/unfetchable: fail closed and hold vendor/ok.zip even on a stale
+    // branch whose merge base still lists it.
+    for (const [label, baseSha] of [
+      ["revoked line", baseRevoked],
+      ["deleted allowlist", baseDeleted],
+      ["missing BASE_SHA", ""],
+      ["unfetchable BASE_SHA", "e".repeat(40)],
+    ]) {
+      const held = run({ BASE_SHA: baseSha });
+      assert.equal(
+        held.count,
+        String(expectedAlways.length + 1),
+        `${job.name}: ${label}`,
+      );
+      assert.deepEqual(
+        held.rows.map(([p, , why]) => [p, why]),
+        [...expectedAlways, ["vendor/ok.zip", "zip"]],
+        `${job.name}: ${label}`,
+      );
+      assert.equal(
+        held.rows.find(([p]) => p === "vendor/ok.zip")[1],
+        sha256(allowedZip),
+        `${job.name}: ${label}`,
+      );
+    }
   }
 });
 
