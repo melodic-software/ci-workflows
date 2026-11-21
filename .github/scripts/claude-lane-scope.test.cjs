@@ -477,6 +477,7 @@ test("a push that changes no file of the pull request is not reviewed again", as
       [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
       [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
       [`${MB_OLD}...${MB_NEW}`]: { files: [file("elsewhere.js")] },
+      [`${MB_OLD}...${LAST}`]: { files: [file("src/a.js")] },
     },
   ]) {
     const result = await runScope(codeLane, {
@@ -515,6 +516,37 @@ test("both lanes review in full when a push reverts or drops a file from a multi
   }
 });
 
+test("both lanes review in full when a base merge also drops a file that changed on the base branch", async () => {
+  for (const lane of [codeLane, securityLane]) {
+    const result = await runScope(lane, {
+      prFiles: [file("src/a.js")],
+      compares: {
+        [`${LAST}...${HEAD}`]: {
+          status: "ahead",
+          files: [file("Z"), file("other.js")],
+        },
+        [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+        [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+        [`${MB_OLD}...${MB_NEW}`]: { files: [file("Z"), file("other.js")] },
+        [`${MB_OLD}...${LAST}`]: { files: [file("src/a.js"), file("Z")] },
+      },
+      comments: [await markerFor(lane, LAST)],
+    });
+    assert.equal(result.outputs.review, "true", lane.file);
+    assert.equal(result.outputs.scope, "whole", lane.file);
+    assert.equal(result.outputs.skip, undefined, lane.file);
+    assert.equal(result.outputs.note, undefined, lane.file);
+    assert.ok(
+      result.messages.some((message) =>
+        /a file left this pull request since the review of b{40}/u.test(
+          message,
+        ),
+      ),
+      lane.file,
+    );
+  }
+});
+
 test("a push that drops one file while also editing a PR file or merging base reviews in full", async () => {
   for (const compares of [
     unmovedBase([
@@ -529,6 +561,9 @@ test("a push that drops one file while also editing a PR file or merging base re
       [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
       [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
       [`${MB_OLD}...${MB_NEW}`]: { files: [file("other.js")] },
+      [`${MB_OLD}...${LAST}`]: {
+        files: [file("src/a.js"), file(".gitleaksignore")],
+      },
     },
   ]) {
     const result = await runScope(codeLane, {
@@ -617,6 +652,7 @@ test("a base merge that changed only other files keeps the review incremental", 
       [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
       [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
       [`${MB_OLD}...${MB_NEW}`]: { files: [file("other.js")] },
+      [`${MB_OLD}...${LAST}`]: { files: [file("src/a.js"), file("src/b.js")] },
     },
     comments: [await markerFor(codeLane, LAST)],
   });

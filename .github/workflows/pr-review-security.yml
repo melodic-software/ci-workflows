@@ -391,6 +391,16 @@ jobs:
               if (moved.some((file) => names(file).some((name) => prNames.has(name)))) {
                 return { full: "a base-branch merge since the last review changed a file this pull request changes" };
               }
+              // Check the PR's file set at `last`: a file dropped during a base merge
+              // (for example, taking the base branch's side of a conflict) also appears
+              // in `moved`, so comparing `before...last` catches it.
+              const reviewed = (await compare(`${before}...${last}`)).files ?? [];
+              if (reviewed.length >= FILE_CAP) {
+                return { full: `${FILE_CAP} or more files were in this pull request at ${last}` };
+              }
+              if (reviewed.some((file) => !names(file).some((name) => prNames.has(name)))) {
+                return { full: `a file left this pull request since the review of ${last}` };
+              }
               return { movedNames: new Set(moved.flatMap(names)) };
             };
 
