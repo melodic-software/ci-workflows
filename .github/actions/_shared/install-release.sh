@@ -78,7 +78,6 @@ fi
 
 if [[ -n "$cached_asset" && -f "$cached_asset" ]] &&
   printf '%s  %s\n' "$SHA256" "$cached_asset" | sha256sum -c - >/dev/null 2>&1; then
-  # Cache hit: reuse the already-verified release asset (skip the network).
   cp -- "$cached_asset" "$asset"
 else
   # Nine backed-off attempts span ~4-5 minutes to outlast an upstream outage; a

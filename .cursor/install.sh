@@ -31,7 +31,6 @@ env_line() {
   grep -qxF "$1" "$profile" 2>/dev/null || printf '%s\n' "$1" >>"$profile"
 }
 
-# --- Node, from .node-version via nvm --------------------------------------
 if [[ -f .node-version ]]; then
   node_pin="$(tr -d '[:space:]' <.node-version)"
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -73,7 +72,6 @@ if [[ -f .node-version ]]; then
   fi
 fi
 
-# --- .NET SDK, from global.json --------------------------------------------
 if [[ -f global.json ]]; then
   sdk=""
   if command -v node >/dev/null 2>&1; then
@@ -114,7 +112,6 @@ if [[ -f global.json ]]; then
   fi
 fi
 
-# --- Git history ------------------------------------------------------------
 # Several checks diff against origin/main; deepen a shallow clone and make the
 # ref resolvable. Best effort — a fetch failure must not fail environment setup.
 git_dir="$(git rev-parse --git-dir 2>/dev/null || true)"

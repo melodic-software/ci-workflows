@@ -89,9 +89,6 @@ def failure_text(exc: Exception) -> str:
     return str(exc) if isinstance(exc, BumpError) else f"{type(exc).__name__}: {exc}"
 
 
-# ---------------------------------------------------------------- pure logic
-
-
 def parse_version(text: str) -> tuple[int, ...] | None:
     """Numeric dotted version, or None for anything else (prereleases included)."""
     return tuple(int(p) for p in text.split(".")) if VERSION_RE.match(text) else None
@@ -305,9 +302,6 @@ def targets_marker(rows: list[dict[str, Any]]) -> str:
     return ",".join(f"{r['tool']}={r['target']}" for r in rows)
 
 
-# ---------------------------------------------------------------- registry integrity
-
-
 def npm_signed_message(name: str, version: str, integrity: str) -> bytes:
     """What the npm registry signs for a version: `<name>@<version>:<integrity>`."""
     return f"{name}@{version}:{integrity}".encode()
@@ -413,9 +407,6 @@ def uv_cpython_builds(metadata: dict[str, Any]) -> dict[str, int]:
             version = f"{item['major']}.{item['minor']}.{item['patch']}"
             builds[version] = builds.get(version, 0) + 1
     return builds
-
-
-# ---------------------------------------------------------------- process helpers
 
 
 def run_raw(
@@ -531,9 +522,6 @@ def file_digest(path: Path, algo: str) -> str:
 
 def parse_date(text: str) -> dt.datetime:
     return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
-
-
-# ---------------------------------------------------------------- resolve
 
 
 def list_releases(
@@ -694,9 +682,6 @@ def release_url(source: dict[str, Any], release: Release) -> str:
     if kind == "nuget":
         return f"https://www.nuget.org/packages/{source['package']}/{v}"
     return f"https://www.python.org/downloads/release/{release.meta['slug']}/"
-
-
-# ---------------------------------------------------------------- verify and compute new values
 
 
 class Verifier:
@@ -1175,9 +1160,6 @@ def file_list_edits(
     return edits
 
 
-# ---------------------------------------------------------------- rewrite
-
-
 def rewrite(edits: list[dict[str, Any]]) -> None:
     for name in dict.fromkeys(e["file"] for e in edits):
         file = Path(name)
@@ -1204,9 +1186,6 @@ def run_hooks(
 def changed_paths() -> list[str]:
     """Tracked files the bump rewrote; a bump never adds a file."""
     return run(["git", "diff", "--name-only"]).split()
-
-
-# ---------------------------------------------------------------- commands
 
 
 def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
@@ -1437,9 +1416,6 @@ def write_results(out: Path, results: dict[str, Any]) -> None:
     (out / "results.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
-
-
-# ---------------------------------------------------------------- publish
 
 
 def pr_title(bump: dict[str, Any], rows: list[dict[str, Any]]) -> str:

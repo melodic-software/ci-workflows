@@ -325,8 +325,6 @@ test("a diff with no final newline rejoins byte for byte, cut in the middle or a
   }
 });
 
-// --- no change for a diff that fits today ---
-
 test("with no file over the budget the splitter gets the step's input byte for byte, and the outputs are as before", () => {
   const many = smallFiles(81);
   // Five files of about 400 bytes: over a 1000-byte budget together, each under it.
@@ -394,8 +392,6 @@ test("with verified renames left out, the splitter gets the distinct diff byte f
     assert.equal(cut.outputs.excluded, "3");
   }
 });
-
-// --- the extract step's read count over the split step's chunks ---
 
 const { isPartial } = require("../actions/publish-review/publish.cjs");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
@@ -620,8 +616,6 @@ test("with no cut file the extract step's result is as before, whatever the piec
   }
 });
 
-// --- the per-file read check over a sliced file ---
-
 // A Read result of every line of `file` but the 1-based line `skip`,
 // numbered as the CLI prints them.
 function readAll(id, file, skip = 0) {
@@ -748,8 +742,6 @@ test("a piece no chunk holds lists the cut file unread, saying its pieces do not
     ]);
   }
 });
-
-// --- the chunk notes the compose step writes ---
 
 // The compose step of `job` over the split `cut` (its chunk directory
 // `chunkDir`); returns each chunk's prompt.
