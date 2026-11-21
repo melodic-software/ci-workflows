@@ -1,6 +1,6 @@
 "use strict";
 
-// stage-lane-plugins stages trusted plugin copies into a read-only workspace
+// setup-lane-plugins stages trusted plugin copies into a read-only workspace
 // directory for run-claude-cli, failing closed on pre-existing or tracked
 // staging roots, symlinks, or invalid inputs, and rolling back on error.
 
@@ -16,7 +16,7 @@ const {
   parseDestination,
   parsePlugins,
   stageLanePlugins,
-} = require("../actions/stage-lane-plugins/stage.cjs");
+} = require("../actions/setup-lane-plugins/stage.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -24,7 +24,7 @@ const SCRIPT = path.join(
   __dirname,
   "..",
   "actions",
-  "stage-lane-plugins",
+  "setup-lane-plugins",
   "stage.cjs",
 );
 
@@ -91,7 +91,7 @@ function makeWritableRecursive(target) {
 }
 
 function setupFixture(t, { initGit = true, commitHead = true } = {}) {
-  const root = fs.realpathSync(makeTemporaryDirectory("stage-lane-plugins-"));
+  const root = fs.realpathSync(makeTemporaryDirectory("setup-lane-plugins-"));
   t.after(() => {
     makeWritableRecursive(root);
     fs.rmSync(root, { recursive: true, force: true });
@@ -131,7 +131,7 @@ function writePlugin(sourceDir, name, files) {
 
 function runCli(env) {
   const outputPath = path.join(
-    makeTemporaryDirectory("stage-lane-plugins-out-"),
+    makeTemporaryDirectory("setup-lane-plugins-out-"),
     "output",
   );
   fs.writeFileSync(outputPath, "");
@@ -594,7 +594,7 @@ test("CLI exits 1 with an error annotation on failure", (t) => {
     STAGE_PLUGINS: "does-not-exist",
   });
   assert.equal(cli.status, 1);
-  assert.match(cli.stdout, /^::error::stage-lane-plugins:/u);
+  assert.match(cli.stdout, /^::error::setup-lane-plugins:/u);
 });
 
 test("action.yml wires inputs, default destination, script path, and plugin-dirs output", () => {

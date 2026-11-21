@@ -1,4 +1,4 @@
-# stage-lane-plugins
+# setup-lane-plugins
 
 Copy one or more Claude Code plugins into a read-only workspace tree for
 `run-claude-cli` (`--plugin-dir` and `--add-dir`).
@@ -6,8 +6,9 @@ Copy one or more Claude Code plugins into a read-only workspace tree for
 Under `--restricted`, Claude Code reads plugin files only inside a working
 directory, so lanes copy trusted plugins (from a base-branch checkout or a
 cloned marketplace outside the workspace) into `.lane/plugins/` before invoking
-`run-claude-cli`. This action replaces repeated inline staging scripts with one
-fail-closed implementation.
+`run-claude-cli`. This action provides one shared, fail-closed staging
+implementation for consumer and new lanes (`pr-review-cli.yml` currently keeps
+its own sparse-clone staging step until migrated).
 
 ## Behavior
 
@@ -56,7 +57,7 @@ fail-closed implementation.
 ```yaml
 - name: Stage lane plugins
   id: plugins
-  uses: melodic-software/ci-workflows/.github/actions/stage-lane-plugins@<sha>
+  uses: melodic-software/ci-workflows/.github/actions/setup-lane-plugins@<sha>
   with:
     source-dir: .base/plugins
     plugins: |
@@ -70,4 +71,4 @@ fail-closed implementation.
     # ...
 ```
 
-Tests: `.github/scripts/stage-lane-plugins.test.cjs`.
+Tests: `.github/scripts/setup-lane-plugins.test.cjs`.

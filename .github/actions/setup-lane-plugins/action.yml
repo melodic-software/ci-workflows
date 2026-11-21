@@ -1,4 +1,4 @@
-name: Stage Lane Plugins
+name: Setup Lane Plugins
 description: >-
   Copy one or more Claude Code plugins into a read-only workspace directory
   for `run-claude-cli` (`--plugin-dir` and `--add-dir`). Refuses any

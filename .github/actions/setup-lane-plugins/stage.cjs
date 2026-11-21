@@ -1,4 +1,4 @@
-// stage-lane-plugins: copy trusted plugin directories into a read-only
+// setup-lane-plugins: copy trusted plugin directories into a read-only
 // workspace tree for run-claude-cli (--plugin-dir / --add-dir).
 //
 // Security and reliability invariants:
@@ -171,7 +171,7 @@ function inspectGitWorkspace(workspace, topSegment, baseEnv) {
     }
     if (lsTree.stdout.trim() !== "") {
       throw new StageError(
-        `HEAD tracks ${JSON.stringify(topSegment)}, where stage-lane-plugins stages plugins`,
+        `HEAD tracks ${JSON.stringify(topSegment)}, where setup-lane-plugins stages plugins`,
       );
     }
   }
@@ -184,7 +184,7 @@ function inspectGitWorkspace(workspace, topSegment, baseEnv) {
   }
   if (lsFiles.stdout.trim() !== "") {
     throw new StageError(
-      `the Git index tracks ${JSON.stringify(topSegment)}, where stage-lane-plugins stages plugins`,
+      `the Git index tracks ${JSON.stringify(topSegment)}, where setup-lane-plugins stages plugins`,
     );
   }
 
@@ -491,7 +491,7 @@ function main(env = process.env) {
     env.GITHUB_OUTPUT,
   );
   process.stdout.write(
-    `stage-lane-plugins: staged ${result.plugins.length} plugin(s) into ${result.destination} (${result.plugins.join(", ")})\n`,
+    `setup-lane-plugins: staged ${result.plugins.length} plugin(s) into ${result.destination} (${result.plugins.join(", ")})\n`,
   );
   return result;
 }
@@ -502,7 +502,7 @@ if (require.main === module) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stdout.write(
-      `::error::stage-lane-plugins: ${sanitizeAnnotation(message)}\n`,
+      `::error::setup-lane-plugins: ${sanitizeAnnotation(message)}\n`,
     );
     process.exitCode = 1;
   }

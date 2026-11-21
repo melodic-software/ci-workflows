@@ -927,7 +927,7 @@ consumer to audit it.
   else job B's, else job A's. With the fallback secret empty, job B never
   hands off and job C never runs. `intake-triage.yml` is the reference
   implementation.
-- `.github/actions/stage-lane-plugins` — copies one or more trusted plugin
+- `.github/actions/setup-lane-plugins` — copies one or more trusted plugin
   directories into a read-only workspace tree (`.lane/plugins` by default) for
   `run-claude-cli`: refuses any pre-existing or Git-tracked staging root,
   rejects symbolic links and special files inside any staged plugin, writes an
@@ -935,7 +935,7 @@ consumer to audit it.
   its write denial on read-only `--add-dir` paths, strips all write bits
   recursively, excludes the staging root in `.git/info/exclude` when the
   workspace is a Git checkout, rolls back on error, and outputs `plugin-dirs`
-  ([its README](.github/actions/stage-lane-plugins/README.md)).
+  ([its README](.github/actions/setup-lane-plugins/README.md)).
 - `.github/actions/apply-claude-managed-settings` — writes the root-owned
   `/etc/claude-code/managed-settings.json` that pins `apiKeyHelper` and
   `env.ANTHROPIC_BASE_URL`, disables bypassPermissions mode and sets
