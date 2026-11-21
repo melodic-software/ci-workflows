@@ -207,7 +207,7 @@ test("the triage-fallback job repeats the triage-subscription job's steps but fo
       "subscription",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "subscription-token",
-      `\${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}`,
+      `\${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-leg == 'subscription' && needs.check-key-credit.outputs.next-reason || 'no-key' }}`,
     ),
   );
   // The verdict-schema steps are among the steps held equal.
@@ -357,6 +357,72 @@ test("the triage-subscription job starts only on an exact handoff or an empty ke
   }
 });
 
+test("the API-key switch skips the claude job and starts the triage-subscription job directly, reason no-key; with the switch off the key leg runs as before", () => {
+  const gate = (skipKey, result = "success") => ({
+    result,
+    outputs: select.start({ skipKey }),
+  });
+  const keyRuns = (keysOff, gateJob) =>
+    Boolean(
+      evaluate(claude.if, {
+        needs: { "check-key-credit": gateJob },
+        vars: { CLAUDE_API_KEYS_DISABLED: keysOff },
+      }),
+    );
+  // Switch off or unset: the key leg runs after a gate that ran the key,
+  // including a gate job that failed.
+  for (const keysOff of ["false", "", undefined]) {
+    assert.equal(keyRuns(keysOff, gate(false)), true, String(keysOff));
+    assert.equal(
+      keyRuns(keysOff, { result: "failure", outputs: {} }),
+      true,
+      `failed gate, ${keysOff}`,
+    );
+  }
+  // Switch on: no key job, whatever the gate said.
+  assert.equal(keyRuns("true", gate(false)), false);
+  assert.equal(keyRuns("true", { result: "failure", outputs: {} }), false);
+  const sub = (gateJob, claudeJob) => ({
+    "check-key-credit": gateJob,
+    claude: claudeJob,
+  });
+  const starts = (needs) => Boolean(evaluate(subscription.if, { needs }));
+  const reason = (needs) =>
+    evaluate(stepById(subscription, "credential").with.reason, { needs });
+  // The switch skipped the claude job after a gate that named the key.
+  const keysOff = sub(gate(false), { result: "skipped", outputs: {} });
+  assert.equal(starts(keysOff), true);
+  assert.equal(reason(keysOff), "no-key");
+  // The switch skipped it after a gate job that failed.
+  const failedGate = sub(
+    { result: "failure", outputs: {} },
+    { result: "skipped", outputs: {} },
+  );
+  assert.equal(starts(failedGate), true);
+  assert.equal(reason(failedGate), "no-key");
+  // The credit gate skipped it: the gate's own reason carries on.
+  const credit = sub(gate(true), { result: "skipped", outputs: {} });
+  assert.equal(starts(credit), true);
+  assert.equal(reason(credit), "credit-stop");
+  // The author gate turned the run away: no leg runs.
+  assert.equal(
+    starts(
+      sub(
+        { result: "skipped", outputs: {} },
+        { result: "skipped", outputs: {} },
+      ),
+    ),
+    false,
+  );
+  // A key leg that ran hands on its own reason.
+  const ran = sub(gate(false), {
+    result: "success",
+    outputs: handedOn("key", {}, { handoff: "true", "handoff-reason": "auth" }),
+  });
+  assert.equal(starts(ran), true);
+  assert.equal(reason(ran), "auth");
+});
+
 test("the triage-subscription job downloads nothing from the claude job and never writes its outputs into a script", () => {
   assertTakesNothingFromNeeds(subscription);
 });
@@ -399,7 +465,7 @@ test("the triage-subscription job repeats the claude job's steps but for the cre
             assert.equal(
               copy.with.reason,
               // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
-              "${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}",
+              "${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-leg == 'subscription' && needs.check-key-credit.outputs.next-reason || 'no-key' }}",
             );
           }
           for (const name of [

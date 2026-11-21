@@ -492,12 +492,15 @@ jobs:
     timeout-minutes: 29
     # After the author gate (check-key-credit's if): skipped when that gate
     # turned the run away or the key-credit gate named the subscription leg
-    # first, so a key in its credit backoff starts no key job. !cancelled()
-    # runs the key leg when the check-key-credit job itself fails: its
-    # next-leg is then empty, and every gate failure runs the key.
+    # first, so a key in its credit backoff starts no key job, and while the
+    # API-key switch is on, so the triage-subscription job starts directly
+    # instead of after a key job that triages nothing. !cancelled() runs the
+    # key leg when the check-key-credit job itself fails: its next-leg is
+    # then empty, and every gate failure runs the key.
     if: >-
       ${{ !cancelled() && needs.check-key-credit.result != 'skipped'
-          && needs.check-key-credit.outputs.next-leg != 'subscription' }}
+          && needs.check-key-credit.outputs.next-leg != 'subscription'
+          && vars.CLAUDE_API_KEYS_DISABLED != 'true' }}
     # The model's job reads and never writes: the token can read the issue
     # but not change it, and no cache is read or written.
     permissions:
@@ -1278,19 +1281,23 @@ jobs:
   # processes, files and environment do not reach it. Its steps repeat the
   # claude job's but for the credential (a test holds them equal), so the
   # hardening runs again before the checkout. It reads two outputs of the
-  # claude job that succeeded, or of the check-key-credit job when that
-  # gate skipped the claude job: select-model-credential's next-leg,
+  # claude job that succeeded, or of the check-key-credit job when the
+  # claude job was skipped: select-model-credential's next-leg,
   # compared to a fixed string here, and next-reason, which that action
-  # checks against a closed list; neither reaches a run: script. A failed
-  # or cancelled claude job never starts it. It does not use
-  # inputs.runner: a caller's runner could keep state between jobs.
+  # checks against a closed list; neither reaches a run: script. A claude
+  # job skipped after check-key-credit ran means that gate named this leg
+  # or the API-key switch is on (no-key); keying on the claude job's
+  # result, not the switch, keeps a switch flipped between the two jobs
+  # from triaging twice or not at all. A failed or cancelled claude job
+  # never starts it. It does not use inputs.runner: a caller's runner could
+  # keep state between jobs.
   triage-subscription:
     name: Triage Subscription
     needs: [check-key-credit, claude]
     if: >-
       ${{ !cancelled()
           && ((needs.claude.result == 'success' && needs.claude.outputs.next-leg == 'subscription')
-              || (needs.claude.result == 'skipped' && needs.check-key-credit.outputs.next-leg == 'subscription')) }}
+              || (needs.claude.result == 'skipped' && needs.check-key-credit.result != 'skipped')) }}
     environment:
       name: ${{ inputs.environment }}
       deployment: false
@@ -1825,7 +1832,7 @@ jobs:
           role: ${{ inputs.role }}
           credential-set: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
           fallback-set: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN != '' }}
-          reason: ${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason }}
+          reason: ${{ needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-leg == 'subscription' && needs.check-key-credit.outputs.next-reason || 'no-key' }}
 
       # continue-on-error keeps an infrastructure failure, which run-claude-cli
       # reports by failing this step, from ending the job before the outcome

@@ -64,7 +64,7 @@ module.exports = {
       secret: "CLAUDE_CODE_OAUTH_TOKEN",
       input: "subscription-token",
       reason:
-        "needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-reason",
+        "needs.claude.outputs.next-reason || needs.check-key-credit.outputs.next-leg == 'subscription' && needs.check-key-credit.outputs.next-reason || 'no-key'",
       recordComment:
         "Why this job ran, for this leg's lane record (ci-workflows#806).",
     }),
