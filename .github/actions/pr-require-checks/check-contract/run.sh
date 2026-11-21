@@ -240,6 +240,7 @@ pr_author="$(jq -r .user.login <"$pr_json")"
 jq -r .body <"$pr_json" >"$scratch/body.txt"
 jq -r '.labels[].name' <"$pr_json" >"$scratch/labels.txt"
 
+# Step 2 — title against Conventional Commits with the caller's type list.
 types_list="$(printf '%s' "$TYPES" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
 if [[ -z "$types_list" ]]; then
   echo "::error::check-contract: types is empty; list at least one allowed Conventional Commits type"
@@ -265,6 +266,7 @@ if [[ ! "$pr_title" =~ $title_regex ]]; then
   echo "::error::check-contract: the PR title does not follow Conventional Commits: \"$(escape_annotation "$pr_title")\". Expected \"<type>: <subject>\" with a non-empty subject; allowed types: ${types_human}. ${scope_hint} A breaking change marks the type with \"!\"."
 fi
 
+# Step 3 — do-not-merge label.
 do_not_merge_result=pass
 if grep -qxF -- "$DO_NOT_MERGE_LABEL" "$scratch/labels.txt"; then
   do_not_merge_result=fail
@@ -333,6 +335,8 @@ if [[ "${EVENT_NAME:-}" == merge_group ]]; then
   exit 0
 fi
 
+# Step 4 — issue linkage.
+#
 # The body must
 # carry a native closing keyword, an explicit non-closing `Refs:`/`Relates to:`
 # marker, or a no-issue opt-out, AND four non-empty contract sections. A negated
@@ -700,6 +704,7 @@ else
   fi
 fi
 
+# Step 5 — advisory outcome: one marker comment, upserted, plus the label.
 # Each call below is sent once: the outcome is advisory, and resending its
 # calls could push the step past a short ci-status job's timeout.
 GH_API_RETRY_ERRORS=false
@@ -788,6 +793,8 @@ else
   fi
 fi
 
+# Step 6 — outputs and the single exit decision.
+#
 # Every check runs before any exit so all four outputs are always emitted; an
 # early exit on the title would leave `linkage` unset for the caller.
 emit_results "$title_result" "$do_not_merge_result" "$linkage_result" "$hold_result"
