@@ -875,12 +875,22 @@ test("the restack check's git commands see mode and type changes in a blob-less 
 // Two callers on one pull request write one marker key, so a docs-only skip by
 // a legacy caller must not read as pr-review-cli.yml's review of that head.
 {
-  const cliScript = stepNamed(
+  const cliScopeStep = stepNamed(
     Object.values(load("pr-review-cli.yml").jobs).find((job) =>
       job.steps?.some((step) => step.name === "Scope the review"),
     ),
     "Scope the review",
-  ).with.script;
+  );
+  assert.equal(cliScopeStep.uses, "$/.github/actions/resolve-review-scope");
+  const cliActionDir = path.join(
+    __dirname,
+    "..",
+    "actions",
+    "resolve-review-scope",
+  );
+  const cliScript = parseWorkflow(
+    fs.readFileSync(path.join(cliActionDir, "action.yml"), "utf8"),
+  ).runs.steps[0].with.script;
   const cliLane = { lane: "claude-review", script: cliScript };
   const OWN = ".github/workflows/review.yml";
   const cliMarker = (sha, caller, id = 41) => ({
@@ -903,6 +913,7 @@ test("the restack check's git commands see mode and type changes in a blob-less 
   const cliEnv = () => {
     const directory = makeTemporaryDirectory("scope-cli-");
     return {
+      ACTION_PATH: cliActionDir,
       GITHUB_WORKFLOW_REF: `o/r/${OWN}@refs/pull/7/merge`,
       FILE_LIST: path.join(directory, "files.txt"),
       DATA_LIST: path.join(directory, "data.txt"),

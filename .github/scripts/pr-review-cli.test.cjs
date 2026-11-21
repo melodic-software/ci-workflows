@@ -58,6 +58,85 @@ async function runScript(script, values, args, cwd) {
   }
 }
 
+// Extracted composite actions for the five large review-leg steps.
+const ACTION_SCRIPTS = {
+  "$/.github/actions/resolve-review-scope": {
+    file: path.join(
+      __dirname,
+      "..",
+      "actions",
+      "resolve-review-scope",
+      "scope.cjs",
+    ),
+    kind: "cjs",
+  },
+  "$/.github/actions/build-review-diff": {
+    file: path.join(__dirname, "..", "actions", "build-review-diff", "diff.sh"),
+    kind: "sh",
+  },
+  "$/.github/actions/generate-review-chunks": {
+    file: path.join(
+      __dirname,
+      "..",
+      "actions",
+      "generate-review-chunks",
+      "split.sh",
+    ),
+    kind: "sh",
+  },
+  "$/.github/actions/build-review-prompt": {
+    file: path.join(
+      __dirname,
+      "..",
+      "actions",
+      "build-review-prompt",
+      "compose.cjs",
+    ),
+    kind: "cjs",
+  },
+  "$/.github/actions/collect-review-result": {
+    file: path.join(
+      __dirname,
+      "..",
+      "actions",
+      "collect-review-result",
+      "extract.cjs",
+    ),
+    kind: "cjs",
+  },
+};
+const stepSource = (s) => {
+  const action = ACTION_SCRIPTS[s?.uses];
+  if (action) return fs.readFileSync(action.file, "utf8");
+  return s?.with?.script ?? s?.run;
+};
+const bashArgs = (s) => {
+  const action = ACTION_SCRIPTS[s?.uses];
+  if (action?.kind === "sh") return [action.file];
+  return ["-e", "-c", s.run];
+};
+async function runActionStep(s, values, args, cwd) {
+  const action = ACTION_SCRIPTS[s?.uses];
+  if (action?.kind === "cjs") {
+    const saved = Object.fromEntries(
+      Object.keys(values).map((k) => [k, process.env[k]]),
+    );
+    const before = process.cwd();
+    Object.assign(process.env, values);
+    if (cwd) process.chdir(cwd);
+    try {
+      return await require(action.file).run(args);
+    } finally {
+      if (cwd) process.chdir(before);
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+  return runScript(s.with.script, values, args, cwd);
+}
+
 // git in `cwd`, failing the test on a non-zero exit; its trimmed stdout.
 const git = (cwd, ...args) => {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -1997,8 +2076,11 @@ test("every review job stages the review plugin from claude-code-plugins' defaul
 test("the prompt carries the FULL DIFF, REVIEW SCOPE and PR CONTEXT lines the review skills read, in both lanes", () => {
   const fullDiff = step(key, "full-diff");
   assert.equal(fullDiff.if, "steps.scope.outputs.review != 'false'");
-  assert.match(fullDiff.run, /echo "note=FULL DIFF: .* is in \$DIFF_FILE\./u);
-  const scope = step(key, "scope").with.script;
+  assert.match(
+    stepSource(fullDiff),
+    /echo "note=FULL DIFF: .* is in \$DIFF_FILE\./u,
+  );
+  const scope = stepSource(step(key, "scope"));
   assert.match(scope, /`REVIEW SCOPE: incremental\./u);
   assert.match(
     scope,
@@ -2016,7 +2098,7 @@ test("the prompt carries the FULL DIFF, REVIEW SCOPE and PR CONTEXT lines the re
     ["CONTEXT_NOTE", "steps.pr-context.outputs.note"],
   ]) {
     assert.equal(compose.env[name], `\${{ ${source} }}`);
-    assert.match(compose.with.script, new RegExp(`env\\.${name},`, "u"));
+    assert.match(stepSource(compose), new RegExp(`env\\.${name},`, "u"));
   }
 });
 
@@ -2119,7 +2201,7 @@ async function extract(files, env = {}, job = key) {
     ...env,
   };
   const summary = { addRaw: () => summary, write: async () => {} };
-  await runScript(step(job, "extract").with.script, values, {
+  await runActionStep(step(job, "extract"), values, {
     require,
     core: {
       setOutput: (k, v) => {
@@ -2374,7 +2456,7 @@ test("the extract step carries a well-formed hold and calls a malformed one inco
 
 test("the schema offers the hold criteria the extract step accepts, in both lanes", () => {
   const job = key;
-  const script = step(job, "compose").with.script;
+  const script = stepSource(step(job, "compose"));
   assert.match(script, /enum: \["cost", "trust-gate", "critical-security"\]/u);
   assert.match(
     script,
@@ -2385,7 +2467,7 @@ test("the schema offers the hold criteria the extract step accepts, in both lane
     /required: \["findings", "summary", "comments", "hold"\]/u,
   );
   assert.match(
-    step(job, "extract").with.script,
+    stepSource(step(job, "extract")),
     /\["cost", "trust-gate", "critical-security"\]\.includes\(c\)/u,
   );
 });
@@ -2433,7 +2515,7 @@ async function composeOutputs(env, job = key) {
     LEG_MINUTES: "13",
     ...env,
   };
-  await runScript(step(job, "compose").with.script, values, {
+  await runActionStep(step(job, "compose"), values, {
     require,
     core: {
       setOutput: (k, v) => {
@@ -2640,27 +2722,23 @@ test("the full diff shows text the base or head marks -diff or binary, or hides 
   const work = path.join(dir, "work");
   git(dir, "clone", "--quiet", origin, work);
   const fullDiff = step(job, "full-diff");
-  const result = spawnSync(
-    "bash",
-    ["-e", "-o", "pipefail", "-c", fullDiff.run],
-    {
-      cwd: work,
-      encoding: "utf8",
-      env: {
-        PATH: process.env.PATH,
-        HOME: dir,
-        GH_TOKEN: "test-token",
-        GITHUB_SERVER_URL: "https://github.invalid",
-        GITHUB_OUTPUT: path.join(dir, "output"),
-        REPO: "o/r",
-        BASE_SHA: base,
-        HEAD_SHA: head,
-        MERGE_BASE: base,
-        DIFF_FILE: fullDiff.env.DIFF_FILE,
-        FILE_LIST: fullDiff.env.FILE_LIST,
-      },
+  const result = spawnSync("bash", bashArgs(fullDiff), {
+    cwd: work,
+    encoding: "utf8",
+    env: {
+      PATH: process.env.PATH,
+      HOME: dir,
+      GH_TOKEN: "test-token",
+      GITHUB_SERVER_URL: "https://github.invalid",
+      GITHUB_OUTPUT: path.join(dir, "output"),
+      REPO: "o/r",
+      BASE_SHA: base,
+      HEAD_SHA: head,
+      MERGE_BASE: base,
+      DIFF_FILE: fullDiff.env.DIFF_FILE,
+      FILE_LIST: fullDiff.env.FILE_LIST,
     },
-  );
+  });
   assert.equal(result.status, 0, result.stderr);
   const diff = fs.readFileSync(path.join(work, fullDiff.env.DIFF_FILE), "utf8");
   for (const payload of ["NO-DIFF-PAYLOAD", "BINARY-PAYLOAD", "NUL-PAYLOAD"]) {
@@ -2823,11 +2901,20 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     ".claude-lane/incremental.diff",
   );
   assert.equal(step(job, "full-diff").env.DIFF_FILE, ".claude-lane/pr.diff");
-  assert.match(step(job, "full-diff").run, /^ {2}echo "files=\$files"$/mu);
-  assert.match(step(job, "full-diff").run, /^ {2}echo "bytes=\$bytes"$/mu);
-  assert.match(step(job, "full-diff").run, /\| tee "\$DIFF_FILE" \| wc -c/u);
-  assert.match(step(job, "full-diff").run, /^set -o pipefail$/mu);
-  assert.match(step(job, "scope").with.script, /core\.setOutput\("bytes", /u);
+  assert.match(
+    stepSource(step(job, "full-diff")),
+    /^ {2}echo "files=\$files"$/mu,
+  );
+  assert.match(
+    stepSource(step(job, "full-diff")),
+    /^ {2}echo "bytes=\$bytes"$/mu,
+  );
+  assert.match(
+    stepSource(step(job, "full-diff")),
+    /\| tee "\$DIFF_FILE" \| wc -c/u,
+  );
+  assert.match(stepSource(step(job, "full-diff")), /^set -e?o pipefail$/mu);
+  assert.match(stepSource(step(job, "scope")), /core\.setOutput\("bytes", /u);
   assert.equal(
     env.SCOPE_BYTES,
     `\${{ steps.scope.outputs.scope == 'incremental' && steps.scope.outputs.bytes || steps.full-diff.outputs.bytes }}`,
@@ -2835,7 +2922,7 @@ test("every model leg wires the coverage counts and asks the model for files_rea
   );
   // Each count is the length of the list the model counts against.
   assert.match(
-    step(job, "scope").with.script,
+    stepSource(step(job, "scope")),
     /core\.setOutput\("files", String\(kept\.length\)\);/u,
   );
   assert.equal(
@@ -2844,7 +2931,7 @@ test("every model leg wires the coverage counts and asks the model for files_rea
   );
   assert.equal(step(job, "full-diff").env.FILE_LIST, ".claude-lane/files.txt");
   assert.match(
-    step(job, "full-diff").run,
+    stepSource(step(job, "full-diff")),
     /files="\$\(git diff --name-only --find-renames --diff-filter=d "\$base" "\$HEAD_SHA" "\$\{only\[@\]\}" \| tee "\$FILE_LIST" \| wc -l/u,
   );
   // The data files the extract step names are the ones the scope's own
@@ -2873,7 +2960,7 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     `\${{ inputs.generated-data }}`,
   );
   assert.equal(step(job, "scope").env.HOLD_PATHS, `\${{ inputs.hold-paths }}`);
-  const compose = step(job, "compose").with.script;
+  const compose = stepSource(step(job, "compose"));
   assert.match(
     compose,
     /required: \["findings", "files_read", "summary", "comments"\]/u,
@@ -2888,8 +2975,8 @@ test("every model leg wires the coverage counts and asks the model for files_rea
     assert.equal(step(job, s).env.SCOPE, `\${{ steps.scope.outputs.scope }}`);
   }
   assert.match(
-    step(job, "full-diff").run,
-    /^echo "copies=\$copies" >> "\$GITHUB_OUTPUT"$/mu,
+    stepSource(step(job, "full-diff")),
+    /^echo "copies=\$copies" >> ?"\$GITHUB_OUTPUT"$/mu,
   );
 });
 
@@ -3003,7 +3090,7 @@ test("the full-diff step groups identical modifications, and identical additions
     prepare(work);
     const output = path.join(work, "..", `${path.basename(work)}.out`);
     const fullDiff = step(job, "full-diff");
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    const result = spawnSync("bash", bashArgs(fullDiff), {
       cwd: work,
       encoding: "utf8",
       env: {
@@ -3129,7 +3216,7 @@ test("the full-diff step groups identical copies the base branch declares genera
     const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
     git(dir, "clone", "--quiet", origin, work);
     const output = path.join(work, "..", `${path.basename(work)}.out`);
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    const result = spawnSync("bash", bashArgs(fullDiff), {
       cwd: work,
       encoding: "utf8",
       env: {
@@ -3203,7 +3290,7 @@ function headCopiesRun(job, { base, added, baseMap, headMap, executable }) {
   const work = path.join(dir, "work");
   git(dir, "clone", "--quiet", origin, work);
   const output = path.join(dir, "work.out");
-  const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+  const result = spawnSync("bash", bashArgs(fullDiff), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -3498,8 +3585,8 @@ async function incrementalReview(
     GITHUB_SERVER_URL: "https://github.invalid",
     RUNNER_TEMP: work,
   };
-  await runScript(
-    scopeStep.with.script,
+  await runActionStep(
+    scopeStep,
     values,
     {
       require,
@@ -3519,7 +3606,7 @@ async function incrementalReview(
   assert.equal(scope.scope, "incremental", job.name);
   // The full-diff step, with the scope step's outputs as the workflow wires them.
   const output = `${work}.full-diff.out`;
-  const run = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+  const run = spawnSync("bash", bashArgs(fullDiff), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -3562,7 +3649,7 @@ async function incrementalReview(
   const splitStep = step(job, "split");
   const splitOut = `${work}.split.out`;
   fs.writeFileSync(splitOut, "");
-  const cut = spawnSync("bash", ["-e", "-c", splitStep.run], {
+  const cut = spawnSync("bash", bashArgs(splitStep), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -3883,7 +3970,7 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
   );
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
-  const result = spawnSync("bash", ["-e", "-c", step(key, "full-diff").run], {
+  const result = spawnSync("bash", bashArgs(step(key, "full-diff")), {
     cwd: dir,
     encoding: "utf8",
     env: {
@@ -3938,7 +4025,7 @@ function split(env = {}, prepare = () => {}) {
   const output = path.join(dir, "out");
   fs.writeFileSync(output, "");
   const s = step(key, "split");
-  const result = spawnSync("bash", ["-e", "-c", s.run], {
+  const result = spawnSync("bash", bashArgs(s), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -3968,11 +4055,11 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   const s = step(key, "split");
   assert.equal(workflow.env.READ_BUDGET, "300000");
   assert.match(
-    s.run,
+    stepSource(s),
     /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
   );
   assert.match(
-    s.run,
+    stepSource(s),
     /"\$CHUNK_DIR\/manifest\.txt" "\$READ_BUDGET" "\$MAX_CHUNK_FILES" 2>"\$CHUNK_DIR\/split-error\.txt" \|\| status=\$\?$/mu,
   );
   const cut = split();
@@ -4816,7 +4903,7 @@ test("an incremental review leaves a file the push deleted out of its file count
     GITHUB_SERVER_URL: "https://github.invalid",
     RUNNER_TEMP: dir,
   };
-  await runScript(step(job, "scope").with.script, values, {
+  await runActionStep(step(job, "scope"), values, {
     require,
     github,
     context: { repo: { owner: "o", repo: "r" } },
@@ -4862,7 +4949,7 @@ test("an incremental review leaves a file the push deleted out of its file count
   const output = path.join(dir, "split.out");
   fs.writeFileSync(output, "");
   const s = step(job, "split");
-  const result = spawnSync("bash", ["-e", "-c", s.run], {
+  const result = spawnSync("bash", bashArgs(s), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -4970,7 +5057,7 @@ test("files_read counts against the scope's file list, with no deletion left for
     assert.doesNotMatch(prompt, /deletes whole/u, job.name);
   }
   assert.match(
-    step(job, "full-diff").run,
+    stepSource(step(job, "full-diff")),
     /Its \$files changed files are listed one per line in \$FILE_LIST; a file it deletes whole is in the diff but on no list\./u,
     job.name,
   );
@@ -5536,7 +5623,7 @@ test("the full-diff step leaves the data files the base branch declares out of t
   const run = (generatedData) => {
     const work = fixture.clone();
     const output = `${work}.out`;
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    const result = spawnSync("bash", bashArgs(fullDiff), {
       cwd: work,
       encoding: "utf8",
       env: {
@@ -5700,8 +5787,8 @@ test("an incremental review leaves the data files the base branch declares out o
       GITHUB_SERVER_URL: "https://github.invalid",
       RUNNER_TEMP: dir,
     };
-    await runScript(
-      step(job, "scope").with.script,
+    await runActionStep(
+      step(job, "scope"),
       values,
       {
         require,
@@ -5877,7 +5964,7 @@ test("the full-diff step names the binary files in scope, in every leg", () => {
   const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
   git(dir, "clone", "--quiet", origin, work);
   const output = `${work}.out`;
-  const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+  const result = spawnSync("bash", bashArgs(fullDiff), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -6025,7 +6112,7 @@ test("the full-diff step shows a media file whose extension and magic bytes agre
     const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
     git(dir, "clone", "--quiet", origin, work);
     const output = `${work}.out`;
-    const result = spawnSync("bash", ["-e", "-c", fullDiff.run], {
+    const result = spawnSync("bash", bashArgs(fullDiff), {
       cwd: work,
       encoding: "utf8",
       env: {
@@ -6479,7 +6566,7 @@ function renameRepo(base, head) {
 function runLegStep(repo, work, job, id, env) {
   const output = `${work}.${id}.out`;
   fs.writeFileSync(output, "");
-  const result = spawnSync("bash", ["-e", "-c", step(job, id).run], {
+  const result = spawnSync("bash", bashArgs(step(job, id)), {
     cwd: work,
     encoding: "utf8",
     env: {
@@ -7954,4 +8041,42 @@ test("both lanes of one run may upload the key's markers: each upload overwrites
   );
   assert.equal(uploads.length, 2);
   for (const upload of uploads) assert.equal(upload.with.overwrite, true);
+});
+
+test("every extracted review-leg composite declares every output pr-review-cli.yml reads from it", () => {
+  const stepToAction = {
+    scope: "$/.github/actions/resolve-review-scope",
+    "full-diff": "$/.github/actions/build-review-diff",
+    split: "$/.github/actions/generate-review-chunks",
+    compose: "$/.github/actions/build-review-prompt",
+    extract: "$/.github/actions/collect-review-result",
+  };
+  for (const [id, uses] of Object.entries(stepToAction)) {
+    for (const job of [key, subscription, fallback]) {
+      assert.equal(step(job, id).uses, uses, `${job.name} ${id}`);
+    }
+    const actionDir = path.join(
+      __dirname,
+      "..",
+      uses.replace(/^\$\/\.github\//u, ""),
+    );
+    const metadata = parseWorkflow(
+      fs.readFileSync(path.join(actionDir, "action.yml"), "utf8"),
+    );
+    const declared = new Set(Object.keys(metadata.outputs ?? {}));
+    const referenced = new Set(
+      [
+        ...workflowText.matchAll(
+          new RegExp(`steps\\.${id}\\.outputs\\.([a-z0-9_-]+)`, "gu"),
+        ),
+      ].map((m) => m[1]),
+    );
+    assert.ok(referenced.size > 0, `${id} has referenced outputs`);
+    for (const output of referenced) {
+      assert.ok(
+        declared.has(output),
+        `${uses}/action.yml must declare output '${output}'`,
+      );
+    }
+  }
 });

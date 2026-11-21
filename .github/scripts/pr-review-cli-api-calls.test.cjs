@@ -264,18 +264,26 @@ function runFullDiff(env, dir) {
     { mode: 0o755 },
   );
   const output = path.join(dir, "full-diff.out");
-  const result = spawnSync("bash", ["-e", "-c", stepId(key, "full-diff").run], {
-    cwd: dir,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...env,
-      PATH: `${bin}:${process.env.PATH}`,
-      RUNNER_TEMP: dir,
-      GITHUB_OUTPUT: output,
-      GITHUB_SERVER_URL: "https://github.com",
+  assert.equal(
+    stepId(key, "full-diff").uses,
+    "$/.github/actions/build-review-diff",
+  );
+  const result = spawnSync(
+    "bash",
+    [path.join(ROOT, ".github", "actions", "build-review-diff", "diff.sh")],
+    {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...env,
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: dir,
+        GITHUB_OUTPUT: output,
+        GITHUB_SERVER_URL: "https://github.com",
+      },
     },
-  });
+  );
   assert.equal(result.status, 0, result.stderr);
   return fs.existsSync(log)
     ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean)
@@ -324,17 +332,28 @@ async function spend({
 
   // The key job: scope, then the full diff when it reviews.
   const scope = stepId(key, "scope");
+  assert.equal(scope.uses, "$/.github/actions/resolve-review-scope");
+  const scopeActionDir = path.join(
+    ROOT,
+    ".github",
+    "actions",
+    "resolve-review-scope",
+  );
+  const scopeActionScript = parseWorkflow(
+    fs.readFileSync(path.join(scopeActionDir, "action.yml"), "utf8"),
+  ).runs.steps[0].with.script;
   const scopeOutputs = {};
   api.newClient();
   await withEnv(
     {
       ...renderEnv(scope, { ...contexts, steps: {} }),
+      ACTION_PATH: scopeActionDir,
       DIFF_FILE: path.join(dir, "incremental.diff"),
       GITHUB_SERVER_URL: "https://github.com",
       GITHUB_WORKFLOW_REF: "o/r/.github/workflows/review.yml@refs/pull/7/merge",
       RUNNER_TEMP: dir,
     },
-    () => runScript(scope.with.script, api.github, quietCore(scopeOutputs)),
+    () => runScript(scopeActionScript, api.github, quietCore(scopeOutputs)),
   );
   const gh =
     scopeOutputs.review === "false"
@@ -637,7 +656,14 @@ test("the scope step's hunk ranges give the lines commentableLines reads from th
     "@@ -5,3 +5,3 @@ function f() {\n a\n-b\n+c\n d",
   ];
   // The scope step's own extraction, as it writes PR_FILES.
-  const script = stepId(key, "scope").with.script;
+  assert.equal(
+    stepId(key, "scope").uses,
+    "$/.github/actions/resolve-review-scope",
+  );
+  const script = fs.readFileSync(
+    path.join(ROOT, ".github", "actions", "resolve-review-scope", "scope.cjs"),
+    "utf8",
+  );
   const pattern = /matchAll\((\/\^@@[^\n]*?\/gmu)\)/u.exec(script)[1];
   const re = new Function(`return ${pattern};`)();
   for (const patch of patches) {
@@ -724,8 +750,19 @@ test("the scope step passes on no file list larger than one environment string",
     compares: BASE_COMPARE,
   });
   const scope = stepId(key, "scope");
+  assert.equal(scope.uses, "$/.github/actions/resolve-review-scope");
+  const scopeActionDir = path.join(
+    ROOT,
+    ".github",
+    "actions",
+    "resolve-review-scope",
+  );
+  const scopeActionScript = parseWorkflow(
+    fs.readFileSync(path.join(scopeActionDir, "action.yml"), "utf8"),
+  ).runs.steps[0].with.script;
   await withEnv(
     {
+      ACTION_PATH: scopeActionDir,
       LANE: "claude-review",
       INCREMENTAL: "true",
       DOCS_ONLY_PATHS: "",
@@ -736,7 +773,7 @@ test("the scope step passes on no file list larger than one environment string",
       DIFF_FILE: path.join(makeTemporaryDirectory("scope-big-"), "x.diff"),
       GIT_TOKEN: "t",
     },
-    () => runScript(scope.with.script, api.github, quietCore(outputs)),
+    () => runScript(scopeActionScript, api.github, quietCore(outputs)),
   );
   assert.equal(outputs.review, "true");
   assert.equal(outputs["pr-files"], undefined);

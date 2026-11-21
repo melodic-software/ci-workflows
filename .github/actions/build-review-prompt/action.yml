@@ -1,0 +1,64 @@
+name: Build Review Prompt
+description: >-
+  pr-review-cli's compose step, with no model: resolves the review level,
+  model, effort and turn budget, writes the review prompt(s) and structured
+  output JSON schema, and records the chunk plan for the review steps. Every
+  value arrives through env; compose.cjs documents what it reads.
+
+outputs:
+  prompt-dir:
+    description: Temporary directory holding the composed prompt and schema files.
+    value: ${{ steps.compose.outputs.prompt-dir }}
+  chunks:
+    description: Number of review chunks to execute.
+    value: ${{ steps.compose.outputs.chunks }}
+  loop-minutes:
+    description: Timeout budget in minutes for the later-chunks step, when chunked.
+    value: ${{ steps.compose.outputs.loop-minutes }}
+  chunk-files:
+    description: Comma-separated file counts per chunk when chunked.
+    value: ${{ steps.compose.outputs.chunk-files }}
+  chunk-pieces:
+    description: Comma-separated continuing slice counts per chunk when sliced.
+    value: ${{ steps.compose.outputs.chunk-pieces }}
+  chunk-piece-names:
+    description: JSON list of sliced file piece names per chunk when sliced.
+    value: ${{ steps.compose.outputs.chunk-piece-names }}
+  prompt-file:
+    description: Path to the first (or only) review prompt file.
+    value: ${{ steps.compose.outputs.prompt-file }}
+  schema-file:
+    description: Path to the structured output JSON schema file.
+    value: ${{ steps.compose.outputs.schema-file }}
+  skill:
+    description: Name of the review plugin skill invoked by the lane.
+    value: ${{ steps.compose.outputs.skill }}
+  model:
+    description: Resolved Claude model alias or identifier.
+    value: ${{ steps.compose.outputs.model }}
+  effort:
+    description: Resolved reasoning effort level, or empty.
+    value: ${{ steps.compose.outputs.effort }}
+  max-turns:
+    description: Resolved maximum agent turns.
+    value: ${{ steps.compose.outputs.max-turns }}
+  cli-version:
+    description: Resolved Claude Code CLI version string.
+    value: ${{ steps.compose.outputs.cli-version }}
+  started-at:
+    description: Unix epoch timestamp in seconds when the review composition finished.
+    value: ${{ steps.compose.outputs.started-at }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compose the review
+      id: compose
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          const { run } = require(path.join(process.env.ACTION_PATH, "compose.cjs"));
+          await run({ github, context, core });

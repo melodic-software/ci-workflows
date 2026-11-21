@@ -943,6 +943,21 @@ consumer to audit it.
   without either tool. `remove-sudo: "true"` then removes sudo and docker
   access in the same step. Uses no Actions cache, since the cache unpacks
   while sudo still works (its `action.yml` says why).
+- `.github/actions/resolve-review-scope` — `pr-review-cli.yml`'s scope step,
+  with no model; internal to that workflow, which passes it everything through
+  env (its `action.yml` describes what it does).
+- `.github/actions/build-review-diff` — `pr-review-cli.yml`'s full-diff step,
+  with no model; internal to that workflow, which passes it everything through
+  env (its `action.yml` describes what it does).
+- `.github/actions/generate-review-chunks` — `pr-review-cli.yml`'s diff-split
+  step, with no model; internal to that workflow, which passes it everything
+  through env (its `action.yml` describes what it does).
+- `.github/actions/build-review-prompt` — `pr-review-cli.yml`'s compose step,
+  with no model; internal to that workflow, which passes it everything through
+  env (its `action.yml` describes what it does).
+- `.github/actions/collect-review-result` — `pr-review-cli.yml`'s extract step,
+  with no model; internal to that workflow, which passes it everything through
+  env (its `action.yml` describes what it does).
 - `.github/actions/publish-review` — `pr-review-cli.yml`'s publish step,
   with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).

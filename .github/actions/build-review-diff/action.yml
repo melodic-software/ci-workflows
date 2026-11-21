@@ -1,0 +1,50 @@
+name: Build Review Diff
+description: >-
+  pr-review-cli's full-diff step, with no model: writes the pull request's
+  full diff and file list, excludes declared generated data files, shows
+  checked media files by their headers only, and records copy groups,
+  verified renames, binary files and the to-read list. Every value arrives
+  through env; diff.sh documents what it reads.
+
+outputs:
+  written:
+    description: "`true` when the full diff was written, else empty."
+    value: ${{ steps.full-diff.outputs.written }}
+  files:
+    description: The number of non-deleted changed files in the full diff.
+    value: ${{ steps.full-diff.outputs.files }}
+  bytes:
+    description: Byte size of the written full diff.
+    value: ${{ steps.full-diff.outputs.bytes }}
+  data:
+    description: Number of declared generated-data files left out of the full diff.
+    value: ${{ steps.full-diff.outputs.data }}
+  binary:
+    description: Number of binary files in the full diff.
+    value: ${{ steps.full-diff.outputs.binary }}
+  base:
+    description: The merge-base SHA used for the full diff.
+    value: ${{ steps.full-diff.outputs.base }}
+  note:
+    description: Prompt note describing the full diff and its lists.
+    value: ${{ steps.full-diff.outputs.note }}
+  held:
+    description: "`true` or `false` indicating whether any changed path matches hold-paths."
+    value: ${{ steps.full-diff.outputs.held }}
+  copies:
+    description: Number of duplicate copy files grouped out of the split diff.
+    value: ${{ steps.full-diff.outputs.copies }}
+  renames:
+    description: Number of verified rename files listed out of the split diff.
+    value: ${{ steps.full-diff.outputs.renames }}
+  to-read:
+    description: Number of files on the to-read list written for the model.
+    value: ${{ steps.full-diff.outputs.to-read }}
+
+runs:
+  using: composite
+  steps:
+    - name: Write the full diff
+      id: full-diff
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/diff.sh"
