@@ -405,19 +405,29 @@ jobs:
                 },
               });
 
-            // Why a base-branch change since the last review needs a whole review, or "".
-            const baseMoved = async (prFiles, last, now) => {
-              const prNames = new Set(prFiles.flatMap(names));
+            // Why a base-branch change since the last review needs a whole review,
+            // or the file names changed only on the base branch.
+            const baseMoved = async (prNames, last, now) => {
               const before = (await compare(`${env.BASE_REF}...${last}`)).merge_base_commit.sha;
-              if (before === now) return "";
+              if (before === now) return { movedNames: new Set() };
               const moved = (await compare(`${before}...${now}`)).files ?? [];
               if (moved.length >= FILE_CAP) {
-                return `a base-branch merge since the last review changed ${FILE_CAP} or more files`;
+                return { full: `a base-branch merge since the last review changed ${FILE_CAP} or more files` };
               }
               if (moved.some((file) => names(file).some((name) => prNames.has(name)))) {
-                return "a base-branch merge since the last review changed a file this pull request changes";
+                return { full: "a base-branch merge since the last review changed a file this pull request changes" };
               }
-              return "";
+              // Check the PR's file set at `last`: a file dropped during a base merge
+              // (for example, taking the base branch's side of a conflict) also appears
+              // in `moved`, so comparing `before...last` catches it.
+              const reviewed = (await compare(`${before}...${last}`)).files ?? [];
+              if (reviewed.length >= FILE_CAP) {
+                return { full: `${FILE_CAP} or more files were in this pull request at ${last}` };
+              }
+              if (reviewed.some((file) => !names(file).some((name) => prNames.has(name)))) {
+                return { full: `a file left this pull request since the review of ${last}` };
+              }
+              return { movedNames: new Set(moved.flatMap(names)) };
             };
 
             // A rebase or restack that left the pull request's own change as it was
@@ -461,8 +471,15 @@ jobs:
               }
               const changed = since.files ?? [];
               if (changed.length >= FILE_CAP) return { full: `${FILE_CAP} or more files changed since ${last}` };
-              const moved = await baseMoved(prFiles, last, now);
-              if (moved) return { full: moved };
+              const prNames = new Set(prFiles.flatMap(names));
+              const base = await baseMoved(prNames, last, now);
+              if (base.full) return { full: base.full };
+              // A file changed since `last` that is neither in this PR nor from a
+              // base-branch merge left the PR; re-review in full so findings on it
+              // are not carried forward.
+              if (changed.some((file) => !names(file).some((name) => prNames.has(name) || base.movedNames.has(name)))) {
+                return { full: `a file left this pull request since the review of ${last}` };
+              }
               const patches = new Map();
               for (const file of changed) for (const name of names(file)) patches.set(name, file);
               const files = prFiles.filter((file) => names(file).some((name) => patches.has(name)));

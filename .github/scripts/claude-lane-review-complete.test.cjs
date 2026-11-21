@@ -1222,7 +1222,7 @@ test("the scope step reports whole, incremental since, no-change since and docs-
   const noChange = await scope({
     prFiles: [{ filename: "a.js" }],
     comments: [marker],
-    compares: unmoved([{ filename: "unrelated.js", patch: "@@" }]),
+    compares: unmoved([]),
   });
   assert.equal(noChange.review, "false");
   assert.equal(noChange.skip, "no-change");
