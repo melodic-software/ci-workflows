@@ -18,8 +18,8 @@ fix-cmd: >-
   dotnet format style fixtures/dotnet/good/good.csproj --diagnostics IDE0055
 code-fix-cmd: null
 opt-in: ".editorconfig at the repository root"
-install-hint: "the .NET SDK version global.json names (10.0.400): https://dot.net"
+install-hint: "the .NET SDK version global.json names (11.0.100): https://dot.net"
 tool-pin:
-  dotnet-sdk: "10.0.400"
+  dotnet-sdk: "11.0.100"
 gates: []
 notes: "Pin: global.json, which CI's setup-dotnet reads (dotnet-build/action.yml and dotnet-format/action.yml leave dotnet-version empty). Release and -p:RestoreLockedMode=true are the dotnet-build action's input defaults (dotnet-build/action.yml); --nologo is fixed in its run step. The check-cmd stops at the first failing pass; CI runs the whitespace and import-ordering steps in order and stops at the first failure too. Glob gaps: CI's dotnet filter also fires on any .github/** change, fixtures/dotnet/**, packages.lock.json, nuget.config, **/.editorconfig and global.json (pr-require-checks.yml); these globs select only source and project files."
