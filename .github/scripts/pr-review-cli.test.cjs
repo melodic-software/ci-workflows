@@ -6495,12 +6495,37 @@ test("the executables-and-archives step revokes allowlist lines removed at BASE_
   // Feature branch branched from `base`.
   git(origin, "checkout", "--quiet", "-b", "feature", base);
   writeAt(origin, "vendor/ok.zip", allowedZip);
+  // A `.gitmodules` entry with `ignore = all` on the checked-out PR head must
+  // not hide a changed submodule from `git diff --raw --ignore-submodules=none`.
+  writeAt(
+    origin,
+    ".gitmodules",
+    '[submodule "deps/bumped"]\n\tpath = deps/bumped\n\turl = https://example.invalid/bumped.git\n\tignore = all\n',
+  );
   writeAt(
     origin,
     "scripts/install.run",
     Buffer.concat([
       Buffer.from("#!/bin/sh\nexit 0\n"),
       zlib.gzipSync(Buffer.from("payload")),
+    ]),
+  );
+  // Inline-comment appended archives (no preceding newline) are caught too.
+  writeAt(
+    origin,
+    "scripts/inline-gzip.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0 #"),
+      zlib.gzipSync(Buffer.from("payload")),
+    ]),
+  );
+  writeAt(
+    origin,
+    "scripts/inline-tar.run",
+    Buffer.concat([
+      Buffer.from("#!/bin/sh\nexit 0 #"),
+      tarHeader("inline.bin"),
+      Buffer.alloc(1024, 0),
     ]),
   );
   writeAt(
@@ -6516,7 +6541,7 @@ test("the executables-and-archives step revokes allowlist lines removed at BASE_
     origin,
     "scripts/xz.run",
     Buffer.concat([
-      Buffer.from("#!/bin/sh\nexit 0\n"),
+      Buffer.from("#!/bin/sh\nexit 0 #"),
       Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00, 0x00]),
     ]),
   );
@@ -6541,7 +6566,7 @@ test("the executables-and-archives step revokes allowlist lines removed at BASE_
     "scripts/clean.sh",
     "#!/usr/bin/env bash\n# mentions ustar, gzip and BZh9\necho ok\n",
   );
-  git(origin, "add", "vendor", "scripts");
+  git(origin, "add", ".gitmodules", "vendor", "scripts");
   git(
     origin,
     "update-index",
@@ -6582,6 +6607,8 @@ test("the executables-and-archives step revokes allowlist lines removed at BASE_
     ["deps/bumped", "submodule"],
     ["scripts/bundle.run", "tar appended"],
     ["scripts/bz2.run", "bzip2 appended"],
+    ["scripts/inline-gzip.run", "gzip appended"],
+    ["scripts/inline-tar.run", "tar appended"],
     ["scripts/install.run", "gzip appended"],
     ["scripts/sourced.sh", "gzip appended"],
     ["scripts/xz.run", "xz appended"],
@@ -6591,6 +6618,7 @@ test("the executables-and-archives step revokes allowlist lines removed at BASE_
     const opaque = step(job, "opaque");
     const work = path.join(dir, `work-${fs.readdirSync(dir).length}`);
     git(dir, "clone", "--quiet", origin, work);
+    git(work, "checkout", "--quiet", "feature");
     const output = `${work}.out`;
     const run = (env) => {
       if (fs.existsSync(output)) fs.rmSync(output);

@@ -1070,17 +1070,20 @@ jobs:
       # Executables and archives: a changed regular file (added, modified,
       # renamed, copied or changed to a regular file, any mode) whose first
       # bytes name an executable or archive format, that ends in a zip
-      # directory (a script or image with a zip appended), that is a Git LFS
+      # directory (a script or image with a zip appended), that appends a gzip,
+      # tar, xz or bzip2 archive after a shell prologue, that is a Git LFS
       # pointer, or whose extension OpenSSF Scorecard's Binary-Artifacts
-      # check lists. No review can read one. It runs whenever the scope step
-      # did, a docs-only or no-change skip included, and checks every changed
-      # file of the pull request, data, media and hold-paths files too. Its
-      # count goes to the status job's hold step, which holds the pull request
-      # for a person, criterion binary-artifact, whatever the review returned
-      # or whether it completed, unless the binary-allowlist file the merge
-      # base holds lists the path with the SHA-256 of its bytes at the head.
-      # count is `none`, the number held, or `error` (any failure, which
-      # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
+      # check lists — plus any new or changed submodule (gitlink, mode 160000).
+      # No review can read one. It runs whenever the scope step did, a
+      # docs-only or no-change skip included, and checks every changed file of
+      # the pull request, data, media and hold-paths files too. Its count goes
+      # to the status job's hold step, which holds the pull request for a
+      # person, criterion binary-artifact, whatever the review returned or
+      # whether it completed, unless the binary-allowlist file at both the
+      # merge base and the base tip (BASE_SHA) lists the path with the SHA-256
+      # of its bytes at the head (submodules cannot be allowlisted). count is
+      # `none`, the number held, or `error` (any failure, which holds too);
+      # files is up to 10 `<path>\t<sha256|unread>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
         if: always() && steps.scope.outcome != 'skipped'
@@ -1159,7 +1162,7 @@ jobs:
           opaque_raw="$(mktemp)"
           opaque_blob="$(mktemp)"
           opaque_list="$(mktemp)"
-          git diff --raw -z --no-abbrev --find-renames "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
+          git diff --raw -z --no-abbrev --find-renames --ignore-submodules=none "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
           opaque=0
           while IFS= read -r -d '' meta; do
             # :<old mode> <new mode> <old blob> <new blob> <status>, then the
@@ -1225,23 +1228,25 @@ jobs:
               esac
               # A makeself-style self-extracting script appends a gzip, tar,
               # xz or bzip2 archive after a shell prologue. Scan scripts
-              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh): binary headers (gzip,
+              # xz, checksum-verified tar) anywhere after byte 0 so inline
+              # comment prefixes cannot evade detection; ASCII bzip2 after `\n`.
               if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
                 why="$(python3 -I - "$opaque_blob" <<'PY'
           import sys
           from pathlib import Path
 
           data = Path(sys.argv[1]).read_bytes()
-          pos = 0
+          pos = 1
           while True:
-            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            idx = data.find(b"\x1f\x8b\x08", pos)
             if idx < 0:
               break
-            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+            if idx + 3 < len(data) and (data[idx + 3] & 0xe0) == 0:
               print("gzip appended")
               sys.exit(0)
             pos = idx + 1
-          if b"\n\xfd7zXZ\x00" in data:
+          if b"\xfd7zXZ\x00" in data[1:]:
             print("xz appended")
             sys.exit(0)
           pos = 0
@@ -1260,7 +1265,7 @@ jobs:
               if idx < 0:
                 break
               start = idx - 257
-              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+              if start > 0 and start + 512 <= len(data):
                 hdr = data[start:start + 512]
                 raw = hdr[148:156].strip(b"\x00 ")
                 if raw and all(48 <= b <= 55 for b in raw):
@@ -2194,17 +2199,20 @@ jobs:
       # Executables and archives: a changed regular file (added, modified,
       # renamed, copied or changed to a regular file, any mode) whose first
       # bytes name an executable or archive format, that ends in a zip
-      # directory (a script or image with a zip appended), that is a Git LFS
+      # directory (a script or image with a zip appended), that appends a gzip,
+      # tar, xz or bzip2 archive after a shell prologue, that is a Git LFS
       # pointer, or whose extension OpenSSF Scorecard's Binary-Artifacts
-      # check lists. No review can read one. It runs whenever the scope step
-      # did, a docs-only or no-change skip included, and checks every changed
-      # file of the pull request, data, media and hold-paths files too. Its
-      # count goes to the status job's hold step, which holds the pull request
-      # for a person, criterion binary-artifact, whatever the review returned
-      # or whether it completed, unless the binary-allowlist file the merge
-      # base holds lists the path with the SHA-256 of its bytes at the head.
-      # count is `none`, the number held, or `error` (any failure, which
-      # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
+      # check lists — plus any new or changed submodule (gitlink, mode 160000).
+      # No review can read one. It runs whenever the scope step did, a
+      # docs-only or no-change skip included, and checks every changed file of
+      # the pull request, data, media and hold-paths files too. Its count goes
+      # to the status job's hold step, which holds the pull request for a
+      # person, criterion binary-artifact, whatever the review returned or
+      # whether it completed, unless the binary-allowlist file at both the
+      # merge base and the base tip (BASE_SHA) lists the path with the SHA-256
+      # of its bytes at the head (submodules cannot be allowlisted). count is
+      # `none`, the number held, or `error` (any failure, which holds too);
+      # files is up to 10 `<path>\t<sha256|unread>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
         if: always() && steps.scope.outcome != 'skipped'
@@ -2283,7 +2291,7 @@ jobs:
           opaque_raw="$(mktemp)"
           opaque_blob="$(mktemp)"
           opaque_list="$(mktemp)"
-          git diff --raw -z --no-abbrev --find-renames "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
+          git diff --raw -z --no-abbrev --find-renames --ignore-submodules=none "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
           opaque=0
           while IFS= read -r -d '' meta; do
             # :<old mode> <new mode> <old blob> <new blob> <status>, then the
@@ -2349,23 +2357,25 @@ jobs:
               esac
               # A makeself-style self-extracting script appends a gzip, tar,
               # xz or bzip2 archive after a shell prologue. Scan scripts
-              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh): binary headers (gzip,
+              # xz, checksum-verified tar) anywhere after byte 0 so inline
+              # comment prefixes cannot evade detection; ASCII bzip2 after `\n`.
               if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
                 why="$(python3 -I - "$opaque_blob" <<'PY'
           import sys
           from pathlib import Path
 
           data = Path(sys.argv[1]).read_bytes()
-          pos = 0
+          pos = 1
           while True:
-            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            idx = data.find(b"\x1f\x8b\x08", pos)
             if idx < 0:
               break
-            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+            if idx + 3 < len(data) and (data[idx + 3] & 0xe0) == 0:
               print("gzip appended")
               sys.exit(0)
             pos = idx + 1
-          if b"\n\xfd7zXZ\x00" in data:
+          if b"\xfd7zXZ\x00" in data[1:]:
             print("xz appended")
             sys.exit(0)
           pos = 0
@@ -2384,7 +2394,7 @@ jobs:
               if idx < 0:
                 break
               start = idx - 257
-              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+              if start > 0 and start + 512 <= len(data):
                 hdr = data[start:start + 512]
                 raw = hdr[148:156].strip(b"\x00 ")
                 if raw and all(48 <= b <= 55 for b in raw):
@@ -3288,17 +3298,20 @@ jobs:
       # Executables and archives: a changed regular file (added, modified,
       # renamed, copied or changed to a regular file, any mode) whose first
       # bytes name an executable or archive format, that ends in a zip
-      # directory (a script or image with a zip appended), that is a Git LFS
+      # directory (a script or image with a zip appended), that appends a gzip,
+      # tar, xz or bzip2 archive after a shell prologue, that is a Git LFS
       # pointer, or whose extension OpenSSF Scorecard's Binary-Artifacts
-      # check lists. No review can read one. It runs whenever the scope step
-      # did, a docs-only or no-change skip included, and checks every changed
-      # file of the pull request, data, media and hold-paths files too. Its
-      # count goes to the status job's hold step, which holds the pull request
-      # for a person, criterion binary-artifact, whatever the review returned
-      # or whether it completed, unless the binary-allowlist file the merge
-      # base holds lists the path with the SHA-256 of its bytes at the head.
-      # count is `none`, the number held, or `error` (any failure, which
-      # holds too); files is up to 10 `<path>\t<sha256>\t<why>` lines.
+      # check lists — plus any new or changed submodule (gitlink, mode 160000).
+      # No review can read one. It runs whenever the scope step did, a
+      # docs-only or no-change skip included, and checks every changed file of
+      # the pull request, data, media and hold-paths files too. Its count goes
+      # to the status job's hold step, which holds the pull request for a
+      # person, criterion binary-artifact, whatever the review returned or
+      # whether it completed, unless the binary-allowlist file at both the
+      # merge base and the base tip (BASE_SHA) lists the path with the SHA-256
+      # of its bytes at the head (submodules cannot be allowlisted). count is
+      # `none`, the number held, or `error` (any failure, which holds too);
+      # files is up to 10 `<path>\t<sha256|unread>\t<why>` lines.
       - name: Find executables and archives
         id: opaque
         if: always() && steps.scope.outcome != 'skipped'
@@ -3377,7 +3390,7 @@ jobs:
           opaque_raw="$(mktemp)"
           opaque_blob="$(mktemp)"
           opaque_list="$(mktemp)"
-          git diff --raw -z --no-abbrev --find-renames "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
+          git diff --raw -z --no-abbrev --find-renames --ignore-submodules=none "$base" "$HEAD_SHA" > "$opaque_raw" || fail "the changed files could not be listed"
           opaque=0
           while IFS= read -r -d '' meta; do
             # :<old mode> <new mode> <old blob> <new blob> <status>, then the
@@ -3443,23 +3456,25 @@ jobs:
               esac
               # A makeself-style self-extracting script appends a gzip, tar,
               # xz or bzip2 archive after a shell prologue. Scan scripts
-              # (shebang `#!` or .sh/.bash/.zsh/.ksh) after any newline for those headers.
+              # (shebang `#!` or .sh/.bash/.zsh/.ksh): binary headers (gzip,
+              # xz, checksum-verified tar) anywhere after byte 0 so inline
+              # comment prefixes cannot evade detection; ASCII bzip2 after `\n`.
               if [ -z "$why" ] && [[ $magic == 2321* || $ext == sh || $ext == bash || $ext == zsh || $ext == ksh ]]; then
                 why="$(python3 -I - "$opaque_blob" <<'PY'
           import sys
           from pathlib import Path
 
           data = Path(sys.argv[1]).read_bytes()
-          pos = 0
+          pos = 1
           while True:
-            idx = data.find(b"\n\x1f\x8b\x08", pos)
+            idx = data.find(b"\x1f\x8b\x08", pos)
             if idx < 0:
               break
-            if idx + 4 < len(data) and (data[idx + 4] & 0xe0) == 0:
+            if idx + 3 < len(data) and (data[idx + 3] & 0xe0) == 0:
               print("gzip appended")
               sys.exit(0)
             pos = idx + 1
-          if b"\n\xfd7zXZ\x00" in data:
+          if b"\xfd7zXZ\x00" in data[1:]:
             print("xz appended")
             sys.exit(0)
           pos = 0
@@ -3478,7 +3493,7 @@ jobs:
               if idx < 0:
                 break
               start = idx - 257
-              if start > 0 and data[start - 1] == 0x0a and start + 512 <= len(data):
+              if start > 0 and start + 512 <= len(data):
                 hdr = data[start:start + 512]
                 raw = hdr[148:156].strip(b"\x00 ")
                 if raw and all(48 <= b <= 55 for b in raw):
