@@ -64,6 +64,20 @@ async function run({ core }) {
       : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
   // A comment body's length, the compose step's schema maxLength.
   const MAX_BODY = 3000;
+  // Uncovered rules caps, matching the compose schema and codify's reader.
+  const MAX_UNCOVERED_RULES = 5;
+  const MAX_UNCOVERED_RULE_CHARS = 300;
+  const cleanUncoveredRule = (value) => {
+    const cleaned = value
+      .replace(/<!--[\s\S]*?-->/gu, "")
+      .replaceAll("<!--", "&lt;!--")
+      .replace(/[\r\n\p{Zl}\p{Zp}]+/gu, " ")
+      .replace(/[\p{Cc}\p{Cf}]/gu, "")
+      .trim()
+      .replace(/^Uncovered rule:\s*/iu, "")
+      .trim();
+    return cleaned ? [...cleaned].slice(0, MAX_UNCOVERED_RULE_CHARS).join("") : "";
+  };
   // One review's checks: a reason string on a gap, else its parts.
   const check = (file) => {
     let raw;
@@ -131,6 +145,26 @@ async function run({ core }) {
       }
       hold = { criteria, reason };
     }
+    // Optional uncovered rules: at most 5 strings, each sanitized and capped
+    // at 300 characters; never counted in findings or critical-findings.
+    const uncoveredRules = [];
+    if (raw.uncovered_rules !== undefined) {
+      if (
+        !Array.isArray(raw.uncovered_rules) ||
+        raw.uncovered_rules.length > MAX_UNCOVERED_RULES ||
+        !raw.uncovered_rules.every((r) => typeof r === "string")
+      ) {
+        return "the review's uncovered_rules is malformed";
+      }
+      const seen = new Set();
+      for (const entry of raw.uncovered_rules) {
+        const cleaned = cleanUncoveredRule(entry);
+        if (cleaned && !seen.has(cleaned)) {
+          seen.add(cleaned);
+          uncoveredRules.push(cleaned);
+        }
+      }
+    }
     if (!Number.isSafeInteger(raw.files_read) || raw.files_read < 0) return "the review returned no files_read count";
     // Every comment and every `manifest <field>: flag` summary line is
     // a finding, so a lower count is raised to them, never trusted.
@@ -142,6 +176,7 @@ async function run({ core }) {
       comments,
       malformed,
       hold,
+      uncoveredRules,
     };
   };
   // A chunk counts only when its step succeeded; the first gap names
@@ -383,6 +418,18 @@ async function run({ core }) {
       cutShort
     );
   };
+  const uncoveredRules = [];
+  {
+    const seen = new Set();
+    for (const r of reviews) {
+      for (const rule of r.uncoveredRules ?? []) {
+        if (!seen.has(rule) && uncoveredRules.length < MAX_UNCOVERED_RULES) {
+          seen.add(rule);
+          uncoveredRules.push(rule);
+        }
+      }
+    }
+  }
   const holds = reviews.flatMap((r, i) => (r.hold ? [{ ...r.hold, chunk: i + 1 }] : []));
   const hold =
     holds.length === 0
@@ -430,6 +477,7 @@ async function run({ core }) {
       comments,
       ...(malformed.length > 0 ? { malformed } : {}),
       ...(hold ? { hold } : {}),
+      ...(uncoveredRules.length > 0 ? { uncovered_rules: uncoveredRules } : {}),
     });
     const need = posted(summary) + demoted() + RESERVE;
     return { text, need, ok: Buffer.byteLength(text, "utf8") <= 100000 && (chunks === 1 || need <= PUBLISH_SUMMARY) };

@@ -14,6 +14,12 @@ const SHA = /^[0-9a-f]{40}$/u;
 const WARN_ONLY = "password or secret assignment";
 const MAX_SUMMARY = 60000;
 const MAX_BODY = 8000;
+const MAX_UNCOVERED_RULES = 5;
+const MAX_UNCOVERED_RULE_CHARS = 300;
+const UNCOVERED_BLOCK_OPEN =
+  /^\s*<summary>\s*Uncovered rules \(\d{1,3}\)\s*<\/summary>\s*$/u;
+const UNCOVERED_BLOCK_CLOSE = /^\s*<\/details>\s*$/u;
+const UNCOVERED_RULE_LINE = /^\s*(?:[-*+]\s+)?Uncovered rule:\s*(.*\S)\s*$/u;
 const CLASSES = new Set([
   "auth",
   "rate-limit",
@@ -174,6 +180,12 @@ function parseReview(text) {
     typeof review.summary !== "string" ||
     !Array.isArray(review.comments) ||
     !(review.malformed === undefined || Array.isArray(review.malformed)) ||
+    !(
+      review.uncovered_rules === undefined ||
+      (Array.isArray(review.uncovered_rules) &&
+        review.uncovered_rules.length <= MAX_UNCOVERED_RULES &&
+        review.uncovered_rules.every((r) => typeof r === "string"))
+    ) ||
     !validCoverage(review.coverage)
   ) {
     return null;
@@ -380,8 +392,73 @@ function countedSummary(review, unanchored, malformed) {
   return `${text}\n\ncritical-findings: ${rest + demoted}`;
 }
 
+// Sanitizes one uncovered rule string to match claude-code-plugins'
+// uncovered-rules.mjs reader: no HTML comments, no control/bidi/line-break
+// characters, at most 300 characters.
+function cleanUncoveredRule(text) {
+  const cleaned = stripHtml(text)
+    .replace(/[\r\n\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim()
+    .replace(/^Uncovered rule:\s*/iu, "")
+    .trim();
+  return cleaned
+    ? [...cleaned].slice(0, MAX_UNCOVERED_RULE_CHARS).join("")
+    : "";
+}
+
+// Rules already present inside a free-text Uncovered rules <details> block in
+// the summary, so structured uncovered_rules does not duplicate them while
+// callers transition off the free-text block.
+function rulesAlreadyInSummary(summary) {
+  const found = new Set();
+  let open = false;
+  for (const line of String(summary ?? "").split(/\r?\n/u)) {
+    if (UNCOVERED_BLOCK_OPEN.test(line)) {
+      open = true;
+    } else if (open && UNCOVERED_BLOCK_CLOSE.test(line)) {
+      open = false;
+    } else if (open) {
+      const match = UNCOVERED_RULE_LINE.exec(line);
+      if (match) {
+        const cleaned = cleanUncoveredRule(match[1]);
+        if (cleaned) found.add(cleaned);
+      }
+    }
+  }
+  return found;
+}
+
+// Formats structured uncovered_rules as the collapsed <details> block codify's
+// reader expects, omitting rules already published in a free-text block.
+function uncoveredRulesBlock(review, existingSummary = "") {
+  if (!Array.isArray(review.uncovered_rules) || review.uncovered_rules.length === 0)
+    return "";
+  const already = rulesAlreadyInSummary(existingSummary);
+  const rules = [];
+  const seen = new Set(already);
+  for (const entry of review.uncovered_rules) {
+    if (typeof entry !== "string") continue;
+    const cleaned = cleanUncoveredRule(entry);
+    if (cleaned && !seen.has(cleaned) && rules.length < MAX_UNCOVERED_RULES) {
+      seen.add(cleaned);
+      rules.push(cleaned);
+    }
+  }
+  if (rules.length === 0) return "";
+  return [
+    "<details>",
+    `<summary>Uncovered rules (${rules.length})</summary>`,
+    "",
+    ...rules.map((rule) => `- Uncovered rule: ${rule}`),
+    "",
+    "</details>",
+  ].join("\n");
+}
+
 // The summary as posted: the model's summary, then any finding that could not
-// sit on a line, with its location.
+// sit on a line, with its location, then any structured uncovered_rules block
+// (dropped first if appending it would pass MAX_SUMMARY).
 function summaryText(review, unanchored, lane) {
   const malformed = malformedComments(review);
   const extra = unanchored.map(
@@ -392,7 +469,7 @@ function summaryText(review, unanchored, lane) {
     (comment) =>
       `- ${comment.location ? `\`${comment.location}\`: ` : ""}${comment.body}`,
   );
-  return [
+  const base = [
     countedSummary(review, unanchored, malformed),
     ...(extra.length > 0
       ? [
@@ -410,9 +487,12 @@ function summaryText(review, unanchored, lane) {
           ...unplaced,
         ]
       : []),
-  ]
-    .join("\n")
-    .slice(0, MAX_SUMMARY);
+  ].join("\n");
+  const uncovered = uncoveredRulesBlock(review, base);
+  if (uncovered && base.length + 2 + uncovered.length <= MAX_SUMMARY) {
+    return `${base}\n\n${uncovered}`;
+  }
+  return base.slice(0, MAX_SUMMARY);
 }
 
 // The first credential-shaped text in what would be published, as
@@ -726,6 +806,9 @@ async function publish({ github, context, core, env }) {
         summary,
         comments: [...placed.inline, ...placed.unanchored],
         malformed,
+        ...(review.uncovered_rules?.length > 0
+          ? { uncovered_rules: review.uncovered_rules }
+          : {}),
       },
     });
     if (partial) return fail("partial", coverage);
@@ -869,5 +952,6 @@ module.exports = {
   scopedFiles,
   stripHtml,
   summaryText,
+  uncoveredRulesBlock,
   writeRecord,
 };

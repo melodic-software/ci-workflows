@@ -1,0 +1,57 @@
+name: Build Intake Triage Prompt
+description: >-
+  intake-triage's compose step, with no model: validates claude-args and
+  cli-version, resolves allowed and floor labels against the repository's live
+  labels, reads enabled Issue Types, writes the triage prompt file, and emits
+  the resolved model, label and type outputs. Every value arrives through env;
+  compose.cjs documents what it reads.
+
+outputs:
+  floor:
+    description: The verified floor label to clear when triaged, or empty when floor handling is off.
+    value: ${{ steps.compose.outputs.floor }}
+  allowed:
+    description: JSON array of allowed labels the model may choose from.
+    value: ${{ steps.compose.outputs.allowed }}
+  types:
+    description: JSON object mapping enabled Issue Type names to their GraphQL node IDs.
+    value: ${{ steps.compose.outputs.types }}
+  type-names:
+    description: JSON array of enabled Issue Type names.
+    value: ${{ steps.compose.outputs.type-names }}
+  type-instruction:
+    description: Prompt instruction line for the issue type field, or empty when no types apply.
+    value: ${{ steps.compose.outputs.type-instruction }}
+  prompt-file:
+    description: Path to the written triage prompt file under runner temp.
+    value: ${{ steps.compose.outputs.prompt-file }}
+  model:
+    description: Resolved Claude model alias or identifier.
+    value: ${{ steps.compose.outputs.model }}
+  effort:
+    description: Resolved reasoning effort level.
+    value: ${{ steps.compose.outputs.effort }}
+  max-turns:
+    description: Resolved maximum agent turns.
+    value: ${{ steps.compose.outputs.max-turns }}
+  cli-version:
+    description: Resolved Claude Code CLI version string.
+    value: ${{ steps.compose.outputs.cli-version }}
+  started-at:
+    description: Unix epoch timestamp in seconds when the compose step finished.
+    value: ${{ steps.compose.outputs.started-at }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve labels and compose Claude CLI arguments
+      id: compose
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          require(path.join(process.env.ACTION_PATH, "..", "report-api-budget", "api-budget.cjs")).watch(github, "github-token");
+          const { run } = require(path.join(process.env.ACTION_PATH, "compose.cjs"));
+          await run({ github, context, core });

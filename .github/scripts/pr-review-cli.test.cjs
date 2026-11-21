@@ -8080,3 +8080,120 @@ test("every extracted review-leg composite declares every output pr-review-cli.y
     }
   }
 });
+
+test("compose schema and extract support optional uncovered_rules without counting them as findings", async () => {
+  const dir = makeTemporaryDirectory("pr-review-uncovered-");
+  const outputs = {};
+  await runActionStep(
+    step(key, "compose"),
+    {
+      LANE: "code",
+      MODEL: "sonnet",
+      EFFORT: "high",
+      MAX_TURNS: "30",
+      MODEL_ARGS: "",
+      LEVELS_DIR,
+      CLI_VERSION: "latest",
+      REPOSITORY: "o/r",
+      PR_NUMBER: "7",
+      HEAD_SHA: "a".repeat(40),
+      HOLD_PATHS: "",
+      RUNNER_TEMP: dir,
+      CHUNKS: "1",
+      MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    },
+    {
+      core: {
+        setOutput: (k, v) => {
+          outputs[k] = v;
+        },
+        setFailed: (m) => {
+          throw new Error(m);
+        },
+        warning: () => {},
+        info: () => {},
+      },
+    },
+  );
+  const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
+  assert.deepEqual(schema.properties.uncovered_rules, {
+    type: "array",
+    maxItems: 5,
+    items: { type: "string", minLength: 1, maxLength: 300 },
+  });
+  assert.equal(schema.required.includes("uncovered_rules"), false);
+  const prompt = fs.readFileSync(outputs["prompt-file"], "utf8");
+  assert.match(prompt, /- uncovered_rules:/u);
+
+  const runExtract = async (payload) => {
+    const out = {};
+    const structured = path.join(dir, "structured.json");
+    const log = path.join(dir, "log.jsonl");
+    const diff = path.join(dir, "pr.diff");
+    fs.writeFileSync(structured, JSON.stringify(payload));
+    fs.writeFileSync(
+      log,
+      `${JSON.stringify({ num_turns: 1, total_cost_usd: 0.1, duration_ms: 100, started_at: "2026-11-21T00:00:00Z", ended_at: "2026-11-21T00:00:01Z", models_used: {} })}\n`,
+    );
+    fs.writeFileSync(diff, "diff --git a/a.js b/a.js\n+x\n");
+    const summary = { addRaw: () => summary, write: async () => {} };
+    await runActionStep(
+      step(key, "extract"),
+      {
+        STRUCTURED_FILE: structured,
+        LOG_FILE: log,
+        MODE_OK: "true",
+        SCOPE: "whole",
+        FULL_DIFF: "true",
+        WHOLE_FILES: "1",
+        SCOPE_DIFF: diff,
+        SCOPE_BYTES: "26",
+        CHUNKS: "1",
+        MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+        READ_BUDGET: workflow.env.READ_BUDGET,
+        MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
+      },
+      {
+        core: {
+          setOutput: (k, v) => {
+            out[k] = v;
+          },
+          warning: () => {},
+          info: () => {},
+          summary,
+        },
+      },
+    );
+    return out;
+  };
+
+  const good = await runExtract({
+    findings: 0,
+    files_read: 1,
+    summary: "Clean.",
+    comments: [],
+    uncovered_rules: [
+      "Uncovered rule: Never leave <!-- hidden --> markers\nin rules",
+      "Rule B",
+      "Rule B",
+    ],
+  });
+  assert.equal(good.verdict, "complete");
+  const parsed = JSON.parse(good.review);
+  assert.equal(parsed.findings, 0);
+  assert.deepEqual(parsed.uncovered_rules, [
+    "Never leave  markers in rules",
+    "Rule B",
+  ]);
+
+  // Malformed uncovered_rules fails closed.
+  const bad = await runExtract({
+    findings: 0,
+    files_read: 1,
+    summary: "Clean.",
+    comments: [],
+    uncovered_rules: ["a", "b", "c", "d", "e", "f"],
+  });
+  assert.equal(bad.verdict, "the review's uncovered_rules is malformed");
+  assert.equal(bad.review, undefined);
+});
