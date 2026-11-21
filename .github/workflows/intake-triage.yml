@@ -881,7 +881,6 @@ jobs:
             NotebookEdit
             WebFetch
             WebSearch
-            mcp__*
           json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
@@ -1489,7 +1488,6 @@ jobs:
             NotebookEdit
             WebFetch
             WebSearch
-            mcp__*
           json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
@@ -2060,7 +2058,6 @@ jobs:
             NotebookEdit
             WebFetch
             WebSearch
-            mcp__*
           json-schema-file: ${{ steps.schema.outputs.schema-file }}
           cli-version: ${{ steps.compose.outputs.cli-version }}
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}

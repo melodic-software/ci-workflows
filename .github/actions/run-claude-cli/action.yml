@@ -17,8 +17,9 @@ description: >-
   subscription leg hands off on the same stops with no leg after it, so a
   last leg can end green on a capacity stop. handoff-reason names the stop.
   The leg's CLI environment has every credential and file-command variable
-  removed and its one credential set, and the CLI runs with `--restricted`
-  and `--strict-mcp-config`; the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
+  removed and its one credential set, and the CLI runs with `--restricted`,
+  `--strict-mcp-config`, and `mcp__*` in `--disallowedTools` (unless
+  `disallow-mcp` is `false`); the step's GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT,
   GITHUB_STEP_SUMMARY and GITHUB_STATE files are bound read-only for the leg
   and restored to their exact content after it ends, before the action
   writes its own outputs, and
@@ -134,9 +135,17 @@ inputs:
     required: false
     default: ""
   disallowed-tools:
-    description: Permission rules passed to `--disallowedTools`, one per line. Empty passes none.
+    description: Permission rules passed to `--disallowedTools`, one per line. Empty passes none (except `mcp__*` while `disallow-mcp` is `true`).
     required: false
     default: ""
+  disallow-mcp:
+    description: >-
+      `true` (the default) appends `mcp__*` to `--disallowedTools` (without
+      duplicating an entry already in `disallowed-tools`), so MCP tools stay
+      blocked alongside `--strict-mcp-config`. Set `false` only for a lane
+      that intentionally loads MCP tools. Any other value fails the step.
+    required: false
+    default: "true"
   tools:
     description: >-
       Built-in tools the model may use, one per line, passed to `--tools`.
@@ -383,6 +392,7 @@ runs:
         LANE_PERMISSION_MODE: ${{ inputs.permission-mode }}
         LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        LANE_DISALLOW_MCP: ${{ inputs.disallow-mcp }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
         LANE_LIVE_LOG: ${{ inputs.live-log }}

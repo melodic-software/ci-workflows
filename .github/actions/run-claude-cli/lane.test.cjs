@@ -1870,6 +1870,80 @@ test("the sandbox input defaults to true and reaches both the isolation and run 
   }
 });
 
+test("disallow-mcp appends mcp__* by default, deduplicates, opts out with false, and fails on other values", async () => {
+  const disallowed = (args) => {
+    const at = args.indexOf("--disallowedTools");
+    if (at < 0) return [];
+    const end = args.findIndex((arg, i) => i > at && arg.startsWith("--"));
+    return args.slice(at + 1, end < 0 ? undefined : end);
+  };
+  for (const value of [undefined, "", "true", " true "]) {
+    const empty = readConfig(
+      configEnv({ LANE_DISALLOW_MCP: value, LANE_DISALLOWED_TOOLS: "" }),
+    );
+    assert.equal(empty.disallowMcp, true, String(value));
+    assert.deepEqual(disallowed(cliArgs(empty)), ["mcp__*"], String(value));
+
+    const combined = readConfig(
+      configEnv({
+        LANE_DISALLOW_MCP: value,
+        LANE_DISALLOWED_TOOLS: "Bash\nWebFetch",
+      }),
+    );
+    assert.deepEqual(
+      disallowed(cliArgs(combined)),
+      ["Bash", "WebFetch", "mcp__*"],
+      String(value),
+    );
+
+    const deduped = readConfig(
+      configEnv({
+        LANE_DISALLOW_MCP: value,
+        LANE_DISALLOWED_TOOLS: "Bash\nmcp__*\nWebFetch",
+      }),
+    );
+    assert.deepEqual(
+      disallowed(cliArgs(deduped)),
+      ["Bash", "mcp__*", "WebFetch"],
+      String(value),
+    );
+  }
+
+  const offEmpty = readConfig(
+    configEnv({ LANE_DISALLOW_MCP: "false", LANE_DISALLOWED_TOOLS: "" }),
+  );
+  assert.equal(offEmpty.disallowMcp, false);
+  assert.equal(cliArgs(offEmpty).includes("--disallowedTools"), false);
+
+  const offWithList = readConfig(
+    configEnv({ LANE_DISALLOW_MCP: "false", LANE_DISALLOWED_TOOLS: "Bash" }),
+  );
+  assert.deepEqual(disallowed(cliArgs(offWithList)), ["Bash"]);
+
+  for (const value of ["no", "False", "0"]) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_DISALLOW_MCP: value })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message ===
+          `disallow-mcp ${JSON.stringify(value)} is not true, false or empty`,
+      value,
+    );
+  }
+});
+
+test("the disallow-mcp input defaults to true and reaches run-claude-cli and run-review-chunks", async () => {
+  for (const [actionName, stepId] of [
+    ["run-claude-cli", "run"],
+    ["run-review-chunks", "loop"],
+  ]) {
+    const action = readAction(actionName);
+    assert.equal(action.inputs["disallow-mcp"].default, "true", actionName);
+    const step = action.runs.steps.find((s) => s.id === stepId);
+    assert.equal(step.env.LANE_DISALLOW_MCP, "${{ inputs.disallow-mcp }}", actionName);
+  }
+});
+
 test("plugin-dirs pass as --plugin-dir and --add-dir, add-dirs as --add-dir, resolved in the workspace", async () => {
   const workspace = path.join(root, "workspace");
   for (const dir of ["plugins/review", "plugins/tidy", "docs"]) {

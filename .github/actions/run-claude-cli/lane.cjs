@@ -437,6 +437,7 @@ function readConfig(env) {
     maxTurns: required(env, "LANE_MAX_TURNS", /^[1-9]\d{0,5}$/u, "max-turns"),
     permissionMode,
     sandbox: sandboxEnabled(env),
+    disallowMcp: switchedOn(env, "LANE_DISALLOW_MCP", "disallow-mcp"),
     liveLog: switchedOn(env, "LANE_LIVE_LOG", "live-log"),
     otelReceiver: otelReceiverOn(env),
     watchdogMaxWaitMs: required(
@@ -581,8 +582,12 @@ function cliArgs(config) {
   }
   if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
   if (config.jsonSchema !== "") args.push("--json-schema", config.jsonSchema);
-  if (config.disallowedTools.length > 0) {
-    args.push("--disallowedTools", ...config.disallowedTools);
+  const disallowedTools = [...(config.disallowedTools ?? [])];
+  if (config.disallowMcp && !disallowedTools.includes("mcp__*")) {
+    disallowedTools.push("mcp__*");
+  }
+  if (disallowedTools.length > 0) {
+    args.push("--disallowedTools", ...disallowedTools);
   }
   if (config.allowedTools.length > 0) {
     args.push("--allowedTools", ...config.allowedTools);

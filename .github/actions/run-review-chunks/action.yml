@@ -75,6 +75,10 @@ inputs:
     description: As run-claude-cli's.
     required: false
     default: ""
+  disallow-mcp:
+    description: As run-claude-cli's.
+    required: false
+    default: "true"
   tools:
     description: As run-claude-cli's.
     required: false
@@ -205,6 +209,7 @@ runs:
         LANE_PERMISSION_MODE: ${{ inputs.permission-mode }}
         LANE_ALLOWED_TOOLS: ${{ inputs.allowed-tools }}
         LANE_DISALLOWED_TOOLS: ${{ inputs.disallowed-tools }}
+        LANE_DISALLOW_MCP: ${{ inputs.disallow-mcp }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
         LANE_LIVE_LOG: ${{ inputs.live-log }}

@@ -1989,6 +1989,15 @@ test("run-claude-cli accepts the launcher step's inputs for both lanes and passe
       "Agent",
     ]);
     assert.ok(args.includes("--disallowedTools"));
+    assert.ok(
+      args
+        .slice(
+          args.indexOf("--disallowedTools") + 1,
+          args.indexOf("--allowedTools"),
+        )
+        .includes("mcp__*"),
+      "disallow-mcp default appends mcp__* to --disallowedTools",
+    );
     assert.deepEqual(
       args.flatMap((a, i) => (a === "--plugin-dir" ? [args[i + 1]] : [])),
       [path.join(workspace, ".lane", "plugins", "review")],
