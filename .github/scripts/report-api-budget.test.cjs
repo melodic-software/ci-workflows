@@ -482,7 +482,7 @@ const intakeRecorders = recordersOf(INTAKE);
 const floorRecorders = recordersOf(FLOOR);
 
 test("every intake-triage and floor-labeler API step opens with one shared recorder", () => {
-  assert.equal(intakeRecorders.length, 11);
+  assert.equal(intakeRecorders.length, 8);
   assert.equal(floorRecorders.length, 1);
   for (const { where, recorder } of [...intakeRecorders, ...floorRecorders]) {
     assert.match(recorder, /^\/\/ Each response's rate-limit reading/u, where);
@@ -539,11 +539,13 @@ test("the intake recorder records each response and refusal as api-budget.cjs do
   );
 });
 
-// publish-review, apply-review-hold and resolve-review-scope record through api-budget.cjs.
+// publish-review, apply-review-hold, resolve-review-scope and
+// build-intake-triage-prompt record through api-budget.cjs.
 for (const action of [
   "publish-review",
   "apply-review-hold",
   "resolve-review-scope",
+  "build-intake-triage-prompt",
 ]) {
   test(`${action} watches its Octokit client before it runs`, () => {
     const script = parseWorkflow(
@@ -626,7 +628,7 @@ test("routeOf, the shell's api_route and every inline recorder template each req
     input: `${urls.join("\n")}\n`,
   });
   assert.deepEqual(shell.stdout.split("\n").slice(0, -1), routes, shell.stderr);
-  assert.equal(inlineRecorders.length, 11 + 1);
+  assert.equal(inlineRecorders.length, 8 + 1);
   for (const { where, budget } of inlineRecorders) {
     const out = makeTemporaryDirectory("api-budget-inline-");
     await withRunnerTemp(out, () => {

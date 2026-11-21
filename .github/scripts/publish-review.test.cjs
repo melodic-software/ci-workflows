@@ -18,6 +18,8 @@ const {
   placeComments,
   run,
   stripHtml,
+  summaryText,
+  uncoveredRulesBlock,
 } = require("../actions/publish-review/publish.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
@@ -1045,5 +1047,63 @@ test("a partial review over the budget names what makes the next review complete
       binary_files: ["t/fixtures.tar.gz"],
     }),
     /shown by its header only; any other binary file counts in full, so list it in the caller's `generated-data` file by a pull request merged first/u,
+  );
+});
+
+test("publish-review publishes structured uncovered_rules in the summary and preserves free-text blocks without duplication", async () => {
+  const review = {
+    findings: 0,
+    coverage: { read: 1, changed: 1 },
+    summary: "No findings.\n\ncritical-findings: 0",
+    comments: [],
+    uncovered_rules: [
+      "Reject unpinned action tags in composite actions",
+      "Uncovered rule: Require timeout-minutes on every job\u202E",
+    ],
+  };
+  const body = summaryText(review, [], "claude-review");
+  assert.match(
+    body,
+    /<details>\n<summary>Uncovered rules \(2\)<\/summary>\n\n- Uncovered rule: Reject unpinned action tags in composite actions\n- Uncovered rule: Require timeout-minutes on every job\n\n<\/details>$/u,
+  );
+  // A review whose summary already carries the same free-text block keeps it
+  // unchanged and does not append a duplicate <details> block.
+  const freeText = {
+    ...review,
+    summary:
+      "No findings.\n\n<details>\n<summary>Uncovered rules (2)</summary>\n\n- Uncovered rule: Reject unpinned action tags in composite actions\n- Uncovered rule: Require timeout-minutes on every job\n\n</details>",
+  };
+  assert.equal(uncoveredRulesBlock(freeText, freeText.summary), "");
+  assert.equal(summaryText(freeText, [], "claude-review"), freeText.summary);
+  // When appending the block would exceed MAX_SUMMARY, the block is dropped first.
+  const huge = {
+    ...review,
+    summary: "x".repeat(59990),
+  };
+  const capped = summaryText(huge, [], "claude-review");
+  assert.equal(capped.length, 59990);
+  assert.doesNotMatch(capped, /<summary>Uncovered rules/u);
+
+  // Secret scanning runs over the published summary including uncovered_rules.
+  const leaked = await publishReview({
+    ...review,
+    uncovered_rules: [`Never commit ${FAKE_KEY}`],
+  });
+  assert.match(leaked.log.failed[0] ?? "", /failure-class=withheld/u);
+  assert.deepEqual(leaked.writes, []);
+
+  // Shadow mode carries structured uncovered_rules in the artifact JSON.
+  const artifactDir = makeTemporaryDirectory("publish-uncovered-shadow-");
+  await publishReview(review, {
+    PUBLISH: "summary",
+    ARTIFACT_DIR: artifactDir,
+  });
+  const report = JSON.parse(
+    fs.readFileSync(path.join(artifactDir, "claude-review.json"), "utf8"),
+  );
+  assert.deepEqual(report.review.uncovered_rules, review.uncovered_rules);
+  assert.match(
+    report.review.summary,
+    /<summary>Uncovered rules \(2\)<\/summary>/u,
   );
 });

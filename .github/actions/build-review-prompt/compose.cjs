@@ -123,6 +123,11 @@ async function run({ github, context, core }) {
         },
         required: ["criteria", "reason"],
       },
+      uncovered_rules: {
+        type: "array",
+        maxItems: 5,
+        items: { type: "string", minLength: 1, maxLength: 300 },
+      },
     },
     required: ["findings", "files_read", "summary", "comments"],
   };
@@ -239,6 +244,11 @@ async function run({ github, context, core }) {
     "  is not a hold: name what it spends in one summary line, not an inline comment, and do not",
     "  count it in findings.",
     "  A trusted-path match alone is never a hold: do not return trust-gate.",
+    "- uncovered_rules: optional list of at most 5 concise rules (each at most 300 characters)",
+    "  you wanted to cite that no criterion states. Omit it or pass [] when none. Uncovered",
+    "  rules never count in findings or critical-findings, never post inline, and never set",
+    "  hold. Keep any free-text Uncovered rules block your review command writes in summary",
+    "  until callers read uncovered_rules directly.",
   ]
     .filter((line) => line !== undefined)
     .join("\n");

@@ -1040,6 +1040,11 @@ consumer to audit it.
   pr-review-cli also
   `REVIEWS_KEY_EXHAUSTED` (its `action.yml` describes the inputs; `select.cjs` the
   rules). `pr-review-cli.yml` and `intake-triage.yml` call it.
+- `.github/actions/build-intake-triage-prompt` — `intake-triage.yml`'s compose
+  step, with no model: validates `claude-args` and `cli-version`, resolves
+  allowed and floor labels against the repository's live labels, reads enabled
+  Issue Types, writes the triage prompt file, and emits the resolved outputs
+  (its `action.yml` and `compose.cjs` describe what it reads).
 - `.github/actions/check-intake-triage-verdict` — `intake-triage.yml`'s output
   schema and its caller's `verdict-schema` fields, shared by the three leg
   jobs and the apply job: builds the schema file (failing the leg before any

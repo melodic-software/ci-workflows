@@ -1181,3 +1181,28 @@ test("20 chunks at their caps with 120-character paths fit once the list groups 
     assert.equal(unique.review, undefined);
   }
 });
+
+test("chunked extract merges and deduplicates uncovered_rules across chunks, capped at 5, without raising findings", async () => {
+  for (const job of LEGS) {
+    const outputs = await extractChunked(job, 2, {
+      reviews: {
+        1: chunkReview([], {
+          uncovered_rules: ["Rule 1", "Rule 2", "Rule 3"],
+        }),
+        2: chunkReview([], {
+          uncovered_rules: ["Rule 2", "Rule 4", "Rule 5", "Rule 6"],
+        }),
+      },
+    });
+    assert.equal(outputs.verdict, "complete", job.name);
+    const review = JSON.parse(outputs.review);
+    assert.equal(review.findings, 0);
+    assert.deepEqual(review.uncovered_rules, [
+      "Rule 1",
+      "Rule 2",
+      "Rule 3",
+      "Rule 4",
+      "Rule 5",
+    ]);
+  }
+});

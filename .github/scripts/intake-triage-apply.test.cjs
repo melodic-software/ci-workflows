@@ -38,6 +38,16 @@ const applyStep = workflow.jobs.apply.steps.find(
   (s) => s.name === "Apply the triage",
 );
 const composeStep = step("Resolve labels and compose Claude CLI arguments");
+assert.equal(composeStep.uses, "$/.github/actions/build-intake-triage-prompt");
+const composeActionDir = path.join(
+  __dirname,
+  "..",
+  "actions",
+  "build-intake-triage-prompt",
+);
+const composeActionScript = parseWorkflow(
+  fs.readFileSync(path.join(composeActionDir, "action.yml"), "utf8"),
+).runs.steps[0].with.script;
 
 const ESCALATION_LABEL = "needs-human";
 const FLOOR_LABEL = "needs-triage";
@@ -683,8 +693,9 @@ test.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
 
 async function compose(graphql, env = {}) {
   const { outputs, warnings, failed } = await runScript(
-    composeStep.with.script,
+    composeActionScript,
     {
+      ACTION_PATH: composeActionDir,
       ALLOWED_LABELS: "priority: high\n",
       ESCALATION_LABEL,
       BASE_ARGS: "--max-turns 15",
@@ -778,8 +789,9 @@ test("compose rejects an admission label as the floor label", async () => {
     "provenance: untrusted",
   ]) {
     const { failed, outputs } = await runScript(
-      composeStep.with.script,
+      composeActionScript,
       {
+        ACTION_PATH: composeActionDir,
         ALLOWED_LABELS: "",
         ESCALATION_LABEL,
         FLOOR_LABEL: floor,
