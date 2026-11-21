@@ -1,0 +1,64 @@
+name: Resolve Review Scope
+description: >-
+  pr-review-cli's scope step, with no model: decides whether this run reviews
+  the whole pull request, only the files changed since the lane's last
+  completed review, or skips (no-change or docs-only), writes the incremental
+  diff and file list when applicable, and records the marker comment id, merge
+  base and pull request files. Every value arrives through env; scope.cjs
+  documents what it reads.
+
+outputs:
+  review:
+    description: "`true` when the lane should review, `false` when it skips."
+    value: ${{ steps.scope.outputs.review }}
+  scope:
+    description: "`whole` or `incremental`; empty when the lane skips."
+    value: ${{ steps.scope.outputs.scope }}
+  since:
+    description: The last reviewed head SHA for an incremental or no-change run, or empty.
+    value: ${{ steps.scope.outputs.since }}
+  merge-base:
+    description: The merge-base SHA between the base branch and head, or empty.
+    value: ${{ steps.scope.outputs.merge-base }}
+  note:
+    description: The incremental-scope prompt note, or empty.
+    value: ${{ steps.scope.outputs.note }}
+  files:
+    description: The incremental file count, or empty.
+    value: ${{ steps.scope.outputs.files }}
+  bytes:
+    description: The incremental diff byte size, or empty.
+    value: ${{ steps.scope.outputs.bytes }}
+  data:
+    description: The excluded generated-data file count in an incremental scope, or empty.
+    value: ${{ steps.scope.outputs.data }}
+  skip:
+    description: The skip category (`no-change` or `docs-only`), or empty.
+    value: ${{ steps.scope.outputs.skip }}
+  skip-reason:
+    description: Human-readable reason the lane skipped, or empty.
+    value: ${{ steps.scope.outputs.skip-reason }}
+  marker-id:
+    description: The existing lane marker comment id, or empty.
+    value: ${{ steps.scope.outputs.marker-id }}
+  last-summary:
+    description: The previous review summary recorded in the marker comment, or empty.
+    value: ${{ steps.scope.outputs.last-summary }}
+  pr-files:
+    description: Compact JSON of the pull request files read for publish anchor checks, or empty.
+    value: ${{ steps.scope.outputs.pr-files }}
+
+runs:
+  using: composite
+  steps:
+    - name: Scope the review
+      id: scope
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        script: |
+          const path = require("node:path");
+          require(path.join(process.env.ACTION_PATH, "..", "report-api-budget", "api-budget.cjs")).watch(github, "github-token");
+          const { run } = require(path.join(process.env.ACTION_PATH, "scope.cjs"));
+          await run({ github, context, core });

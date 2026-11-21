@@ -1,0 +1,34 @@
+name: Generate Review Chunks
+description: >-
+  pr-review-cli's split step, with no model: slices oversized file sections at
+  hunk boundaries and splits the scope diff into bounded review chunks when
+  the diff exceeds one review's read budget or file cap. Every value arrives
+  through env; split.sh documents what it reads.
+
+outputs:
+  chunks:
+    description: Number of review chunks produced (1 when unsplit).
+    value: ${{ steps.split.outputs.chunks }}
+  files:
+    description: Comma-separated file count per chunk when split into multiple chunks.
+    value: ${{ steps.split.outputs.files }}
+  excluded:
+    description: Number of verified copy and rename files omitted from the split diff.
+    value: ${{ steps.split.outputs.excluded }}
+  distinct-bytes:
+    description: Measured byte size of the deduplicated diff when reviewed unsplit.
+    value: ${{ steps.split.outputs.distinct-bytes }}
+  over-chunks:
+    description: Needed chunk count when the diff exceeded MAX_CHUNKS, else empty.
+    value: ${{ steps.split.outputs.over-chunks }}
+  sliced:
+    description: Number of oversized file sections sliced at hunk boundaries, else empty.
+    value: ${{ steps.split.outputs.sliced }}
+
+runs:
+  using: composite
+  steps:
+    - name: Split the diff
+      id: split
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/split.sh"

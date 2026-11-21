@@ -25,14 +25,30 @@ const workflow = parseWorkflow(
 const LEGS = ["review-key", "review-subscription", "review-fallback"];
 const step = (job, id) => workflow.jobs[job].steps.find((s) => s.id === id);
 
+const SCOPE_SCRIPT = fs.readFileSync(
+  path.join(ROOT, ".github", "actions", "resolve-review-scope", "scope.cjs"),
+  "utf8",
+);
+const FULL_DIFF_SCRIPT = path.join(
+  ROOT,
+  ".github",
+  "actions",
+  "build-review-diff",
+  "diff.sh",
+);
+
 // The scope step's `resend` wrapper, cut out of the shipped script and run
 // with a recorded clock in place of setTimeout.
 function resendOf(job) {
-  const script = step(job, "scope").with.script;
-  const start = script.indexOf("const resend = ");
-  const end = script.indexOf('github.hook.wrap("request", resend);');
+  assert.equal(
+    step(job, "scope").uses,
+    "$/.github/actions/resolve-review-scope",
+    job,
+  );
+  const start = SCOPE_SCRIPT.indexOf("const resend = ");
+  const end = SCOPE_SCRIPT.indexOf('github.hook.wrap("request", resend);');
   assert.ok(start >= 0 && end > start, `${job}: no resend wrapper`);
-  return script.slice(start, end);
+  return SCOPE_SCRIPT.slice(start, end);
 }
 function makeResend(job) {
   const waits = [];
@@ -172,7 +188,12 @@ function runFullDiff(leg, statuses) {
   script("sleep", "#!/usr/bin/env bash\nexit 0\n");
   const output = path.join(dir, "output");
   fs.writeFileSync(output, "");
-  const result = spawnSync("bash", ["-e", "-c", step(leg, "full-diff").run], {
+  assert.equal(
+    step(leg, "full-diff").uses,
+    "$/.github/actions/build-review-diff",
+    leg,
+  );
+  const result = spawnSync("bash", [FULL_DIFF_SCRIPT], {
     cwd: dir,
     encoding: "utf8",
     env: {

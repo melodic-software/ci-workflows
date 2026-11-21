@@ -404,69 +404,13 @@ const URLS = {
   bare: "https://api.github.com/graphql",
 };
 
-// The scope step is inline, so it cannot load api-budget.cjs: its recorder
-// must write the line api-budget.cjs writes, for a response and a refusal.
-for (const job of ["review-key", "review-subscription"]) {
-  test(`${job}: the scope step records each response as api-budget.cjs does`, async () => {
-    const dir = makeTemporaryDirectory("api-budget-scope-");
-    const { hooks, github } = hookedClient({
-      hook: { wrap: () => {} },
-      paginate: async () => {
-        throw new Error("no API in this test");
-      },
-      rest: new Proxy(
-        {},
-        { get: () => new Proxy({}, { get: () => async () => ({}) }) },
-      ),
-    });
-    const core = new Proxy({}, { get: () => () => {} });
-    const script = WORKFLOW.jobs[job].steps.find((s) => s.id === "scope").with
-      .script;
-    await withRunnerTemp(dir, () =>
-      new AsyncFunction("require", "github", "context", "core", script)(
-        require,
-        github,
-        { repo: { owner: "o", repo: "r" } },
-        core,
-      ),
-    );
-    assert.equal(hooks.after.length, 1, "one after hook");
-    assert.equal(hooks.error.length, 1, "one error hook");
-    const ok = {
-      status: 200,
-      url: URLS.ok,
-      headers: octokitHeaders({ used: 5 }),
-    };
-    const refused = Object.assign(new Error("rate limited"), {
-      status: 429,
-      response: {
-        status: 429,
-        url: URLS.refused,
-        headers: {
-          ...octokitHeaders({ used: 9 }),
-          "x-ratelimit-resource": "Bad!",
-        },
-      },
-    });
-    // An error whose status is only on its response, as a wrapper may build
-    // one, and whose URL is only on its request.
-    const bare = Object.assign(new Error("rate limited"), {
-      request: { url: URLS.bare },
-      response: { status: 403, headers: octokitHeaders({ used: 10 }) },
-    });
-    await withRunnerTemp(dir, () => {
-      hooks.after[0][1](ok);
-      for (const error of [refused, bare])
-        assert.throws(
-          () => hooks.error[0][1](error, { method: "GET", url: "/x" }),
-          (e) => e === error,
-        );
-    });
+// The scope step runs through resolve-review-scope, which watches its Octokit
+// client with api-budget.cjs before calling scope.cjs.
+for (const job of ["review-key", "review-subscription", "review-fallback"]) {
+  test(`${job}: the scope step runs through resolve-review-scope`, () => {
     assert.equal(
-      state(dir),
-      readingLine(200, ok.headers, routeOf(URLS.ok)) +
-        readingLine(429, refused.response.headers, routeOf(URLS.refused)) +
-        readingLine(403, bare.response.headers, routeOf(URLS.bare)),
+      WORKFLOW.jobs[job].steps.find((s) => s.id === "scope").uses,
+      "$/.github/actions/resolve-review-scope",
     );
   });
 }
@@ -595,8 +539,12 @@ test("the intake recorder records each response and refusal as api-budget.cjs do
   );
 });
 
-// publish-review and apply-review-hold record through api-budget.cjs.
-for (const action of ["publish-review", "apply-review-hold"]) {
+// publish-review, apply-review-hold and resolve-review-scope record through api-budget.cjs.
+for (const action of [
+  "publish-review",
+  "apply-review-hold",
+  "resolve-review-scope",
+]) {
   test(`${action} watches its Octokit client before it runs`, () => {
     const script = parseWorkflow(
       fs.readFileSync(
@@ -657,10 +605,6 @@ repos/o/r/merge-async	repos/{repo}/{x}	merge-async`
 
 // Each inline recorder's `budget` function, cut from its step's script.
 const inlineRecorders = [
-  ...["review-key", "review-subscription", "review-fallback"].map((job) => ({
-    where: job,
-    script: WORKFLOW.jobs[job].steps.find((s) => s.id === "scope").with.script,
-  })),
   ...[...intakeRecorders, ...floorRecorders].map(({ where, recorder }) => ({
     where,
     script: recorder,
@@ -682,7 +626,7 @@ test("routeOf, the shell's api_route and every inline recorder template each req
     input: `${urls.join("\n")}\n`,
   });
   assert.deepEqual(shell.stdout.split("\n").slice(0, -1), routes, shell.stderr);
-  assert.equal(inlineRecorders.length, 3 + 11 + 1);
+  assert.equal(inlineRecorders.length, 11 + 1);
   for (const { where, budget } of inlineRecorders) {
     const out = makeTemporaryDirectory("api-budget-inline-");
     await withRunnerTemp(out, () => {
