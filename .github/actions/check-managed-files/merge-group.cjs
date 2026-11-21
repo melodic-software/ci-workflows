@@ -147,6 +147,7 @@ function groupDiff({ workspace, baseSha, headSha }) {
 async function resolveMergeGroup(input) {
   const withRetry = createRetry({
     sleep: input.sleep,
+    now: input.now,
     log: (message) => input.core.warning(message),
   });
   const args = { ...input, withRetry };

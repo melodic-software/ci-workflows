@@ -78,7 +78,7 @@ function fakeGithub({
   };
 }
 
-async function run(github, files = ["a.txt"]) {
+async function run(github, files = ["a.txt"], { now } = {}) {
   const ws = workspace(files);
   const pathsDir = fs.mkdtempSync(path.join(os.tmpdir(), "merge-group-paths-"));
   const sleeps = [];
@@ -109,6 +109,7 @@ async function run(github, files = ["a.txt"]) {
       headSha: ws.headSha,
       workspace: ws.dir,
       pathsDir,
+      now,
       sleep: async (ms) => {
         sleeps.push(ms);
       },
@@ -175,15 +176,10 @@ test("pulls.get: 502 and 504 are retried", async () => {
 for (const [name, error] of [
   ["a 404", httpError(404, "Not Found")],
   [
-    "a 403 rate-limit answer",
-    httpError(403, "API rate limit exceeded for installation", {
-      "x-ratelimit-remaining": "0",
-      "retry-after": "3",
+    "a non-rate-limit 403",
+    httpError(403, "Resource not accessible by integration", {
+      "x-ratelimit-remaining": "4999",
     }),
-  ],
-  [
-    "a 429",
-    httpError(429, "Too Many Requests", { "retry-after": "3" }),
   ],
   ["a 422", httpError(422, "Unprocessable Entity")],
   ["an error without a status", new Error("Resource not accessible")],
@@ -202,6 +198,82 @@ for (const [name, error] of [
     );
   });
 }
+
+const FIXED_NOW_MS = Date.parse("2026-11-19T19:44:08.000Z");
+const FIXED_NOW_SEC = Math.floor(FIXED_NOW_MS / 1000);
+const FIXED_NOW = () => FIXED_NOW_MS;
+
+test("pulls.get: a primary rate limit waits until x-ratelimit-reset and passes on retry", async () => {
+  const github = fakeGithub({
+    get: [
+      httpError(403, "API rate limit exceeded for installation", {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(FIXED_NOW_SEC + 300),
+      }),
+      PR,
+    ],
+  });
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(github.calls.get, 2);
+  assert.deepEqual(result.sleeps, [300_000]);
+  assert.equal(result.warnings.length, 1);
+  assert.match(
+    result.warnings[0],
+    /could not read pull request #7: HTTP 403 API rate limit exceeded for installation; waiting 300 s for primary rate limit reset/u,
+  );
+});
+
+test("pulls.get: a primary rate limit beyond the wait budget fails closed without waiting", async () => {
+  const github = fakeGithub({
+    get: [
+      httpError(403, "API rate limit exceeded for installation", {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(FIXED_NOW_SEC + 900),
+      }),
+      PR,
+    ],
+  });
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, null);
+  assert.equal(github.calls.get, 1);
+  assert.deepEqual(result.sleeps, []);
+  assert.match(
+    result.errors,
+    /could not read pull request #7: API rate limit exceeded for installation \(1 attempt; rate-limit wait 900 s exceeds the 420 s wait budget; resets at 2026-11-19T19:59:08\.000Z\)/u,
+  );
+});
+
+test("pulls.get: a persistent primary rate limit fails closed after 2 calls", async () => {
+  const limited = () =>
+    httpError(403, "API rate limit exceeded for installation", {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(FIXED_NOW_SEC + 120),
+    });
+  const github = fakeGithub({ get: [limited()] });
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, null);
+  assert.equal(github.calls.get, 2);
+  assert.deepEqual(result.sleeps, [120_000]);
+  assert.match(
+    result.errors,
+    /could not read pull request #7: API rate limit exceeded for installation \(2 attempts; still rate limited after waiting/u,
+  );
+});
+
+test("pulls.get: a secondary rate limit backs off and passes on retry", async () => {
+  const github = fakeGithub({
+    get: [
+      httpError(429, "Too Many Requests", { "retry-after": "3" }),
+      httpError(403, "You have exceeded a secondary rate limit."),
+      PR,
+    ],
+  });
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(github.calls.get, 3);
+  assert.deepEqual(result.sleeps, [3000, 120_000]);
+});
 
 test("pulls.get: a 503 with Retry-After 3 waits 3 s, not the backoff", async () => {
   const github = fakeGithub({
@@ -260,11 +332,10 @@ test("listFiles: three 503s fail closed and name the 3 attempts", async () => {
   );
 });
 
-test("listFiles: a 404, 403 or 429 fails at once after 1 call", async () => {
+test("listFiles: a 404 or non-rate-limit 403 fails at once after 1 call", async () => {
   for (const error of [
     httpError(404, "Not Found"),
-    httpError(403, "API rate limit exceeded", { "x-ratelimit-remaining": "0" }),
-    httpError(429, "Too Many Requests", { "retry-after": "3" }),
+    httpError(403, "Resource not accessible by integration"),
   ]) {
     const github = fakeGithub({ pages: [error, ["a.txt"]] });
     const result = await run(github);
@@ -272,6 +343,23 @@ test("listFiles: a 404, 403 or 429 fails at once after 1 call", async () => {
     assert.equal(github.calls.paginate, 1, error.message);
     assert.deepEqual(result.sleeps, [], error.message);
   }
+});
+
+test("listFiles: a primary rate limit waits for reset and succeeds on retry", async () => {
+  const github = fakeGithub({
+    pages: [
+      httpError(403, "API rate limit exceeded", {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(FIXED_NOW_SEC + 90),
+      }),
+      ["a.txt"],
+    ],
+  });
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(github.calls.paginate, 2);
+  assert.deepEqual(result.sleeps, [90_000]);
+  assert.deepEqual(result.paths, ["a.txt"]);
 });
 
 test("listFiles: a 503 on page 2 retries the listing and keeps both pages", async () => {
@@ -328,27 +416,34 @@ test("pulls.list: three 503s fail closed and name the 3 attempts", async () => {
   );
 });
 
-for (const [name, error] of [
-  [
-    "a 403 rate-limit answer",
-    httpError(403, "API rate limit exceeded", { "x-ratelimit-remaining": "0" }),
-  ],
-  ["a 429", httpError(429, "Too Many Requests", { "retry-after": "3" })],
-]) {
-  test(`pulls.list: ${name} fails at once after 1 call`, async () => {
-    const github = stack([error, [LOWER]]);
-    const result = await run(github);
-    assert.equal(result.mode, null);
-    assert.equal(github.calls.list, 1);
-    assert.deepEqual(result.sleeps, []);
-    assert.ok(
-      result.errors.includes(
-        `could not find the pull request below #7: ${error.message} (1 attempt)`,
-      ),
-      result.errors,
-    );
-  });
-}
+test("pulls.list: a non-rate-limit 403 fails at once after 1 call", async () => {
+  const error = httpError(403, "Resource not accessible by integration");
+  const github = stack([error, [LOWER]]);
+  const result = await run(github);
+  assert.equal(result.mode, null);
+  assert.equal(github.calls.list, 1);
+  assert.deepEqual(result.sleeps, []);
+  assert.ok(
+    result.errors.includes(
+      `could not find the pull request below #7: ${error.message} (1 attempt)`,
+    ),
+    result.errors,
+  );
+});
+
+test("pulls.list: a primary rate limit waits for reset and walks the stack", async () => {
+  const github = stack([
+    httpError(403, "API rate limit exceeded", {
+      "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(FIXED_NOW_SEC + 60),
+    }),
+    [LOWER],
+  ]);
+  const result = await run(github, ["a.txt"], { now: FIXED_NOW });
+  assert.equal(result.mode, "hand-edit", result.errors);
+  assert.equal(github.calls.list, 2);
+  assert.deepEqual(result.sleeps, [60_000]);
+});
 
 test("one merge-group run waits at most 120 s across all its reads", async () => {
   const wait29 = () =>

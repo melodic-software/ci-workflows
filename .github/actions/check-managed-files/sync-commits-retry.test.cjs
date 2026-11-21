@@ -96,25 +96,43 @@ test("listCommits: three 503s never skip a Dependabot PR", async () => {
   assert.equal(run.calls(), 3);
 });
 
-for (const [name, error] of [
-  [
-    "a 403 rate-limit answer",
+const FIXED_NOW_MS = Date.parse("2026-11-19T19:44:08.000Z");
+const FIXED_NOW_SEC = Math.floor(FIXED_NOW_MS / 1000);
+
+test("listCommits: a non-rate-limit 403 fails at once after 1 call", async () => {
+  const error = httpError(403, "Resource not accessible by integration");
+  const run = setup(error, [DEPENDABOT_COMMIT]);
+  assert.equal(await verifySyncCommits(run.args), false);
+  assert.equal(run.calls(), 1);
+  assert.deepEqual(run.sleeps, []);
+  assert.ok(
+    run.core.errors.includes(
+      `could not list the PR's commits: ${error.message} (1 attempt)`,
+    ),
+    run.core.errors.join("\n"),
+  );
+});
+
+test("listCommits: a primary rate limit waits for reset and reads commits on retry", async () => {
+  const run = setup(
     httpError(403, "API rate limit exceeded", {
       "x-ratelimit-remaining": "0",
+      "x-ratelimit-reset": String(FIXED_NOW_SEC + 90),
     }),
-  ],
-  ["a 429", httpError(429, "Too Many Requests", { "retry-after": "3" })],
-]) {
-  test(`listCommits: ${name} fails at once after 1 call`, async () => {
-    const run = setup(error, [DEPENDABOT_COMMIT]);
-    assert.equal(await verifySyncCommits(run.args), false);
-    assert.equal(run.calls(), 1);
-    assert.deepEqual(run.sleeps, []);
-    assert.ok(
-      run.core.errors.includes(
-        `could not list the PR's commits: ${error.message} (1 attempt)`,
-      ),
-      run.core.errors.join("\n"),
-    );
-  });
-}
+    [DEPENDABOT_COMMIT],
+  );
+  run.args.now = () => FIXED_NOW_SEC * 1000;
+  assert.equal(await dependabotMode(run.args), "skip");
+  assert.equal(run.calls(), 2);
+  assert.deepEqual(run.sleeps, [90_000]);
+});
+
+test("listCommits: a 429 waits Retry-After and reads commits on retry", async () => {
+  const run = setup(
+    httpError(429, "Too Many Requests", { "retry-after": "3" }),
+    [DEPENDABOT_COMMIT],
+  );
+  assert.equal(await dependabotMode(run.args), "skip");
+  assert.equal(run.calls(), 2);
+  assert.deepEqual(run.sleeps, [3000]);
+});
