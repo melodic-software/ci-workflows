@@ -450,7 +450,6 @@ test("a push reviews only the pull request's files changed since the last review
     compares: unmovedBase([
       file("src/a.js", { patch: "@@ -1 +1 @@\n-x\n+y" }),
       file("src/old.js"),
-      file("unrelated.txt"),
     ]),
     comments: [await markerFor(codeLane, LAST)],
   });
@@ -461,7 +460,7 @@ test("a push reviews only the pull request's files changed since the last review
   );
   assert.match(result.outputs.note, /^- src\/a\.js$/mu);
   assert.match(result.outputs.note, /^- src\/new\.js$/mu);
-  assert.doesNotMatch(result.outputs.note, /src\/b\.js|unrelated/u);
+  assert.doesNotMatch(result.outputs.note, /src\/b\.js/u);
   assert.match(
     result.diff,
     /^diff --git a\/src\/a\.js b\/src\/a\.js\nstatus: modified\n@@ -1 \+1 @@/mu,
@@ -471,16 +470,84 @@ test("a push reviews only the pull request's files changed since the last review
 });
 
 test("a push that changes no file of the pull request is not reviewed again", async () => {
-  const result = await runScope(codeLane, {
-    prFiles: [file("src/a.js")],
-    compares: unmovedBase([file("elsewhere.js")]),
-    comments: [await markerFor(codeLane, LAST)],
-  });
-  assert.equal(result.outputs.review, "false");
-  assert.match(
-    result.outputs["skip-reason"],
-    /no file of this pull request changed since the review of b{40}/u,
-  );
+  for (const compares of [
+    unmovedBase([]),
+    {
+      [`${LAST}...${HEAD}`]: { status: "ahead", files: [file("elsewhere.js")] },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+      [`${MB_OLD}...${MB_NEW}`]: { files: [file("elsewhere.js")] },
+    },
+  ]) {
+    const result = await runScope(codeLane, {
+      prFiles: [file("src/a.js")],
+      compares,
+      comments: [await markerFor(codeLane, LAST)],
+    });
+    assert.equal(result.outputs.review, "false");
+    assert.equal(result.outputs.skip, "no-change");
+    assert.match(
+      result.outputs["skip-reason"],
+      /no file of this pull request changed since the review of b{40}/u,
+    );
+  }
+});
+
+test("both lanes review in full when a push reverts or drops a file from a multi-file PR", async () => {
+  for (const lane of [codeLane, securityLane]) {
+    const result = await runScope(lane, {
+      prFiles: [file("src/a.js")],
+      compares: unmovedBase([file(".gitleaksignore")]),
+      comments: [await markerFor(lane, LAST)],
+    });
+    assert.equal(result.outputs.review, "true", lane.file);
+    assert.equal(result.outputs.scope, "whole", lane.file);
+    assert.equal(result.outputs.skip, undefined, lane.file);
+    assert.equal(result.outputs.note, undefined, lane.file);
+    assert.ok(
+      result.messages.some((message) =>
+        /a file left this pull request since the review of b{40}/u.test(
+          message,
+        ),
+      ),
+      lane.file,
+    );
+  }
+});
+
+test("a push that drops one file while also editing a PR file or merging base reviews in full", async () => {
+  for (const compares of [
+    unmovedBase([
+      file("src/a.js", { patch: "@@ -1 +1 @@\n-x\n+y" }),
+      file(".gitleaksignore"),
+    ]),
+    {
+      [`${LAST}...${HEAD}`]: {
+        status: "ahead",
+        files: [file("other.js"), file(".gitleaksignore")],
+      },
+      [`main...${LAST}`]: { merge_base_commit: { sha: MB_OLD } },
+      [`main...${HEAD}`]: { merge_base_commit: { sha: MB_NEW } },
+      [`${MB_OLD}...${MB_NEW}`]: { files: [file("other.js")] },
+    },
+  ]) {
+    const result = await runScope(codeLane, {
+      prFiles: [file("src/a.js")],
+      compares,
+      comments: [await markerFor(codeLane, LAST)],
+    });
+    assert.equal(result.outputs.review, "true");
+    assert.equal(result.outputs.scope, "whole");
+    assert.equal(result.outputs.skip, undefined);
+    assert.equal(result.outputs.note, undefined);
+    assert.ok(
+      result.messages.some((message) =>
+        /a file left this pull request since the review of b{40}/u.test(
+          message,
+        ),
+      ),
+    );
+  }
 });
 
 test("a re-run of a head already reviewed is not reviewed again", async () => {
@@ -763,7 +830,7 @@ test("no skip is taken once the pull request's live head has moved past this run
     [
       {
         prFiles: [file("src/a.js")],
-        compares: unmovedBase([file("elsewhere.js")]),
+        compares: unmovedBase([]),
         comments: [await markerFor(codeLane, LAST)],
       },
       "no-change",
@@ -1099,7 +1166,7 @@ test("a binary or pure-rename change without a patch stays incremental", async (
 test("299 changed files still review incrementally", async () => {
   const since = Array.from({ length: 299 }, (_, i) => file(`f${i}`));
   const result = await runScope(codeLane, {
-    prFiles: [file("f0")],
+    prFiles: since,
     compares: unmovedBase(since),
     comments: [await markerFor(codeLane, LAST)],
   });
