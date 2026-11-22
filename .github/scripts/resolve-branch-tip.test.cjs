@@ -193,8 +193,20 @@ test("an invalid token (401) or a 403 fails at once, naming the refused token", 
     stderr:
       "remote: Invalid username or token. Password authentication is not supported for Git operations.\nfatal: Authentication failed for 'https://github.com/o/r.git/'\n",
   };
+  const noCredential = {
+    status: 128,
+    stderr:
+      "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+  };
+  const http401 = {
+    status: 128,
+    stderr: "error: RPC failed; HTTP 401 curl 22\n",
+  };
   for (const [code, answer] of [
-    [401, invalidToken],
+    ["401 invalid token", invalidToken],
+    ["401 returned error", refusal(401)],
+    ["401 HTTP line", http401],
+    ["401 no credential prompt", noCredential],
     [403, refusal(403)],
   ]) {
     const r = run({ answers: [answer] });
