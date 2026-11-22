@@ -1003,6 +1003,15 @@ consumer to audit it.
   collector reads, built from the `x-ratelimit-*` headers and URLs of the
   job's own requests, so it spends none (its `action.yml` describes what it
   does).
+- `.github/actions/resolve-branch-tip` — a branch's tip SHA from one
+  `git ls-remote` authenticated with the job token (`contents: read`), for a
+  later `actions/checkout` that takes a full SHA and so skips checkout's
+  hash-algorithm REST call. GitHub rate-limits unauthenticated git reads from
+  shared runner addresses
+  ([changelog](https://github.blog/changelog/2025-05-08-updated-rate-limits-for-unauthenticated-requests/)),
+  so a 401 or 403 fails at once and only a timeout or a 5xx is retried, at
+  most 3 tries. `unambiguous-sha` is the same SHA only while no tag shares
+  the branch's name (its `action.yml` describes what it does).
 - `.github/actions/setup-pinned-node` — the exact Node a version file pins,
   from the tool cache or a signature-checked nodejs.org download, with no
   GitHub API call; `markdownlint` and `check-managed-files` run its script

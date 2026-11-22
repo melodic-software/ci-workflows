@@ -1,0 +1,50 @@
+name: Resolve Branch Tip
+description: >
+  Resolve a branch's tip commit with one authenticated `git ls-remote`, so a
+  later actions/checkout can take a full SHA (which skips checkout's
+  hash-algorithm REST call) and a job reads the branch's live tip, not the
+  event's commit. The token goes to git as an http.extraheader through
+  GIT_CONFIG_* environment variables, masked, never on a command line or in
+  a file; the read spends no REST quota. Up to 3 tries with full-jitter waits
+  of 0-2 s and 0-4 s, retrying only a 60-second timeout or a 5xx answer. A
+  401 or 403, a branch that does not exist, or any other git failure fails
+  the step at once.
+
+inputs:
+  branch:
+    description: Branch name, without refs/heads/.
+    required: false
+    default: main
+  repository:
+    description: Repository to read, as owner/name.
+    required: false
+    default: ${{ github.repository }}
+  token:
+    description: >
+      Token for the read. The job token needs contents: read on the
+      repository.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  sha:
+    description: The 40-hex commit SHA at refs/heads/<branch>.
+    value: ${{ steps.resolve.outputs.sha }}
+  unambiguous-sha:
+    description: >
+      The same SHA, set only when no tag shares the branch's name, so a
+      reader that resolves the bare name would get this branch; empty when
+      such a tag exists.
+    value: ${{ steps.resolve.outputs.unambiguous-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the branch tip
+      id: resolve
+      shell: bash
+      env:
+        TIP_BRANCH: ${{ inputs.branch }}
+        TIP_REPOSITORY: ${{ inputs.repository }}
+        TIP_TOKEN: ${{ inputs.token }}
+      run: bash "$GITHUB_ACTION_PATH/resolve.sh"
