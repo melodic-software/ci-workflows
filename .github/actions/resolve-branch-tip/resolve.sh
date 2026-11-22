@@ -49,7 +49,7 @@ while :; do
   fi
   if ((status == 124)); then
     why="timed out after 60 s"
-  elif grep -qE 'returned error: 40[13]|HTTP 40[13]' "$err"; then
+  elif grep -qE 'returned error: 40[13]|HTTP 40[13]|Authentication failed for|could not read Username' "$err"; then
     fail "GitHub refused the token for $repository (HTTP 401/403): the job's token needs contents: read"
   elif grep -qE 'returned error: 5[0-9]{2}|HTTP 5[0-9]{2}' "$err"; then
     why="got a server error"
