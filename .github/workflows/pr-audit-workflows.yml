@@ -21,6 +21,16 @@ name: PR Audit Workflows
 # reusable workflows cannot elevate caller permissions. The upload step's
 # input gate keeps annotations-only callers off the code-scanning API. The ci-status
 # gateway stays consumer-local — this is a lane, not the gateway.
+#
+# Config, always passed with --config so zizmor discovers nothing itself: the
+# caller's own (.github/zizmor.yml or .yaml, or zizmor.yml or .yaml at the
+# root), read on a pull request from its base commit through the contents API,
+# never from the head, so a pull request cannot audit itself under a config it
+# adds or edits; on any other event, from the checkout. With none, the lane
+# checks out melodic-software/standards at one resolved commit (the
+# download-standards action, which records it in the step summary) and passes
+# that commit's .github/zizmor.yml, so a repository with no copy of its own is
+# audited under the org policy, third-party refs hash-pinned included.
 on:
   workflow_call:
     inputs:
@@ -109,10 +119,50 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Find the caller's zizmor config
+        id: config
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          file=
+          for candidate in .github/zizmor.yml .github/zizmor.yaml zizmor.yml zizmor.yaml; do
+            if [[ -n "$BASE_SHA" ]]; then
+              copy="$RUNNER_TEMP/zizmor-base-config.yml"
+              errors="$RUNNER_TEMP/zizmor-base-config.err"
+              if gh api -H 'Accept: application/vnd.github.raw' \
+                "repos/$REPOSITORY/contents/$candidate?ref=$BASE_SHA" >"$copy" 2>"$errors"; then
+                file=$copy
+                echo "zizmor config: $candidate at the base commit $BASE_SHA (the caller's own)"
+                break
+              fi
+              if ! grep -q 'HTTP 404' -- "$errors"; then
+                cat -- "$errors" >&2
+                echo "::error::$candidate could not be read at the base commit $BASE_SHA."
+                exit 2
+              fi
+            elif [[ -f "$candidate" ]]; then
+              file=$candidate
+              echo "zizmor config: $candidate (the caller's own)"
+              break
+            fi
+          done
+          echo "file=$file" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the standards zizmor config
+        id: standards
+        if: ${{ steps.config.outputs.file == '' }}
+        uses: $/.github/actions/download-standards
+
       - name: Run zizmor
         id: zizmor
         shell: bash
         env:
+          CALLER_CONFIG: ${{ steps.config.outputs.file }}
+          STANDARDS_CHECKOUT: ${{ steps.standards.outputs.path }}
           PATHS: ${{ inputs.paths }}
           REQUESTED_VERSION: ${{ inputs.version }}
           EXPECTED_SHA256: ${{ inputs.sha256 }}
@@ -197,6 +247,19 @@ jobs:
           fi
           mkdir -- "$work_dir/cache"
 
+          config_args=()
+          if [[ -n "${CALLER_CONFIG:-}" ]]; then
+            config_args=("--config=$CALLER_CONFIG")
+          elif [[ -n "${STANDARDS_CHECKOUT:-}" ]]; then
+            standards_config="$STANDARDS_CHECKOUT/.github/zizmor.yml"
+            if [[ ! -f "$standards_config" ]]; then
+              echo "::error::melodic-software/standards at ${STANDARDS_CHECKOUT##*/} has no .github/zizmor.yml."
+              exit 2
+            fi
+            echo "zizmor config: .github/zizmor.yml from melodic-software/standards at ${STANDARDS_CHECKOUT##*/}"
+            config_args=("--config=$standards_config")
+          fi
+
           normalized_paths=${PATHS//$'\n'/ }
           targets=()
           read -r -a raw_targets <<< "$normalized_paths"
@@ -225,6 +288,7 @@ jobs:
             "--persona=$PERSONA"
             --color=never
             "--cache-dir=$work_dir/cache"
+            "${config_args[@]}"
           )
           if [[ "$ONLINE_AUDITS" == false ]]; then
             args+=(--no-online-audits)
@@ -255,6 +319,7 @@ jobs:
               "--persona=$PERSONA"
               --color=never
               "--cache-dir=$work_dir/cache"
+              "${config_args[@]}"
             )
             if [[ "$ONLINE_AUDITS" == false ]]; then
               sarif_args+=(--no-online-audits)
