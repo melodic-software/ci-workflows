@@ -1,0 +1,52 @@
+name: Check GraphQL Operations
+description: >-
+  Validate the GraphQL operations committed in the caller's tracked JS, shell,
+  workflow and Python files against GitHub's public schema, which this
+  repository owns at schemas/github/. GitHub rejects an invalid operation only
+  at run time, after the lane that sends it has started. Fails when an
+  operation does not validate, or when the sites the check cannot read differ
+  from the caller's allowlist.
+
+inputs:
+  root:
+    description: Repository root, a git checkout; the other paths resolve against it.
+    default: '.'
+  paths:
+    description: Git pathspecs to scan, separated by spaces or newlines.
+    default: .github
+  allowlist:
+    description: >-
+      Path, relative to root, of the file listing the sites the check cannot
+      read: `<file> <count> <reason>` rows, and `exclude <path prefix>
+      <reason>` rows for paths whose operations go to another GraphQL API.
+      Empty (the default) means every site must be readable.
+    default: ''
+  node-version:
+    description: Node.js version to set up.
+    default: 24.21.0
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Check GraphQL operations
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        PATHS: ${{ inputs.paths }}
+        ALLOWLIST: ${{ inputs.allowlist }}
+      run: |
+        set -euo pipefail
+
+        repo="$GITHUB_ACTION_PATH/../../.."
+        dir="$(mktemp -d "${RUNNER_TEMP%/}/check-graphql-operations.XXXXXXXX")"
+        cp "$repo/package.json" "$repo/package-lock.json" "$GITHUB_ACTION_PATH/check.cjs" "$dir/"
+        npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund
+        read -ra paths <<<"$(tr '\n' ' ' <<<"$PATHS")"
+        args=(--root "$ROOT" --schema "$repo/schemas/github/schema.docs.graphql.gz")
+        if [[ -n "$ALLOWLIST" ]]; then args+=(--allowlist "$ALLOWLIST"); fi
+        node "$dir/check.cjs" "${args[@]}" "${paths[@]}"
