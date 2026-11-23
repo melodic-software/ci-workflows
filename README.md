@@ -1549,7 +1549,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   one; otherwise the lane checks out `melodic-software/standards` at one
   resolved commit with `checkout-standards` and passes that commit's
   `.github/zizmor.yml` with `--config`, so a third-party ref that is not
-  SHA-pinned is a high finding there.
+  SHA-pinned is a high finding there. The check reads the pull request's
+  checkout, so a pull request that adds its own zizmor config is audited
+  under that config; review it in the diff.
   `runner` defaults to `ubuntu-24.04` and can consume the caller's governed
   managed runner label for eligible private, non-fork calls. Callers may
   opt into `upload-sarif: true` for durable code-scanning alerts
