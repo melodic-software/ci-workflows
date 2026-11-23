@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -915,6 +916,45 @@ class SyncedCooldownTest(unittest.TestCase):
         self.synced.write_text("{", encoding="utf-8")
         with self.assertRaisesRegex(SystemExit, "not valid JSON"):
             self.load({"tools": {}})
+
+    def load_default_path(self, yaml_doc: dict[str, Any]) -> tuple[dict[str, Any], mock.Mock]:
+        """load_policy at the action's default copy path, run from self.root."""
+        standards = self.root / "standards"
+        policy_file = standards / bump.STANDARDS_DEPENDABOT_POLICY
+        policy_file.parent.mkdir(parents=True)
+        policy_file.write_text(
+            json.dumps({"cooldownDays": {"own": 1, "patch": 2, "minor": 4, "major": 8}}),
+            encoding="utf-8",
+        )
+        cwd = Path.cwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
+        with (
+            mock.patch.object(bump, "yq_json", return_value=yaml_doc),
+            mock.patch.object(bump, "standards_checkout", return_value=standards) as checkout,
+        ):
+            return bump.load_policy(self.yaml, Path(bump.DEPENDABOT_POLICY)), checkout
+
+    def test_absent_default_copy_reads_the_standards_policy(self) -> None:
+        policy, checkout = self.load_default_path({"tools": {}})
+        checkout.assert_called_once_with()
+        self.assertEqual(
+            policy["cooldownDays"], {"own": 1, "patch": 2, "minor": 4, "major": 8}
+        )
+
+    def test_present_default_copy_wins_over_standards(self) -> None:
+        synced = self.root / bump.DEPENDABOT_POLICY
+        synced.parent.mkdir(parents=True)
+        synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+        policy, checkout = self.load_default_path({"tools": {}})
+        checkout.assert_not_called()
+        self.assertEqual(policy["cooldownDays"], self.SYNCED["cooldownDays"])
+
+    def test_policy_cooldown_reads_no_standards(self) -> None:
+        own = {"own": 0, "patch": 3, "minor": 3, "major": 7}
+        policy, checkout = self.load_default_path({"cooldownDays": own})
+        checkout.assert_not_called()
+        self.assertEqual(policy["cooldownDays"], own)
 
     def test_cpython_source_waits_the_synced_patch_cooldown(self) -> None:
         self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")

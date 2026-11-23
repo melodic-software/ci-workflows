@@ -1,5 +1,7 @@
 name: Gitleaks
-description: Scan a file, directory, or local Git history with gitleaks against a caller-supplied config.
+description: >-
+  Scan a file, directory, or local Git history with gitleaks against the
+  caller's config, or standards' when the caller has none.
 
 inputs:
   path:
@@ -28,8 +30,17 @@ inputs:
       the marker travels with the commit into every scan.
     default: ''
   config:
-    description: Path to the gitleaks config (.gitleaks.toml) in the caller repo.
+    description: >-
+      Path to the gitleaks config (.gitleaks.toml) in the caller repo. When
+      the default path is absent, melodic-software/standards' own
+      .gitleaks.toml at `standards-ref` is used instead.
     default: .gitleaks.toml
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the checkout-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   report-format:
     description: >-
       Report format to emit: json, csv, junit, sarif, or template. Empty emits
@@ -101,6 +112,7 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         CONFIG: ${{ inputs.config }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         REPORT_FORMAT: ${{ inputs.report-format }}
         REPORT_PATH: ${{ inputs.report-path }}
         REDACT: ${{ inputs.redact }}

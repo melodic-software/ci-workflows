@@ -10,8 +10,16 @@ inputs:
   config-file:
     description: >-
       Path to an actionlint.yaml config in the caller repo. Empty (default)
-      auto-discovers .github/actionlint.yaml if one exists.
+      auto-discovers .github/actionlint.yaml (or .yml) when the caller has
+      one, and otherwise uses melodic-software/standards' own
+      .github/actionlint.yaml at `standards-ref`.
     default: ''
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the checkout-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   color:
     description: Force colored output (true/false).
     default: 'true'
@@ -121,9 +129,14 @@ runs:
       env:
         PATHS: ${{ inputs.paths }}
         CONFIG_FILE: ${{ inputs.config-file }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         COLOR: ${{ inputs.color }}
       run: |
         set -euo pipefail
+        if [[ -z "${CONFIG_FILE// }" && ! -e .github/actionlint.yaml && ! -e .github/actionlint.yml ]]; then
+          source "$GITHUB_ACTION_PATH/../checkout-standards/lib.sh"
+          CONFIG_FILE="$(standards_config .github/actionlint.yaml .github/actionlint.yaml .github/actionlint.yaml)"
+        fi
         # ShellCheck comes from the pinned install above, not the runner image.
         # Pyflakes stays PATH-based; neither supported runner contract preinstalls it.
         args=()

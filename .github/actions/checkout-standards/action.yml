@@ -1,0 +1,57 @@
+name: Checkout Standards
+description: >-
+  Resolve a ref of melodic-software/standards to one commit, record it in the
+  step summary, and check that commit out read-only: an anonymous depth-1
+  fetch of the public repository into $RUNNER_TEMP, with no remote and no
+  credential stored. A later call in the same job, from this action or from a
+  composite whose config falls back to standards, reuses the same commit and
+  checkout. Pass the `sha` output to the other jobs of the run, as their
+  `ref` or a reader's `standards-ref`, so the whole run reads one commit.
+
+inputs:
+  ref:
+    description: >-
+      Branch of melodic-software/standards to resolve, or a full commit SHA
+      to use as given. Defaults to `main`, so a standards change reaches every
+      reader on its next run.
+    default: main
+  checkout:
+    description: >-
+      `true` (default) checks the commit out; `false` only resolves and
+      records it, for a job that hands the SHA to later jobs.
+    default: 'true'
+
+outputs:
+  sha:
+    description: The 40-hex standards commit.
+    value: ${{ steps.standards.outputs.sha }}
+  path:
+    description: Absolute path of the checkout; empty when `checkout` is `false`.
+    value: ${{ steps.standards.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve and check out standards
+      id: standards
+      shell: bash
+      env:
+        STANDARDS_REF: ${{ inputs.ref }}
+        CHECKOUT: ${{ inputs.checkout }}
+      run: |
+        set -euo pipefail
+        case "$CHECKOUT" in
+          true)
+            path="$(bash "$GITHUB_ACTION_PATH/checkout.sh")"
+            sha="${path##*/}"
+            ;;
+          false)
+            path=''
+            sha="$(bash "$GITHUB_ACTION_PATH/resolve.sh")"
+            ;;
+          *)
+            echo "::error::checkout-standards: checkout must be true or false, not '$CHECKOUT'"
+            exit 1
+            ;;
+        esac
+        { echo "sha=$sha"; echo "path=$path"; } >>"$GITHUB_OUTPUT"

@@ -76,7 +76,7 @@ function write(root, file, content) {
 }
 
 /** Commit `base`, then `head` on top, and run the check from the head. */
-function check({ base, head, policyText = policy() }) {
+function check({ base, head, policyText = policy(), env = {} }) {
   const root = makeTemporaryDirectory("surface-");
   git(root, ["init", "-q", "-b", "main"]);
   git(root, ["config", "user.email", "test@example.invalid"]);
@@ -96,6 +96,7 @@ function check({ base, head, policyText = policy() }) {
   const result = spawnSync(process.execPath, [SCRIPT, "base", REPOSITORY], {
     cwd: root,
     encoding: "utf8",
+    env: { ...process.env, GITHUB_STEP_SUMMARY: "", ...env },
   });
   return { status: result.status, output: result.stdout + result.stderr };
 }
@@ -317,18 +318,89 @@ test("a reusable with no contract entry is reported and passes", () => {
   );
 });
 
-test("a missing policy file fails with a named error", () => {
+// A local repository standing in for melodic-software/standards, holding
+// `policyText` (or nothing) at components/runner-policy/policy.json, and the
+// env that points checkout-standards at it.
+function standards(policyText) {
+  const root = makeTemporaryDirectory("surface-standards-");
+  const upstream = path.join(root, "standards");
+  fs.mkdirSync(upstream);
+  git(upstream, ["init", "-q", "-b", "main"]);
+  git(upstream, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
+  write(upstream, "README.md", "standards\n");
+  if (policyText !== null) {
+    write(upstream, "components/runner-policy/policy.json", policyText);
+  }
+  git(upstream, ["add", "-A"]);
+  git(upstream, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "standards",
+  ]);
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: upstream,
+    encoding: "utf8",
+  }).trim();
+  fs.mkdirSync(path.join(root, "temp"));
+  return {
+    sha,
+    env: {
+      RUNNER_TEMP: path.join(root, "temp"),
+      STANDARDS_REF: "main",
+      STANDARDS_URL: `file://${upstream}`,
+    },
+  };
+}
+
+test("with no synced copy, standards' own contract is checked at the resolved commit", () => {
+  const { sha, env } = standards(policy());
+  const { status, output } = check({
+    base: { [REUSABLE]: BASE_REUSABLE },
+    head: { [POLICY_PATH]: null, [REUSABLE]: WITHOUT_LABEL },
+    env,
+  });
+  assert.equal(status, 1);
+  assert.match(errors(output)[0], /input 'label' was removed or renamed/u);
+  assert.match(
+    output,
+    new RegExp(
+      `against melodic-software/standards components/runner-policy/policy.json at ${sha}`,
+      "u",
+    ),
+  );
+});
+
+test("the synced copy wins over standards' contract", () => {
+  const { env } = standards(policy({ allowedInputs: ["runner"] }));
+  const { status, output } = check({
+    base: { [REUSABLE]: BASE_REUSABLE },
+    head: { [REUSABLE]: WITHOUT_LABEL },
+    env,
+  });
+  assert.equal(status, 1);
+  assert.match(errors(output)[0], /input 'label' was removed or renamed/u);
+  assert.match(output, new RegExp(`against ${POLICY_PATH}:`, "u"));
+});
+
+test("with no synced copy and no contract in standards, the check fails with a named error", () => {
+  const { sha, env } = standards(null);
   const { status, output } = check({
     base: { [REUSABLE]: BASE_REUSABLE },
     head: { [POLICY_PATH]: null },
+    env,
   });
   assert.equal(status, 1);
   assert.deepEqual(errors(output), [
-    `::error::runner-policy contract missing: ${POLICY_PATH} does not exist. Restore ${POLICY_PATH} by reverting the change that removed or broke it, or let the standards component sync (runner-policy-contract) deliver it.`,
+    `::error::runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards at ${sha} has no components/runner-policy/policy.json.`,
   ]);
 });
 
-test("an unparseable policy file fails with a named error", () => {
+test("an unparsable policy file fails with a named error", () => {
   const { status, output } = check({
     base: { [REUSABLE]: BASE_REUSABLE },
     head: { [POLICY_PATH]: "{ not json" },
@@ -336,7 +408,7 @@ test("an unparseable policy file fails with a named error", () => {
   assert.equal(status, 1);
   const found = errors(output);
   assert.equal(found.length, 1, output);
-  assert.match(found[0], /^::error::runner-policy contract unparseable: /u);
+  assert.match(found[0], /^::error::runner-policy contract unparsable: /u);
 });
 
 test("a policy without approvedReusableWorkflowContracts fails with a named error", () => {

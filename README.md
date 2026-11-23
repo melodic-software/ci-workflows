@@ -159,7 +159,9 @@ consumer to audit it.
   class (`own`, `patch`, `minor`, `major`) come from the org update policy, the
   standards `dependabot-policy` `cooldownDays`, read from the standards-synced
   copy the `dependabot-policy` input names (default
-  `.github/standards/dependabot-policy/policy.json`). A policy file that still
+  `.github/standards/dependabot-policy/policy.json`), or, when the default copy
+  is absent, from standards' own file at `standards-ref` (see
+  `checkout-standards`). A policy file that still
   sets `cooldownDays` keeps its own values; with neither, `prepare` fails rather
   than assume a cooldown. Below 1.0 a minor move is class `major` (as the
   Dependabot gate treats it), and `line: major` then keeps the minor number. A
@@ -179,8 +181,9 @@ consumer to audit it.
   read the bump from `VERSION_BUMP_READY`.
 - `.github/actions/check-dependabot-policy` — checks a repository's
   `.github/dependabot.yml` against the org update policy, the standards-synced
-  `.github/standards/dependabot-policy/policy.json`, and fails closed (exit 2)
-  when that copy is absent. It runs the standards `dependabot-policy` analyzer's
+  `.github/standards/dependabot-policy/policy.json`, or standards' own
+  `components/dependabot-policy/policy.json` at `standards-ref` when that copy
+  is absent, and fails closed (exit 2) when neither can be read. It runs the standards `dependabot-policy` analyzer's
   rules (schedule, cooldown floor, groups, open-pull-request cap, disabling
   ignores, the `.github/dependabot-policy.json` exceptions) plus two that
   analyzer does not: `cooldown.semver-major-days`, when set, is at least the
@@ -672,10 +675,10 @@ consumer to audit it.
   carry the defect they gate on. This repo's own `pr-require-checks.yml` `changes` job is
   the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
-  reference-integrity over the repo's docs (deterministic; no network). A
-  caller with no root `lychee.toml` gets the canonical one this repository
-  carries from the standards sync, so a repository outside that sync needs no
-  copy of its own.
+  reference-integrity over the repo's docs (deterministic; no network for the
+  check itself). A caller with no root `lychee.toml` gets standards' canonical
+  one at `standards-ref` (see `checkout-standards`), so a repository outside
+  the standards sync needs no copy of its own.
 - `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
@@ -703,6 +706,25 @@ consumer to audit it.
   change a pattern there, a driver here.
 - `.github/actions/check-line-endings` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
+- `.github/actions/checkout-standards` — resolves a ref of
+  `melodic-software/standards` (`ref`, default `main`; a full SHA is taken as
+  given) to one commit with an anonymous `git ls-remote`, writes it to the step
+  summary and the `sha` output, and checks that commit out read-only: a depth-1
+  anonymous fetch into `$RUNNER_TEMP`, outside the workspace, with no remote or
+  credential stored (`path` output; `checkout: 'false'` resolves only). A job
+  resolves a branch once, so every reader in the job sees one commit; pass
+  `sha` to the other jobs of a run, as their `ref` or a reader's
+  `standards-ref`, so the run sees one too. The composites whose config is
+  synced from standards fall back to the standards file through this action's
+  `lib.sh` when the caller has no copy at the default path, and keep the
+  caller's copy when it has one: `gitleaks` (`.gitleaks.toml`),
+  `editorconfig-checker` (`.editorconfig-checker.json`), `lychee-offline`
+  (`lychee.toml`), `shellcheck` (`.shellcheckrc`), `actionlint`
+  (`.github/actionlint.yaml`), `check-dependabot-policy` and `bump-versions`
+  (`components/dependabot-policy/policy.json`), `automerge-dependabot`'s gate
+  (the same policy) and `collect-settled-threads`
+  (`components/trusted-actors/trusted-actors.json`). Each takes a
+  `standards-ref` input, default `main`.
 - `.github/actions/check-workflow-naming` — runs the standards
   [`github-actions-conventions`][gh-actions-conventions] naming-lint over
   workflow file names, workflow `name:` values, job ids and composite action
@@ -1002,8 +1024,10 @@ consumer to audit it.
   settled-threads step, with no model: the pull request's review threads a
   listed account resolved or a listed person answered, text kept only through claude-code-plugins'
   `select-trusted-text`, each with whether its lines changed since it was
-  settled, so the review does not re-raise a settled point (its
-  `action.yml` describes what it does).
+  settled, so the review does not re-raise a settled point. The trusted-actor
+  list is the base commit's synced copy, or standards' own at `standards-ref`
+  when the base has none; when neither can be read the step fails and writes
+  nothing (its `action.yml` describes what it does).
 - `.github/actions/collect-prior-findings` — `pr-review-cli.yml`'s
   prior-findings step, with no model: runs claude-code-plugins'
   `prior-findings.mjs` for the lane's own earlier findings and its rounds
@@ -1384,11 +1408,12 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `.github/standards/dependabot-policy/policy.json`, it is that copy's
   `tier: auto` publishers plus its `fastTrack` `github-actions` and `own` globs
   (`melodic-software/*`). The copy is read through the contents API at the base
-  commit, so the pull request cannot change it. Whatever the input, a synced
-  copy also narrows: its `autoMerge.ecosystems` bound the ecosystems armed, and
-  its `autoMerge.reviewOnly` dependencies for this repository are never armed.
-  A copy that cannot be read or parsed arms nothing, and with no copy the
-  input stands, as before. No
+  commit, so the pull request cannot change it; with no copy there, standards'
+  own `components/dependabot-policy/policy.json` at one resolved commit (see
+  `checkout-standards`) takes its place. Whatever the input, the policy also
+  narrows: its `autoMerge.ecosystems` bound the ecosystems armed, and its
+  `autoMerge.reviewOnly` dependencies for this repository are never armed. A
+  policy that cannot be read or parsed arms nothing. No
   package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its

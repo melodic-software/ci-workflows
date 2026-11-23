@@ -1,5 +1,7 @@
 name: Shellcheck
-description: Lint shell scripts with ShellCheck against a caller-supplied rcfile.
+description: >-
+  Lint shell scripts with ShellCheck against the caller's rcfile, or
+  standards' when the caller has none.
 
 inputs:
   files:
@@ -47,8 +49,17 @@ inputs:
       *.sh/*.bash lane. Requires at least one non-blank `extra-globs` entry.
     default: ''
   rcfile:
-    description: Path to the .shellcheckrc ruleset in the caller repo.
+    description: >-
+      Path to the .shellcheckrc ruleset in the caller repo. When the default
+      path is absent, melodic-software/standards' own .shellcheckrc at
+      `standards-ref` is used instead.
     default: .shellcheckrc
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the rcfile
+      falls back to (see the checkout-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   exclude:
     description: >-
       Path substrings to skip, space-separated (e.g. intentionally-bad
@@ -113,6 +124,7 @@ runs:
         EXTRA_GLOBS: ${{ inputs.extra-globs }}
         EXTRA_EXCLUDE_CODES: ${{ inputs.extra-exclude-codes }}
         RCFILE: ${{ inputs.rcfile }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         EXCLUDE: ${{ inputs.exclude }}
         SEVERITY: ${{ inputs.severity }}
         # Pinned so an inherited caller env cannot change or abort the fan-out.

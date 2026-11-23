@@ -152,6 +152,7 @@ jobs:
               .github/workflows/**
               .github/standards/runner-policy-contract/**
               .github/scripts/check-workflow-call-surface.cjs
+              .github/actions/checkout-standards/**
             selector-contract:
               .github/**
               .node-version
@@ -587,6 +588,8 @@ jobs:
         run: bash .github/actions/check-comment-markers/scan-tree.test.sh
       - name: Test the workflow-naming runner
         run: bash .github/actions/check-workflow-naming/run.test.sh
+      - name: Test the checkout-standards resolver and config fallback
+        run: bash .github/actions/checkout-standards/checkout.test.sh
       - name: Install the version-bump engine's pinned yq
         # The engine's own-policy test reads .github/version-bump/policy.yaml with it.
         run: bash .github/actions/bump-versions/install-tools.sh

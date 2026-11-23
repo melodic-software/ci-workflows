@@ -27,6 +27,13 @@ inputs:
   review-only-dependencies:
     description: JSON array of package names never armed.
     required: true
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards whose
+      dependabot policy applies when the base commit holds no synced copy
+      (see the checkout-standards action).
+    required: false
+    default: main
 
 runs:
   using: composite
@@ -41,6 +48,7 @@ runs:
         PUBLISHER_ALLOWLIST: ${{ inputs.publisher-allowlist }}
         PACKAGE_AUTO_MERGE: ${{ inputs.package-auto-merge }}
         REVIEW_ONLY_DEPENDENCIES: ${{ inputs.review-only-dependencies }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
       with:
         script: |
           const path = require("node:path");

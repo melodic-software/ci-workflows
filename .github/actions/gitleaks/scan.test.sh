@@ -283,5 +283,33 @@ if CONFIG="$temporary_directory/config.toml" GITHUB_WORKSPACE="$temporary_direct
   exit 1
 fi
 
+# The default config path falls back to standards' copy when the caller has
+# none, and the caller's own file wins when it has one. A local repository
+# stands in for melodic-software/standards.
+standards="$temporary_directory/standards"
+git -c init.defaultBranch=main init -q "$standards"
+git -C "$standards" config uploadpack.allowAnySHA1InWant true
+printf '[extend]\nuseDefault = true\n' >"$standards/.gitleaks.toml"
+git -C "$standards" add .gitleaks.toml
+git -C "$standards" -c user.name='CI Test' -c user.email='ci-test@example.invalid' commit -qm standards
+standards_sha="$(git -C "$standards" rev-parse HEAD)"
+fallback_workspace="$temporary_directory/fallback-workspace"
+mkdir -- "$fallback_workspace" "$temporary_directory/runner-temp"
+# scan_default_config: scans fallback_workspace with the default config path.
+scan_default_config() {
+  (cd "$fallback_workspace" &&
+    CAPTURED_ARGS="$temporary_directory/args" CONFIG=.gitleaks.toml FAKE_MODE=clean \
+      GITHUB_WORKSPACE="$fallback_workspace" PATH="$temporary_directory/bin:$PATH" PATH_TO_SCAN=. \
+      RUNNER_TEMP="$temporary_directory/runner-temp" SCAN_MODE=dir REPORT_FORMAT='' REPORT_PATH='' \
+      REDACT=true STANDARDS_REF=main STANDARDS_URL="file://$standards" GITHUB_STEP_SUMMARY='' \
+      bash "$action_dir/scan.sh" >/dev/null 2>&1)
+}
+scan_default_config
+assert_captured_args 'standards fallback config' \
+  dir . --config "$temporary_directory/runner-temp/ci-workflows-standards/$standards_sha/.gitleaks.toml" --no-banner --redact
+printf '[extend]\nuseDefault = true\n' >"$fallback_workspace/.gitleaks.toml"
+scan_default_config
+assert_captured_args 'in-tree config wins' dir . --config .gitleaks.toml --no-banner --redact
+
 grep -F "default: 'true'" "$action_dir/action.yml" >/dev/null
 grep -F 'always redacted' "$action_dir/action.yml" >/dev/null
