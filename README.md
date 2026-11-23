@@ -240,6 +240,19 @@ consumer to audit it.
   self-hosted workers.
 - `.github/actions/check-jsonschema` — check-jsonschema validation of JSON/YAML
   against one schema per call (call once per schema group).
+- `.github/actions/check-graphql-operations` — validates the GraphQL operations
+  in the caller's tracked JS, shell, workflow and Python files under `paths`
+  (default `.github`) against GitHub's public schema, which this repository
+  owns as `schemas/github/schema.docs.graphql.gz`; `check.cjs`'s header states
+  what it extracts. Sites it cannot read (an interpolated field, a shorthand
+  query, `query=@file`, a request site with no extracted operation) fail
+  unless the caller's `allowlist` file lists each file's count with a reason;
+  `exclude <prefix> <reason>` rows skip paths whose operations go to another
+  GraphQL API. graphql installs from this repository's root lockfile. This
+  repository checks its own `.github/` in
+  `.github/scripts/check-graphql-operations.test.cjs`. Refresh the schema with
+  `gzip -9 -n` over <https://docs.github.com/public/fpt/schema.docs.graphql>
+  when an operation needs a newer field.
 - `.github/actions/pr-require-checks/aggregate-results` — aggregates a caller-built `needs.*.result` string
   into the single required gate check: `success` passes, anything else fails
   naming the offending result. `treat-skipped-as` is the caller's policy for
