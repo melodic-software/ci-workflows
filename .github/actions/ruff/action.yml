@@ -20,7 +20,7 @@ inputs:
     description: Exact Ruff version to run.
     # Keep in step with the fleet pin in melodic-software/dotfiles
     # (.chezmoidata/uv-tools.yaml), or developers see findings CI cannot.
-    default: 0.16.5
+    default: 0.16.10
   python-version:
     description: Exact Python patch version uv provisions for the ephemeral tool environment.
     default: '3.14.7'
