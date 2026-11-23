@@ -44,13 +44,13 @@ on:
         type: string
         # Keep in step with the fleet pin in melodic-software/dotfiles
         # (.chezmoidata/uv-tools.yaml), or local and lane findings diverge.
-        default: v1.30.0
+        default: v1.32.0
       sha256:
         description: >-
           SHA-256 of the x86_64-unknown-linux-gnu release archive. Change
           together with version.
         type: string
-        default: ec8c95cd800845abb9bbc5f377ec7c57d2eb8e2386a00a201d3a74ee4092e5ed
+        default: bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b
       online-audits:
         description: Run online audits (uses the workflow token).
         type: boolean
@@ -122,7 +122,7 @@ jobs:
           FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
           UPLOAD_SARIF: ${{ inputs.upload-sarif }}
           ZIZMOR_TOKEN: ${{ github.token }}
-          PINNED_VERSION: 1.30.0
+          PINNED_VERSION: 1.32.0
           ASSET_NAME: zizmor-x86_64-unknown-linux-gnu.tar.gz
         run: |
           set -euo pipefail
