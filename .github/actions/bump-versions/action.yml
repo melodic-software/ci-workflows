@@ -57,7 +57,7 @@ inputs:
   python-version:
     description: Exact Python patch version for the engine (command prepare).
     required: false
-    default: '3.14.7'
+    default: '3.14.10'
 
 outputs:
   prepared-count:
