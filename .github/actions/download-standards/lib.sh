@@ -27,8 +27,10 @@ standards_retry() {
 # uses. <given> wins when the repository has it (a symlink counts, so the
 # reader's own checks still see it). When it is absent and is the reader's
 # default path, the standards copy at <source> in the checkout of
-# STANDARDS_REF is used instead. A missing non-default path stays an error
-# (exit 2): the caller named a file it does not have.
+# STANDARDS_REF is used instead. Every way to end with no config returns 2,
+# the config error the readers document: a missing non-default path (the
+# caller named a file it does not have), a standards checkout that fails, and
+# a standards commit without <source>.
 standards_config() {
   local given="$1" default="$2" source="$3" checkout
   if [[ -e $given || -L $given ]]; then
@@ -39,7 +41,7 @@ standards_config() {
     echo "::error::config file not found: $given" >&2
     return 2
   fi
-  checkout="$(bash "${BASH_SOURCE[0]%/*}/checkout.sh")" || return 1
+  checkout="$(bash "${BASH_SOURCE[0]%/*}/checkout.sh")" || return 2
   if [[ ! -f $checkout/$source ]]; then
     echo "::error::the repository has no $given, and melodic-software/standards at ${checkout##*/} has no $source" >&2
     return 2

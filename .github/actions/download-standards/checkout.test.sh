@@ -122,6 +122,17 @@ config docs/.gitleaks.toml .gitleaks.toml .gitleaks.toml
 config .gitleaks.toml .gitleaks.toml absent.toml
 [[ $rc -eq 2 && $err == *"has no absent.toml"* ]] || fail "missing standards file: exit $rc ($err)"
 
+# A standards checkout that fails is a config error too (exit 2), and a
+# reader's `X="$(standards_config ...)"` under set -e exits with it.
+new_job 6
+STANDARDS_URL="file://$temporary_directory/absent" config .gitleaks.toml .gitleaks.toml .gitleaks.toml
+[[ $rc -eq 2 && -z $out && $err == *"failed after 3 tries"* ]] || fail "unreachable standards: exit $rc ($err)"
+rc=0
+(cd "$caller" && STANDARDS_URL="file://$temporary_directory/absent" bash -euo pipefail -c \
+  'source "$1/lib.sh"; POLICY="$(standards_config .gitleaks.toml .gitleaks.toml .gitleaks.toml)"; echo "$POLICY"' \
+  _ "$action_directory" >/dev/null 2>&1) || rc=$?
+[[ $rc -eq 2 ]] || fail "unreachable standards in a reader's step: exit $rc"
+
 if ((failures > 0)); then
   printf '%d download-standards test(s) failed\n' "$failures"
   exit 1
