@@ -3,7 +3,6 @@
 set -euo pipefail
 
 action_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repository_root="$(cd "$action_directory/../../.." && pwd)"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 caller="$temporary_directory/caller"
@@ -17,6 +16,18 @@ printf '%s\n' "$@" >"$CAPTURE"
 FAKE
 chmod +x "$fake_bin/lychee"
 capture="$temporary_directory/args"
+
+# A local repository stands in for melodic-software/standards.
+standards="$temporary_directory/standards"
+git -c init.defaultBranch=main init -q "$standards"
+git -C "$standards" config uploadpack.allowAnySHA1InWant true
+printf 'include_fragments = "full"\n' >"$standards/lychee.toml"
+git -C "$standards" add lychee.toml
+git -C "$standards" -c user.name=t -c user.email=t@example.invalid commit -qm standards
+standards_sha="$(git -C "$standards" rev-parse HEAD)"
+export STANDARDS_REF=main STANDARDS_URL="file://$standards" RUNNER_TEMP="$temporary_directory/runner-temp" GITHUB_STEP_SUMMARY=''
+mkdir -p -- "$RUNNER_TEMP"
+standards_copy="$RUNNER_TEMP/ci-workflows-standards/$standards_sha/lychee.toml"
 
 failures=0
 fail() {
@@ -42,14 +53,14 @@ run "$action_directory/run.sh" lychee.toml
 used="$(config_argument)"
 [[ "$used" == lychee.toml ]] || fail "caller config: lychee got --config $used"
 
-# Without one, the default path falls back to this repository's canonical copy.
+# Without one, the default path falls back to standards' canonical copy.
 rm -- "$caller/lychee.toml"
 rm -f -- "$capture"
 run "$action_directory/run.sh" lychee.toml
-[[ "$rc" -eq 0 ]] || fail "bundled config: exit $rc ($out)"
+[[ "$rc" -eq 0 ]] || fail "standards config: exit $rc ($out)"
 used="$(config_argument)"
-[[ "$used" == "$repository_root/lychee.toml" ]] || fail "bundled config: lychee got --config $used"
-[[ "$out" == *"config $repository_root/lychee.toml"* ]] || fail "bundled config: the log does not name the config used"
+[[ "$used" == "$standards_copy" ]] || fail "standards config: lychee got --config $used"
+[[ "$out" == *"config $standards_copy"* ]] || fail "standards config: the log does not name the config used"
 
 # A non-default path that does not exist fails without running lychee.
 rm -f -- "$capture"
@@ -57,13 +68,14 @@ run "$action_directory/run.sh" docs/lychee.toml
 [[ "$rc" -eq 2 ]] || fail "missing custom config: exit $rc, want 2"
 [[ ! -f "$capture" ]] || fail "missing custom config: lychee ran"
 
-# A missing bundled copy fails loudly rather than running unconfigured.
-isolated="$temporary_directory/isolated/.github/actions/lychee-offline"
-mkdir -p -- "$isolated"
-cp -- "$action_directory/run.sh" "$isolated/run.sh"
-run "$isolated/run.sh" lychee.toml
-[[ "$rc" -eq 2 ]] || fail "missing bundled config: exit $rc, want 2"
-[[ "$out" == *"bundled canonical copy is missing"* ]] || fail "missing bundled config: unexpected message ($out)"
+# A standards commit without the ruleset fails loudly rather than running unconfigured.
+rm -f -- "$capture"
+git -C "$standards" rm -q lychee.toml
+git -C "$standards" -c user.name=t -c user.email=t@example.invalid commit -qm 'drop lychee.toml'
+STANDARDS_REF="$(git -C "$standards" rev-parse HEAD)" run "$action_directory/run.sh" lychee.toml
+[[ "$rc" -eq 2 ]] || fail "missing standards config: exit $rc, want 2"
+[[ "$out" == *"has no lychee.toml"* ]] || fail "missing standards config: unexpected message ($out)"
+[[ ! -f "$capture" ]] || fail "missing standards config: lychee ran"
 
 # Exclude regexes pass through unexpanded, one --exclude-path each.
 run "$action_directory/run.sh" lychee.toml '(^|/)fixtures/ docs/*/captured/'

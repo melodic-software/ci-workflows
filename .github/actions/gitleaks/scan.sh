@@ -11,6 +11,8 @@ REDACT="${REDACT:-}"
 REPORT_FORMAT="${REPORT_FORMAT:-}"
 REPORT_PATH="${REPORT_PATH:-}"
 SCAN_MODE="${SCAN_MODE:-}"
+# shellcheck source=../download-standards/lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
 
 workspace="$(realpath -e -- "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}")" || {
   echo '::error::gitleaks: workspace cannot be resolved'
@@ -23,12 +25,17 @@ require_within_workspace() {
   exit 2
 }
 
+given_config="$CONFIG"
+CONFIG="$(standards_config "$CONFIG" .gitleaks.toml .gitleaks.toml)"
 if [[ ! -f "$CONFIG" || -L "$CONFIG" ]]; then
   echo "::error::gitleaks: config must be a regular, non-symlink file: $CONFIG"
   exit 2
 fi
 resolved_config="$(realpath -e -- "$CONFIG")"
-require_within_workspace "$resolved_config" config "$CONFIG"
+# The standards copy sits in this job's own checkout under RUNNER_TEMP.
+if [[ "$CONFIG" == "$given_config" ]]; then
+  require_within_workspace "$resolved_config" config "$CONFIG"
+fi
 if [[ ! -e "$PATH_TO_SCAN" || -L "$PATH_TO_SCAN" ]]; then
   echo "::error::gitleaks: scan path must exist and cannot be a symlink: $PATH_TO_SCAN"
   exit 2

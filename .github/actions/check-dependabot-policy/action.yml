@@ -1,17 +1,28 @@
 name: Check Dependabot Policy
 description: >-
   Check the caller's Dependabot config against the organization dependency-update
-  policy. A consumer calls it as a step of its ci-status lane jobs. It fails
-  closed (exit 2) when the synced policy from the standards dependabot-policy
-  component is absent.
+  policy. A consumer calls it as a step of its ci-status lane jobs. The
+  policy is the repository's synced copy of the standards dependabot-policy
+  component, or standards' own when the copy is absent; it fails closed
+  (exit 2) when neither can be read.
 
 inputs:
   root:
     description: Repository root the other paths resolve against.
     default: '.'
   policy:
-    description: Path to the synced policy file, relative to root.
+    description: >-
+      Path to the synced policy file, relative to root. When the default path
+      is absent, melodic-software/standards'
+      components/dependabot-policy/policy.json at `standards-ref` is used
+      instead.
     default: .github/standards/dependabot-policy/policy.json
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the policy
+      falls back to (see the download-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   config:
     description: Path to the repository's exception file, relative to root.
     default: .github/dependabot-policy.json
@@ -35,10 +46,16 @@ runs:
       env:
         ROOT: ${{ inputs.root }}
         POLICY: ${{ inputs.policy }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         CONFIG: ${{ inputs.config }}
         DEPENDABOT: ${{ inputs.dependabot }}
       run: |
         set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../download-standards/lib.sh"
+        # The policy path is relative to root; standards_config tests it
+        # against the working directory.
+        POLICY="$(cd "$ROOT" && standards_config "$POLICY" \
+          .github/standards/dependabot-policy/policy.json components/dependabot-policy/policy.json)"
 
         dir="$(mktemp -d "${RUNNER_TEMP%/}/check-dependabot-policy.XXXXXXXX")"
         cp "$GITHUB_ACTION_PATH/package.json" "$GITHUB_ACTION_PATH/package-lock.json" \

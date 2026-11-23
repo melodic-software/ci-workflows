@@ -4,8 +4,9 @@
 //
 // Env: PR_NUMBER, HEAD_SHA, BASE_SHA, HEAD_REF, SOURCE (the claude-code-plugins
 // default-branch clone the plugin step staged), GIT_TOKEN (the job token),
-// OUTPUT_FILE. Text comes only through claude-code-plugins'
-// select-trusted-text, run against the trusted-actor list at the base commit:
+// OUTPUT_FILE, STANDARDS_REF. Text comes only through claude-code-plugins'
+// select-trusted-text, run against the trusted-actor list at the base commit
+// (or, with no copy there, standards' own at one resolved commit):
 // a comment body is written only when that action kept it, or when it is
 // this review lane's own unedited finding (laneFinding). A thread is
 // settled when a listed account resolved it, or a listed human replied in it.
@@ -20,6 +21,8 @@ const { pathToFileURL } = require("node:url");
 
 const SHA = /^[0-9a-f]{40}$/u;
 const LIST_PATH = ".github/standards/trusted-actors/trusted-actors.json";
+// The same list in melodic-software/standards, read when the copy is absent.
+const STANDARDS_LIST_PATH = "components/trusted-actors/trusted-actors.json";
 const MAX_THREADS = 50;
 const MAX_BODY = 4000;
 const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
@@ -204,7 +207,18 @@ function render(entries, more) {
   return `${lines.join("\n")}\n`;
 }
 
-async function run({ github, context, core }) {
+// standards' trusted-actor list at the commit download-standards resolves
+// for env.STANDARDS_REF. Throws when it cannot be read.
+function readStandardsList(env) {
+  const checkout = execFileSync(
+    "bash",
+    [path.join(__dirname, "..", "download-standards", "checkout.sh")],
+    { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+  ).trim();
+  return fs.readFileSync(path.join(checkout, STANDARDS_LIST_PATH), "utf8");
+}
+
+async function run({ github, context, core, readStandards = readStandardsList }) {
   const env = process.env;
   const { owner, repo } = context.repo;
   const head = env.HEAD_SHA;
@@ -222,15 +236,20 @@ async function run({ github, context, core }) {
   }
   const temp = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "settled-threads-"));
 
-  // The trusted-actor list from the base commit, never the head.
+  // The trusted-actor list: the base commit's synced copy, never the head's;
+  // with none there, standards' own at the run's resolved commit. Any other
+  // failure to read it fails the step, so nothing is written on a guess.
   let list;
   try {
     list = (
       await github.rest.repos.getContent({ owner, repo, path: LIST_PATH, ref: env.BASE_SHA, mediaType: { format: "raw" } })
     ).data;
   } catch (error) {
-    core.info(`No trusted-actor list at the base commit (${error.status ?? error.message}); no settled threads are written.`);
-    return;
+    if (error.status !== 404) {
+      throw new Error(`The trusted-actor list could not be read at the base commit: ${error.message}`);
+    }
+    core.info(`No trusted-actor list at the base commit; reading ${STANDARDS_LIST_PATH} from melodic-software/standards.`);
+    list = readStandards(env);
   }
   const listFile = path.join(temp, "trusted-actors.json");
   fs.writeFileSync(listFile, String(list));

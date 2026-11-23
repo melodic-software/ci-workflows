@@ -108,9 +108,12 @@ async function runGate({
   // The synced policy at the base: absent (404) unless a text or an error is given.
   basePolicy = undefined,
   basePolicyError = undefined,
+  // What the standards read returns when the base has no copy.
+  standardsPolicy = { text: syncedPolicy() },
 } = {}) {
   const graphqlCalls = [];
   const policyReads = [];
+  const standardsReads = [];
   const notices = [];
   const env = {
     UPDATED_DEPENDENCIES_JSON: metadataJson,
@@ -166,14 +169,30 @@ async function runGate({
     warning: (message) => warnings.push(message),
     info: () => {},
   };
-  await runEvent({ github, context, core, env });
+  await runEvent({
+    github,
+    context,
+    core,
+    env,
+    readStandards: (readEnv) => {
+      standardsReads.push(readEnv);
+      return standardsPolicy;
+    },
+  });
   const armCalls = graphqlCalls.filter((call) =>
     /enablePullRequestAutoMerge/u.test(call.query),
   );
   const disarmCalls = graphqlCalls.filter((call) =>
     /disablePullRequestAutoMerge/u.test(call.query),
   );
-  return { armCalls, disarmCalls, notices, warnings, policyReads };
+  return {
+    armCalls,
+    disarmCalls,
+    notices,
+    warnings,
+    policyReads,
+    standardsReads,
+  };
 }
 
 function assertSkipped(result, reason) {
@@ -277,14 +296,38 @@ test("the synced policy is read at the base commit, never the head", async () =>
   ]);
 });
 
-test("with no synced policy, an own action stays outside the default allowlist", async () => {
+test("with no synced copy at the base, the standards policy's fast track arms an own action", async () => {
+  const { armCalls, notices, policyReads, standardsReads } = await runGate({
+    updates: [
+      update("melodic-software/ci-workflows", "version-update:semver-patch"),
+    ],
+  });
+  assert.equal(policyReads.length, 1);
+  assert.equal(standardsReads.length, 1);
+  assert.deepEqual(notices, []);
+  assert.equal(armCalls.length, 1);
+});
+
+test("a synced copy at the base wins over the standards policy", async () => {
+  const { standardsReads, notices } = await runGate({
+    updates: [
+      update("melodic-software/ci-workflows", "version-update:semver-patch"),
+    ],
+    basePolicy: syncedPolicy({ fastTrack: { "github-actions": [], own: [] } }),
+  });
+  assert.equal(standardsReads.length, 0);
+  assert.match(
+    notices[0],
+    /melodic-software\/ci-workflows is not an allowlisted publisher/u,
+  );
+});
+
+test("with no synced copy and no readable standards policy, nothing arms", async () => {
   assertSkipped(
     await runGate({
-      updates: [
-        update("melodic-software/ci-workflows", "version-update:semver-patch"),
-      ],
+      standardsPolicy: { failure: "the standards policy could not be read" },
     }),
-    /melodic-software\/ci-workflows is not an allowlisted publisher/u,
+    /the standards policy could not be read/u,
   );
 });
 
@@ -347,13 +390,6 @@ test("with the synced policy, an own action's minor below 1.0 arms", async () =>
   });
   assert.deepEqual(notices, []);
   assert.equal(armCalls.length, 1);
-});
-
-test("with no synced policy, an allowlisted own action's minor below 1.0 is skipped", async () => {
-  assertSkipped(
-    await runGate({ updates: [ownMinor()], publisherAllowlist: OWN_ALLOWLIST }),
-    belowOne(PSSA),
-  );
 });
 
 test("a synced policy without fastTrack.own exempts no allowlisted name below 1.0", async () => {
@@ -924,6 +960,19 @@ for (const ecosystem of ["docker", "dotnet_sdk"]) {
     assertSkipped(
       await runGate({
         updates: [update("thing", "version-update:semver-patch", ecosystem)],
+        // A policy that would arm the ecosystem leaves the gate's own check.
+        standardsPolicy: {
+          text: syncedPolicy({
+            ecosystems: [
+              "github-actions",
+              "npm",
+              "pip",
+              "uv",
+              "nuget",
+              ecosystem,
+            ],
+          }),
+        },
       }),
       /thing is not a GitHub Actions, npm, pip, uv or NuGet update/u,
     );
@@ -1105,4 +1154,49 @@ test("any other arm failure still fails the job", async () => {
     runGate({ armError: new Error("Head sha did not match") }),
     /Head sha did not match/u,
   );
+});
+
+test("the standards read checks out the resolved commit and fails closed without it", () => {
+  const { execFileSync } = require("node:child_process");
+  const os = require("node:os");
+  const { STANDARDS_POLICY_PATH, readStandardsPolicy } = require(
+    path.join(actionDir, "gate.cjs"),
+  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gate-standards-"));
+  try {
+    const standards = path.join(root, "standards");
+    const git = (...args) => execFileSync("git", ["-C", standards, ...args]);
+    fs.mkdirSync(path.join(standards, path.dirname(STANDARDS_POLICY_PATH)), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(standards, STANDARDS_POLICY_PATH),
+      syncedPolicy(),
+    );
+    git("-c", "init.defaultBranch=main", "init", "-q");
+    git("config", "uploadpack.allowAnySHA1InWant", "true");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.invalid",
+      "commit",
+      "-qm",
+      "s",
+    );
+    fs.mkdirSync(path.join(root, "temp"));
+    const env = {
+      PATH: process.env.PATH,
+      RUNNER_TEMP: path.join(root, "temp"),
+      STANDARDS_REF: "main",
+      STANDARDS_URL: `file://${standards}`,
+    };
+    assert.deepEqual(readStandardsPolicy(env), { text: syncedPolicy() });
+    const missing = readStandardsPolicy({ ...env, STANDARDS_REF: "absent" });
+    assert.equal(missing.text, undefined);
+    assert.match(missing.failure, /could not be read/u);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

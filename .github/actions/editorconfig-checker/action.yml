@@ -1,7 +1,7 @@
 name: EditorConfig Checker
 description: >-
   Validate files against the repo .editorconfig with editorconfig-checker,
-  using a caller-supplied config.
+  using the caller's config, or standards' when the caller has none.
 
 inputs:
   paths:
@@ -15,8 +15,18 @@ inputs:
       when given FILE arguments).
     default: ''
   config:
-    description: Path to the editorconfig-checker JSON config in the caller repo.
+    description: >-
+      Path to the editorconfig-checker JSON config in the caller repo. When
+      the default path is absent, melodic-software/standards' own
+      .editorconfig-checker.json at `standards-ref` is used instead. The
+      .editorconfig rules themselves are always the caller's.
     default: .editorconfig-checker.json
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the download-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   exclude:
     description: >-
       A single regular expression of paths to skip (e.g. intentionally-bad
@@ -79,14 +89,13 @@ runs:
       env:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         EXCLUDE: ${{ inputs.exclude }}
         FORMAT: ${{ inputs.format }}
       run: |
         set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::editorconfig: config file not found: $CONFIG"
-          exit 2
-        fi
+        source "$GITHUB_ACTION_PATH/../download-standards/lib.sh"
+        CONFIG="$(standards_config "$CONFIG" .editorconfig-checker.json .editorconfig-checker.json)"
         args=(-config "$CONFIG")
         if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi
         if [[ -n "${FORMAT// }" ]]; then args+=(-format "$FORMAT"); fi

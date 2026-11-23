@@ -9,9 +9,15 @@ inputs:
   config:
     description: >-
       Path to the lychee.toml ruleset in the caller repo. When the default
-      path is absent, the canonical ruleset this action ships with (this
-      repository's standards-synced root lychee.toml) is used instead.
+      path is absent, melodic-software/standards' canonical lychee.toml at
+      `standards-ref` is used instead.
     default: lychee.toml
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the download-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   exclude:
     description: >-
       Path-exclude regexes, space-separated (e.g. intentionally-bad fixtures).
@@ -67,5 +73,6 @@ runs:
       env:
         GLOBS: ${{ inputs.globs }}
         CONFIG: ${{ inputs.config }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         EXCLUDE: ${{ inputs.exclude }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"

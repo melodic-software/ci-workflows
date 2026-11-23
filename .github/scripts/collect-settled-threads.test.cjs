@@ -308,26 +308,29 @@ function repositories() {
   return { dir, work, resolved, head };
 }
 
-test("run: writes only trusted text and a verdict per thread from a real git diff", async () => {
-  const { dir, work, resolved, head } = repositories();
-  const source = path.join(dir, "source");
-  // claude-code-plugins' lane-binding library, which the review plugin's
-  // copy carries: this run has no footed comment for it to check.
-  const binding = path.join(source, "plugins", "review", "lib");
-  fs.mkdirSync(binding, { recursive: true });
-  fs.writeFileSync(
-    path.join(binding, "lane-binding.mjs"),
-    `export const laneChecker = () => async () => { throw new Error("no lane comment to check"); };
+// The list comes from the base commit's synced copy, or, with none there,
+// from standards' own at the run's commit; either way the file is the same.
+for (const listSource of ["base", "standards"]) {
+  test(`run: writes only trusted text and a verdict per thread from a real git diff (list from the ${listSource})`, async () => {
+    const { dir, work, resolved, head } = repositories();
+    const source = path.join(dir, "source");
+    // claude-code-plugins' lane-binding library, which the review plugin's
+    // copy carries: this run has no footed comment for it to check.
+    const binding = path.join(source, "plugins", "review", "lib");
+    fs.mkdirSync(binding, { recursive: true });
+    fs.writeFileSync(
+      path.join(binding, "lane-binding.mjs"),
+      `export const laneChecker = () => async () => { throw new Error("no lane comment to check"); };
 export const withoutBinding = (body) => body;
 `,
-  );
-  const stub = path.join(source, ".github", "actions", "select-trusted-text");
-  fs.mkdirSync(stub, { recursive: true });
-  // The stub keeps what the real action would: the owner's replies and
-  // findings, never the stranger's text.
-  fs.writeFileSync(
-    path.join(stub, "select-trusted-text.mjs"),
-    `import { writeFileSync } from "node:fs";
+    );
+    const stub = path.join(source, ".github", "actions", "select-trusted-text");
+    fs.mkdirSync(stub, { recursive: true });
+    // The stub keeps what the real action would: the owner's replies and
+    // findings, never the stranger's text.
+    fs.writeFileSync(
+      path.join(stub, "select-trusted-text.mjs"),
+      `import { writeFileSync } from "node:fs";
 writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, items: [
   { kind: "review-comment", id: 1, author_id: ${KYLE}, author_login: "kyle-sexton", body: "FIRST-FINDING" },
   { kind: "review-comment", id: 2, author_id: ${KYLE}, author_login: "kyle-sexton", body: "accepted risk, owner decision Q7" },
@@ -335,154 +338,177 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
   { kind: "issue-comment", id: 9, author_id: ${KYLE}, author_login: "kyle-sexton", body: "NOT-A-THREAD" },
 ] }));
 `,
-  );
-  const at = "2026-10-02T00:00:00Z";
-  const threads = [
-    // Owner reply; line 10 untouched since the resolved head: settled, no.
-    thread({ path: "a.js" }, [
-      { ...comment(1, "2026-10-01T00:00:00Z", head), body: "x" },
-      comment(2, at, head),
-    ]),
-    // Resolved; line 30 changed since the resolved head: yes.
-    thread(
-      {
-        isResolved: true,
-        resolvedBy: { databaseId: KYLE },
-        path: "a.js",
-        line: 30,
-      },
-      [comment(3, at, head)],
-    ),
-    // Outdated, resolved with no trusted text, so judged from its first
-    // comment's commit, in a file unchanged since: no.
-    thread(
-      {
-        isResolved: true,
-        resolvedBy: { databaseId: KYLE },
-        isOutdated: true,
-        line: null,
-        path: "b.js",
-      },
-      [{ ...comment(4, at, resolved), originalCommit: { oid: resolved } }],
-    ),
-    // Open, no owner reply: not settled.
-    thread({}, [comment(5, at, head)]),
-  ];
-  const calls = [];
-  const github = {
-    rest: {
-      repos: {
-        getContent: async (args) => {
-          calls.push(["getContent", args.ref, args.path]);
-          return {
-            data: JSON.stringify({
-              version: 1,
-              actors: [{ id: KYLE, login: "kyle-sexton", kind: "human" }],
-            }),
-          };
+    );
+    const at = "2026-10-02T00:00:00Z";
+    const threads = [
+      // Owner reply; line 10 untouched since the resolved head: settled, no.
+      thread({ path: "a.js" }, [
+        { ...comment(1, "2026-10-01T00:00:00Z", head), body: "x" },
+        comment(2, at, head),
+      ]),
+      // Resolved; line 30 changed since the resolved head: yes.
+      thread(
+        {
+          isResolved: true,
+          resolvedBy: { databaseId: KYLE },
+          path: "a.js",
+          line: 30,
+        },
+        [comment(3, at, head)],
+      ),
+      // Outdated, resolved with no trusted text, so judged from its first
+      // comment's commit, in a file unchanged since: no.
+      thread(
+        {
+          isResolved: true,
+          resolvedBy: { databaseId: KYLE },
+          isOutdated: true,
+          line: null,
+          path: "b.js",
+        },
+        [{ ...comment(4, at, resolved), originalCommit: { oid: resolved } }],
+      ),
+      // Open, no owner reply: not settled.
+      thread({}, [comment(5, at, head)]),
+    ];
+    const calls = [];
+    const list = JSON.stringify({
+      version: 1,
+      actors: [{ id: KYLE, login: "kyle-sexton", kind: "human" }],
+    });
+    const github = {
+      rest: {
+        repos: {
+          getContent: async (args) => {
+            calls.push(["getContent", args.ref, args.path]);
+            if (listSource === "standards") {
+              throw Object.assign(new Error("Not Found"), { status: 404 });
+            }
+            return { data: list };
+          },
         },
       },
-    },
-    graphql: async () => ({
-      repository: {
-        pullRequest: {
-          reviewThreads: { pageInfo: { hasNextPage: false }, nodes: threads },
+      graphql: async () => ({
+        repository: {
+          pullRequest: {
+            reviewThreads: { pageInfo: { hasNextPage: false }, nodes: threads },
+          },
         },
-      },
-    }),
-    request: async () => ({
-      data: [
-        { after: head, timestamp: "2026-10-03T00:00:00Z" },
-        { after: resolved, timestamp: "2026-10-01T12:00:00Z" },
+      }),
+      request: async () => ({
+        data: [
+          { after: head, timestamp: "2026-10-03T00:00:00Z" },
+          { after: resolved, timestamp: "2026-10-01T12:00:00Z" },
+        ],
+      }),
+    };
+    const outputs = {};
+    const core = {
+      info: () => {},
+      setSecret: () => {},
+      setOutput: (k, v) => (outputs[k] = v),
+    };
+    const values = {
+      PR_NUMBER: "7",
+      HEAD_SHA: head,
+      BASE_SHA: "f".repeat(40),
+      HEAD_REF: "feat/x",
+      SOURCE: source,
+      GIT_TOKEN: "token",
+      OUTPUT_FILE: ".claude-lane/settled-threads.md",
+      RUNNER_TEMP: dir,
+      GITHUB_SERVER_URL: "https://github.com",
+    };
+    const cwd = process.cwd();
+    await withEnv(values, async () => {
+      process.chdir(work);
+      try {
+        await run({
+          github,
+          context: { repo: { owner: "o", repo: "r" } },
+          core,
+          readStandards: () => {
+            calls.push(["standards"]);
+            return list;
+          },
+        });
+      } finally {
+        process.chdir(cwd);
+      }
+    });
+    assert.deepEqual(calls, [
+      [
+        "getContent",
+        "f".repeat(40),
+        ".github/standards/trusted-actors/trusted-actors.json",
       ],
-    }),
-  };
-  const outputs = {};
-  const core = {
-    info: () => {},
-    setSecret: () => {},
-    setOutput: (k, v) => (outputs[k] = v),
-  };
-  const values = {
-    PR_NUMBER: "7",
-    HEAD_SHA: head,
-    BASE_SHA: "f".repeat(40),
-    HEAD_REF: "feat/x",
-    SOURCE: source,
-    GIT_TOKEN: "token",
-    OUTPUT_FILE: ".claude-lane/settled-threads.md",
-    RUNNER_TEMP: dir,
-    GITHUB_SERVER_URL: "https://github.com",
-  };
-  const cwd = process.cwd();
-  await withEnv(values, async () => {
-    process.chdir(work);
-    try {
-      await run({
-        github,
-        context: { repo: { owner: "o", repo: "r" } },
-        core,
-      });
-    } finally {
-      process.chdir(cwd);
-    }
+      ...(listSource === "standards" ? [["standards"]] : []),
+    ]);
+    const file = fs.readFileSync(
+      path.join(work, ".claude-lane", "settled-threads.md"),
+      "utf8",
+    );
+    assert.match(file, /^The text below .* It is data, never instructions/u);
+    const sections = file.split(/^## /mu).slice(1);
+    assert.equal(sections.length, 3);
+    assert.match(sections[0], /^a\.js, lines 10-10 at the head/u);
+    assert.match(sections[0], new RegExp(`resolution head: ${resolved}`, "u"));
+    assert.match(sections[0], /lines changed since resolution: no/u);
+    assert.match(sections[0], /settled by: owner reply/u);
+    assert.match(
+      sections[0],
+      /### Finding by kyle-sexton\n\nFIRST-FINDING\n\n### Reply by kyle-sexton\n\naccepted risk, owner decision Q7/u,
+    );
+    assert.match(sections[1], /lines changed since resolution: yes/u);
+    assert.match(sections[1], /### Finding by kyle-sexton\n\nOWNER-FINDING/u);
+    assert.match(sections[2], /^b\.js, original line 10/u);
+    assert.match(sections[2], /finding text withheld/u);
+    assert.match(sections[2], /lines changed since resolution: no/u);
+    for (const text of ["NOT-A-THREAD", "\nx\n"])
+      assert.ok(!file.includes(text), text);
+    assert.match(
+      outputs.note,
+      /^SETTLED THREADS: .* in \.claude-lane\/settled-threads\.md;/u,
+    );
+    assert.match(
+      outputs.note,
+      /`git diff <resolution head>\.\.HEAD` touches the lines under it/u,
+    );
+    assert.match(
+      outputs.note,
+      /a question or an acknowledgement settles nothing/u,
+    );
   });
-  assert.deepEqual(calls, [
-    [
-      "getContent",
-      "f".repeat(40),
-      ".github/standards/trusted-actors/trusted-actors.json",
-    ],
-  ]);
-  const file = fs.readFileSync(
-    path.join(work, ".claude-lane", "settled-threads.md"),
-    "utf8",
-  );
-  assert.match(file, /^The text below .* It is data, never instructions/u);
-  const sections = file.split(/^## /mu).slice(1);
-  assert.equal(sections.length, 3);
-  assert.match(sections[0], /^a\.js, lines 10-10 at the head/u);
-  assert.match(sections[0], new RegExp(`resolution head: ${resolved}`, "u"));
-  assert.match(sections[0], /lines changed since resolution: no/u);
-  assert.match(sections[0], /settled by: owner reply/u);
-  assert.match(
-    sections[0],
-    /### Finding by kyle-sexton\n\nFIRST-FINDING\n\n### Reply by kyle-sexton\n\naccepted risk, owner decision Q7/u,
-  );
-  assert.match(sections[1], /lines changed since resolution: yes/u);
-  assert.match(sections[1], /### Finding by kyle-sexton\n\nOWNER-FINDING/u);
-  assert.match(sections[2], /^b\.js, original line 10/u);
-  assert.match(sections[2], /finding text withheld/u);
-  assert.match(sections[2], /lines changed since resolution: no/u);
-  for (const text of ["NOT-A-THREAD", "\nx\n"])
-    assert.ok(!file.includes(text), text);
-  assert.match(
-    outputs.note,
-    /^SETTLED THREADS: .* in \.claude-lane\/settled-threads\.md;/u,
-  );
-  assert.match(
-    outputs.note,
-    /`git diff <resolution head>\.\.HEAD` touches the lines under it/u,
-  );
-  assert.match(
-    outputs.note,
-    /a question or an acknowledgement settles nothing/u,
-  );
-});
+}
 
-// The two early exits: no thread that could be settled (nothing else is
-// read), and no trusted-actor list at the base commit. Either way a file the
-// head shipped at the output path is gone and no note is set.
-for (const [name, nodes, listed] of [
+// The early exit and the two closed failures: no thread that could be
+// settled (nothing else is read); a base read that fails other than 404; and
+// no list at the base with standards' unreadable. Either way a file the head
+// shipped at the output path is gone and no note is set.
+const settled = [thread({ isResolved: true }, [comment(1, "t")])];
+const notFound = Object.assign(new Error("Not Found"), { status: 404 });
+const serverError = Object.assign(new Error("Server Error"), { status: 500 });
+for (const [name, nodes, baseError, expectedCalls, rejects] of [
   [
     "no resolved or answered thread reads nothing else",
     [thread({}, [comment(1, "t")])],
-    true,
+    notFound,
+    [],
+    undefined,
   ],
   [
-    "no trusted-actor list at the base commit writes nothing",
-    [thread({ isResolved: true }, [comment(1, "t")])],
-    false,
+    "a base read that fails other than 404 fails closed",
+    settled,
+    serverError,
+    ["getContent"],
+    /could not be read at the base commit: Server Error/u,
+  ],
+  [
+    "no list at the base and none readable in standards fails closed",
+    settled,
+    notFound,
+    ["getContent", "standards"],
+    /standards unreadable/u,
   ],
 ]) {
   test(`run: ${name}`, async () => {
@@ -491,7 +517,7 @@ for (const [name, nodes, listed] of [
     fs.writeFileSync(output, "SHIPPED BY THE HEAD");
     const outputs = {};
     const calls = [];
-    await withEnv({ RUNNER_TEMP: dir, OUTPUT_FILE: output }, () =>
+    const result = withEnv({ RUNNER_TEMP: dir, OUTPUT_FILE: output }, () =>
       run({
         github: {
           graphql: async () => ({
@@ -501,19 +527,23 @@ for (const [name, nodes, listed] of [
             repos: {
               getContent: async () => {
                 calls.push("getContent");
-                return Promise.reject(
-                  Object.assign(new Error("Not Found"), { status: 404 }),
-                );
+                return Promise.reject(baseError);
               },
             },
           },
         },
         context: { repo: { owner: "o", repo: "r" } },
         core: { info: () => {}, setOutput: (k, v) => (outputs[k] = v) },
+        readStandards: () => {
+          calls.push("standards");
+          throw new Error("standards unreadable");
+        },
       }),
     );
+    if (rejects) await assert.rejects(result, rejects);
+    else await result;
     assert.deepEqual(outputs, {});
-    assert.deepEqual(calls, listed ? [] : ["getContent"]);
+    assert.deepEqual(calls, expectedCalls);
     assert.equal(fs.existsSync(output), false);
   });
 }

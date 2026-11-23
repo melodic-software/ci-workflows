@@ -39,6 +39,9 @@ from xml.etree import ElementTree
 
 BRANCH_PREFIX = "version-bump/"
 DEPENDABOT_POLICY = ".github/standards/dependabot-policy/policy.json"
+# The same policy in melodic-software/standards, read when the synced copy is absent.
+STANDARDS_DEPENDABOT_POLICY = "components/dependabot-policy/policy.json"
+DOWNLOAD_STANDARDS = Path(__file__).resolve().parent.parent / "download-standards" / "checkout.sh"
 COOLDOWN_CLASSES = ("own", "patch", "minor", "major")
 SIGNER_EMAIL = "noreply@github.com"
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
@@ -1188,8 +1191,19 @@ def changed_paths() -> list[str]:
     return run(["git", "diff", "--name-only"]).split()
 
 
+def standards_checkout() -> Path:
+    """This job's checkout of melodic-software/standards at STANDARDS_REF (download-standards)."""
+    return Path(run(["bash", str(DOWNLOAD_STANDARDS)]).strip())
+
+
 def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
-    """cooldownDays from the standards dependabot-policy copy the standards sync places here."""
+    """cooldownDays from the synced standards dependabot-policy copy, else standards' own.
+
+    Only the default copy path falls back to standards; a path the caller named must exist.
+    """
+    if not path.exists() and str(path) == DEPENDABOT_POLICY:
+        path = standards_checkout() / STANDARDS_DEPENDABOT_POLICY
+        print(f"{DEPENDABOT_POLICY} is absent; reading cooldownDays from {path}", file=sys.stderr)
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -1856,7 +1870,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--dependabot-policy",
         default=DEPENDABOT_POLICY,
-        help="synced org policy giving cooldownDays when the policy file sets none",
+        help=(
+            "synced org policy giving cooldownDays when the policy file sets none; at the"
+            " default path, standards' own policy when the copy is absent"
+        ),
     )
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="", help="comma-separated tool or group names")

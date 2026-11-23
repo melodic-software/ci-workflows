@@ -8,6 +8,10 @@
 // Every PR-derived value (title, body, branch, commit message, metadata) is
 // untrusted: it is only compared and logged, never executed.
 
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
 const DEPENDABOT_ID = 49699333;
 // web-flow: GitHub's signing identity for Dependabot commits.
 const WEB_FLOW_ID = 19864447;
@@ -84,6 +88,28 @@ function parseJson(text) {
 
 // Where the standards sync places the org dependabot-policy in a repository.
 const POLICY_PATH = ".github/standards/dependabot-policy/policy.json";
+// The same policy in melodic-software/standards, read when the copy is absent.
+const STANDARDS_POLICY_PATH = "components/dependabot-policy/policy.json";
+
+// The standards policy at the commit download-standards resolves for
+// env.STANDARDS_REF: { text } or { failure }. Never { text: undefined }: with
+// no copy and no readable standards policy, nothing arms.
+function readStandardsPolicy(env) {
+  try {
+    const checkout = execFileSync(
+      "bash",
+      [path.join(__dirname, "..", "download-standards", "checkout.sh")],
+      { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    ).trim();
+    return {
+      text: fs.readFileSync(path.join(checkout, STANDARDS_POLICY_PATH), "utf8"),
+    };
+  } catch (error) {
+    return {
+      failure: `${POLICY_PATH} is absent and the standards ${STANDARDS_POLICY_PATH} could not be read: ${error.message}`,
+    };
+  }
+}
 // pr-automerge-dependabot.yml's publisher-allowlist default. A caller that
 // passes any other list keeps it whatever the policy says.
 const DEFAULT_PUBLISHER_ALLOWLIST = ["actions/*", "github/*", "anthropics/*"];
@@ -327,7 +353,13 @@ const DISARM = `mutation($id: ID!) {
 // armed is disarmed, since GitHub keeps auto-merge on when a user with write
 // access pushes to the branch. The arm passes the verified head as
 // `expectedHeadOid`, so a push between the check and the arm fails the arm.
-async function runEvent({ github, context, core, env }) {
+async function runEvent({
+  github,
+  context,
+  core,
+  env,
+  readStandards = readStandardsPolicy,
+}) {
   const pr = context.payload.pull_request;
   async function eventFailure() {
     if (pr.user?.id !== DEPENDABOT_ID) return "the PR author is not Dependabot";
@@ -362,7 +394,9 @@ async function runEvent({ github, context, core, env }) {
     });
   }
 
-  // Read at the base commit, so the pull request cannot change its own tier.
+  // Read at the base commit, so the pull request cannot change its own tier;
+  // with no copy there, standards' own policy at one resolved commit, which
+  // the pull request cannot change either.
   async function readBasePolicy() {
     try {
       const { data } = await github.rest.repos.getContent({
@@ -373,7 +407,7 @@ async function runEvent({ github, context, core, env }) {
       });
       return { text: String(data) };
     } catch (error) {
-      if (error.status === 404) return { text: undefined };
+      if (error.status === 404) return readStandards(env);
       return {
         failure: `${POLICY_PATH} could not be read at the base: ${error.message}`,
       };
@@ -405,9 +439,11 @@ module.exports = {
   DEFAULT_PUBLISHER_ALLOWLIST,
   DEPENDABOT_ID,
   POLICY_PATH,
+  STANDARDS_POLICY_PATH,
   WEB_FLOW_ID,
   gateFailure,
   parseCommitMetadata,
+  readStandardsPolicy,
   resolvePolicyInputs,
   runEvent,
 };

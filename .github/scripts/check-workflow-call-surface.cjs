@@ -1,7 +1,7 @@
 "use strict";
 
 // Fails a change to a reusable workflow's `on.workflow_call` surface that the
-// synced runner-policy contract has not caught up with. A caller may only pass
+// runner-policy contract has not caught up with. A caller may only pass
 // what the contract lists, and GitHub refuses a call that passes an input or
 // secret the reusable no longer declares, or omits one it requires. So the
 // surface changes expand/contract (Fowler, ParallelChange): the contract grows
@@ -11,13 +11,25 @@
 //
 // Usage: node check-workflow-call-surface.cjs <base-ref> [repository]
 // Run from the repository root; the head is the working tree's HEAD commit.
+// The contract is the synced copy in the working tree, or, when it is absent,
+// standards' own components/runner-policy/policy.json at the commit the
+// download-standards action resolves for STANDARDS_REF (default main).
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const { basename, join } = require("node:path");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const POLICY_PATH = ".github/standards/runner-policy-contract/policy.json";
+const STANDARDS_POLICY_PATH = "components/runner-policy/policy.json";
+const DOWNLOAD_STANDARDS = join(
+  __dirname,
+  "..",
+  "actions",
+  "download-standards",
+  "checkout.sh",
+);
 const WORKFLOW_PATH = /^\.github\/workflows\/[^/]+\.ya?ml$/u;
 const ORDER_SOURCE =
   'standards components/runner-policy/README.md, "Contract revision lockstep"';
@@ -29,20 +41,45 @@ class SurfaceCheckError extends Error {
   }
 }
 
-/** Parse the synced policy, failing with a named error the author can act on. */
-function loadContracts(policyText) {
-  const restore = `Restore ${POLICY_PATH} by reverting the change that removed or broke it, or let the standards component sync (runner-policy-contract) deliver it.`;
-  if (policyText === null) {
-    throw new SurfaceCheckError(
-      `runner-policy contract missing: ${POLICY_PATH} does not exist. ${restore}`,
-    );
+/**
+ * The contract's text and a label for it: the synced copy when the working
+ * tree has one, else standards' own, failing with a named error.
+ */
+function readPolicy() {
+  if (fs.existsSync(POLICY_PATH)) {
+    return { text: fs.readFileSync(POLICY_PATH, "utf8"), source: POLICY_PATH };
   }
-  let policy;
+  let checkout;
   try {
-    policy = JSON.parse(policyText);
+    checkout = execFileSync("bash", [DOWNLOAD_STANDARDS], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    }).trim();
   } catch (error) {
     throw new SurfaceCheckError(
-      `runner-policy contract unparseable: ${POLICY_PATH}: ${error.message}. ${restore}`,
+      `runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards could not be checked out: ${error.message}`,
+    );
+  }
+  const file = join(checkout, STANDARDS_POLICY_PATH);
+  if (!fs.existsSync(file)) {
+    throw new SurfaceCheckError(
+      `runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards at ${basename(checkout)} has no ${STANDARDS_POLICY_PATH}.`,
+    );
+  }
+  return {
+    text: fs.readFileSync(file, "utf8"),
+    source: `melodic-software/standards ${STANDARDS_POLICY_PATH} at ${basename(checkout)}`,
+  };
+}
+
+/** Parse the contract, failing with a named error the author can act on. */
+function loadContracts({ text, source }) {
+  let policy;
+  try {
+    policy = JSON.parse(text);
+  } catch (error) {
+    throw new SurfaceCheckError(
+      `runner-policy contract unparsable: ${source}: ${error.message}.`,
     );
   }
   const contracts = policy?.approvedReusableWorkflowContracts;
@@ -52,7 +89,7 @@ function loadContracts(policyText) {
     Array.isArray(contracts)
   ) {
     throw new SurfaceCheckError(
-      `runner-policy contract unparseable: ${POLICY_PATH} has no approvedReusableWorkflowContracts object. ${restore}`,
+      `runner-policy contract unparsable: ${source} has no approvedReusableWorkflowContracts object.`,
     );
   }
   return contracts;
@@ -150,9 +187,8 @@ function surfaceOf(source, label) {
 }
 
 function run({ baseRef, repository }) {
-  const contracts = loadContracts(
-    fs.existsSync(POLICY_PATH) ? fs.readFileSync(POLICY_PATH, "utf8") : null,
-  );
+  const policy = readPolicy();
+  const contracts = loadContracts(policy);
   const mergeBase = git(["merge-base", baseRef, "HEAD"]).trim();
   const changed = git([
     "diff",
@@ -181,7 +217,7 @@ function run({ baseRef, repository }) {
     }
     findings.push(...compareSurface({ key, base, head, contract }));
   }
-  return { changed, findings, notices };
+  return { changed, findings, notices, source: policy.source };
 }
 
 function main(argv) {
@@ -203,7 +239,7 @@ function main(argv) {
   for (const notice of result.notices) console.log(`::notice::${notice}`);
   for (const finding of result.findings) console.log(`::error::${finding}`);
   console.log(
-    `Checked ${result.changed.length} changed workflow file(s) against ${POLICY_PATH}: ${result.findings.length} violation(s).`,
+    `Checked ${result.changed.length} changed workflow file(s) against ${result.source}: ${result.findings.length} violation(s).`,
   );
   return result.findings.length === 0 ? 0 : 1;
 }
