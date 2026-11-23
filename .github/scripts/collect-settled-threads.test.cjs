@@ -582,7 +582,7 @@ test("pr-review-cli.yml: every model leg writes the settled threads after the pl
     );
     assert.match(
       job.steps.find((s) => s.id === "plugin").run,
-      /sparse-checkout set plugins\/review \.github\/actions \.github\/scripts\/pr-review-main\n/u,
+      /sparse-checkout set plugins\/review \.github\/actions \.github\/scripts\/diff-chunking \.github\/scripts\/pr-review-main\n/u,
     );
     const compose = job.steps.find((s) => s.id === "compose");
     assert.equal(compose.uses, "$/.github/actions/build-review-prompt", name);

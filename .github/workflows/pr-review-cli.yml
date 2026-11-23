@@ -1494,7 +1494,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
@@ -2621,7 +2621,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
@@ -3718,7 +3718,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review

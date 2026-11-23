@@ -2024,7 +2024,7 @@ test("every review job stages the review plugin from claude-code-plugins' defaul
     [
       'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
       ...clone,
-      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main',
+      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main',
       'echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"',
       "mkdir -p .git/info",
       "echo /.lane/ >>.git/info/exclude",
