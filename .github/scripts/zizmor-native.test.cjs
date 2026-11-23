@@ -92,7 +92,7 @@ test("native zizmor preserves the reusable interface and read-only default", () 
 
 // Runs the real run-step script with fake curl, sha256sum and tar so the
 // download path succeeds, and a fake zizmor that records its arguments.
-function runLane({ dirs, paths }) {
+function runLane({ dirs, paths, standardsCheckout = "" }) {
   const step = parseWorkflow(workflow).jobs.zizmor.steps.find(
     (entry) => entry?.id === "zizmor",
   );
@@ -147,6 +147,7 @@ function runLane({ dirs, paths }) {
         ZIZMOR_TOKEN: "token",
         PINNED_VERSION: pinnedVersion,
         ASSET_NAME: assetName,
+        STANDARDS_CHECKOUT: standardsCheckout,
       },
     });
     const targets = fs.existsSync(argsFile)
@@ -179,6 +180,69 @@ test("a caller-supplied path that does not exist still reaches zizmor", () => {
   // zizmor itself rejects a missing path, so the lane must not filter it out.
   const result = runLane({ dirs: [".github/workflows"], paths: "missing-dir" });
   assert.deepEqual(result.targets.slice(-1), ["missing-dir"]);
+});
+
+test("a caller with its own config gets no --config; one without gets standards'", () => {
+  const own = runLane({
+    dirs: [".github/workflows"],
+    paths: ".github/workflows",
+  });
+  assert.equal(own.status, 0);
+  assert.ok(!own.targets.some((arg) => arg.startsWith("--config")));
+
+  const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "zizmor-standards-"));
+  try {
+    fs.mkdirSync(path.join(checkout, ".github"));
+    fs.writeFileSync(
+      path.join(checkout, ".github", "zizmor.yml"),
+      "rules: {}\n",
+    );
+    const fallback = runLane({
+      dirs: [".github/workflows"],
+      paths: ".github/workflows",
+      standardsCheckout: checkout,
+    });
+    assert.equal(fallback.status, 0);
+    assert.ok(
+      fallback.targets.includes(
+        `--config=${path.join(checkout, ".github", "zizmor.yml")}`,
+      ),
+    );
+
+    fs.rmSync(path.join(checkout, ".github", "zizmor.yml"));
+    const missing = runLane({
+      dirs: [".github/workflows"],
+      paths: ".github/workflows",
+      standardsCheckout: checkout,
+    });
+    assert.equal(missing.status, 2);
+    assert.equal(missing.targets, null);
+  } finally {
+    fs.rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("standards is checked out only when the caller's checkout has no zizmor config", () => {
+  const steps = parseWorkflow(workflow).jobs.zizmor.steps;
+  const find = steps.find((entry) => entry?.id === "config");
+  for (const candidate of [
+    ".github/zizmor.yml",
+    ".github/zizmor.yaml",
+    "zizmor.yml",
+    "zizmor.yaml",
+  ]) {
+    assert.ok(find.run.includes(candidate), candidate);
+  }
+  const standards = steps.find((entry) => entry?.id === "standards");
+  assert.equal(standards.uses, "$/.github/actions/checkout-standards");
+  assert.equal(standards.if, `\${{ steps.config.outputs.in-tree == 'false' }}`);
+  const zizmor = steps.find((entry) => entry?.id === "zizmor");
+  assert.equal(
+    zizmor.env.STANDARDS_CHECKOUT,
+    `\${{ steps.standards.outputs.path }}`,
+  );
+  assert.ok(steps.indexOf(find) < steps.indexOf(standards));
+  assert.ok(steps.indexOf(standards) < steps.indexOf(zizmor));
 });
 
 test("native zizmor verifies the exact release before executing it", () => {

@@ -21,6 +21,14 @@ name: PR Audit Workflows
 # reusable workflows cannot elevate caller permissions. The upload step's
 # input gate keeps annotations-only callers off the code-scanning API. The ci-status
 # gateway stays consumer-local — this is a lane, not the gateway.
+#
+# Config: the caller's own zizmor config wins when its checkout has one
+# (.github/zizmor.yml or .yaml, or zizmor.yml or .yaml at the root, which
+# zizmor discovers itself). Otherwise the lane checks out
+# melodic-software/standards at one resolved commit (the checkout-standards
+# action, which records it in the step summary) and passes that commit's
+# .github/zizmor.yml with --config, so a repository with no synced copy is
+# audited under the org policy, third-party refs hash-pinned included.
 on:
   workflow_call:
     inputs:
@@ -109,10 +117,33 @@ jobs:
         with:
           persist-credentials: false
 
+      # zizmor's own discovery reads a caller config in place; only a caller
+      # without one needs standards'.
+      - name: Find the caller's zizmor config
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          in_tree=false
+          for candidate in .github/zizmor.yml .github/zizmor.yaml zizmor.yml zizmor.yaml; do
+            if [[ -e "$candidate" ]]; then
+              in_tree=true
+              echo "zizmor config: $candidate (the caller's own)"
+              break
+            fi
+          done
+          echo "in-tree=$in_tree" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the standards zizmor config
+        id: standards
+        if: ${{ steps.config.outputs.in-tree == 'false' }}
+        uses: $/.github/actions/checkout-standards
+
       - name: Run zizmor
         id: zizmor
         shell: bash
         env:
+          STANDARDS_CHECKOUT: ${{ steps.standards.outputs.path }}
           PATHS: ${{ inputs.paths }}
           REQUESTED_VERSION: ${{ inputs.version }}
           EXPECTED_SHA256: ${{ inputs.sha256 }}
@@ -197,6 +228,17 @@ jobs:
           fi
           mkdir -- "$work_dir/cache"
 
+          config_args=()
+          if [[ -n "${STANDARDS_CHECKOUT:-}" ]]; then
+            standards_config="$STANDARDS_CHECKOUT/.github/zizmor.yml"
+            if [[ ! -f "$standards_config" ]]; then
+              echo "::error::melodic-software/standards at ${STANDARDS_CHECKOUT##*/} has no .github/zizmor.yml."
+              exit 2
+            fi
+            echo "zizmor config: .github/zizmor.yml from melodic-software/standards at ${STANDARDS_CHECKOUT##*/}"
+            config_args=("--config=$standards_config")
+          fi
+
           normalized_paths=${PATHS//$'\n'/ }
           targets=()
           read -r -a raw_targets <<< "$normalized_paths"
@@ -225,6 +267,7 @@ jobs:
             "--persona=$PERSONA"
             --color=never
             "--cache-dir=$work_dir/cache"
+            "${config_args[@]}"
           )
           if [[ "$ONLINE_AUDITS" == false ]]; then
             args+=(--no-online-audits)
@@ -255,6 +298,7 @@ jobs:
               "--persona=$PERSONA"
               --color=never
               "--cache-dir=$work_dir/cache"
+              "${config_args[@]}"
             )
             if [[ "$ONLINE_AUDITS" == false ]]; then
               sarif_args+=(--no-online-audits)
