@@ -20,8 +20,7 @@ This action uses the tool cache when it holds the version. Otherwise it download
 A compromised nodejs.org or CDN that swaps the files fails step 2 unless it also holds a releaser's
 signing key. A tool-cache hit is the runner image's own copy and skips the chain.
 
-The same action lives in `melodic-software/claude-code-plugins` at
-`.github/actions/setup-pinned-node`. This copy differs in three ways:
+Three choices keep it working on every runner its callers use, hosted and fleet:
 
 - It fetches the `.tar.gz` release rather than `.tar.xz`. The fleet worker image
   (`melodic-software/ci-runner`'s `Dockerfile`, on `actions-runner`'s Ubuntu 24.04 base, installed

@@ -1,18 +1,35 @@
 name: Scan Upload
 description: >
   Before an actions/upload-artifact step: run claude-code-plugins'
-  lib/publish-gate.mjs scanLeak, fetched from that repository's default-branch
-  tip, over every file the upload is about to send, with the same `path`
-  input. A credential, a hidden assignment, a link, a compressed file, a glob
-  or an unfetchable gate fails the step and sets no `clean` output; the
-  upload's `if:` must require clean == 'true', so a hit withholds it even
-  under always() or continue-on-error. Nothing printed carries a matched value
-  or a file name. See scan.cjs.
+  lib/publish-gate.mjs scanLeak over every file the upload is about to send,
+  with the same `path` input. The gate is `gate-path` when set, else that
+  repository's default-branch tip, fetched at scan time. A credential, a hidden
+  assignment, a link, a compressed file, a glob or an unreadable gate fails the
+  step and sets no `clean` output; the upload's `if:` must require
+  clean == 'true', so a hit withholds it even under always() or
+  continue-on-error. Nothing printed to the log carries a matched value or a
+  file name; a pattern block writes only the rule, the file name (or a fixed
+  placeholder) and the line number to the job summary. See scan.cjs.
 
 inputs:
   path:
     description: The upload step's `path` input, verbatim.
     required: true
+  gate-path:
+    description: >
+      A lib/publish-gate.mjs the caller trusts, such as one in a checkout of
+      its default branch (never one the pull request or a model step could
+      have written). Empty (the default) fetches claude-code-plugins'
+      default-branch tip. Either gate must import only node: builtins.
+    required: false
+    default: ""
+  hide-trace-ids:
+    description: >
+      `true` reads a file's R2 key pair block again with its 32-hex
+      `trace_id`/`traceId` values hidden, for OpenTelemetry files, whose trace
+      ids match that rule. Default `false`.
+    required: false
+    default: "false"
 
 outputs:
   clean:
@@ -27,4 +44,6 @@ runs:
       shell: bash
       env:
         SCAN_PATHS: ${{ inputs.path }}
+        SCAN_GATE: ${{ inputs.gate-path }}
+        SCAN_TELEMETRY: ${{ inputs.hide-trace-ids }}
       run: node "$GITHUB_ACTION_PATH/scan.cjs"

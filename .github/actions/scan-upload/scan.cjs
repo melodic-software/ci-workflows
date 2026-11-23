@@ -1,16 +1,21 @@
-// The pre-upload leak scan for the review lanes' artifacts. It runs
-// claude-code-plugins' lib/publish-gate.mjs scanLeak, the rule set every lane
-// upload there runs, over each file an upload is about to send and its
-// relative name. The gate comes from claude-code-plugins' default-branch tip
-// at scan time, through an anonymous clone (no token, no REST request), never
-// from a clone the model ran beside, and must import only node: builtins.
+// The pre-upload leak scan for lane artifacts. It runs claude-code-plugins'
+// lib/publish-gate.mjs scanLeak, the rule set every lane upload there runs,
+// over each file an upload is about to send and its relative name. The gate is
+// SCAN_GATE, a path the caller trusts (a checkout of its default branch), or
+// else claude-code-plugins' default-branch tip at scan time, through an
+// anonymous clone (no token, no REST request), never a clone the model ran
+// beside. Either way it must import only node: builtins.
 //
 // A credential format or a hidden assignment withholds the upload; the broad
 // assignment label only warns. A link, a non-regular file, a compressed file,
-// a glob or `!` entry, a gate that cannot be fetched, or any other fault
+// a glob or `!` entry, a gate that cannot be read, or any other fault
 // withholds it too. Nothing printed carries a matched value or a file name.
 // SCAN_WITHHOLDS, a fixed text from a caller whose hit keeps part of its upload,
-// replaces "nothing is uploaded" in the error line.
+// replaces "nothing is uploaded" in the error line. On a pattern block, a gate
+// that exports hitFingerprint writes the hit's fingerprint (rule, file name or
+// a fixed placeholder, line; none of the match) to GITHUB_STEP_SUMMARY.
+// SCAN_TELEMETRY=true reads a file's R2 key pair block again with its 32-hex
+// trace ids hidden, since OpenTelemetry trace ids match that rule.
 // Writes clean=true to GITHUB_OUTPUT only when every file was judged clean.
 // Exit 0 clean, 1 withheld.
 "use strict";
@@ -23,6 +28,10 @@ const { pathToFileURL } = require("node:url");
 
 const SOURCE = "https://github.com/melodic-software/claude-code-plugins.git";
 const COMPRESSED = [Buffer.from([0x1f, 0x8b]), Buffer.from("PK\x03\x04", "latin1"), Buffer.from("(\xb5/\xfd", "latin1")];
+const R2 = "R2 key pair";
+const TRACE_ID = /(\\?"trace_?id\\?"\s*:\s*\\?")[0-9a-f]{32}(?=\\?")/giu;
+const hideTraceIds = (bytes) =>
+  Buffer.from(bytes.toString("latin1").replace(TRACE_ID, (_, key) => `${key}${"x".repeat(32)}`), "latin1");
 const IMPORTS = /\bfrom\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]?([^'")]*)/gmu;
 
 /** lib/publish-gate.mjs from the default-branch tip, written into a fresh directory under `temp`; returns its path. */
@@ -62,13 +71,36 @@ function checkImports(text) {
   if (specifiers.some((name) => !name.startsWith("node:"))) throw new Error("the gate imports more than node builtins");
 }
 
-/** Every file under each of `entries`, judged by `scanLeak`: `{ withheld: {label, credential} | null, warned, files }`. */
-function scanPaths(scanLeak, entries) {
+/** The caller's gate at `gatePath`, held to node: builtins like a fetched one; returns its absolute path. */
+function callerGate(gatePath) {
+  const gate = path.resolve(gatePath);
+  checkImports(fs.readFileSync(gate, "utf8"));
+  return gate;
+}
+
+/**
+ * Every file under each of `entries`, judged by the gate's `scanLeak`:
+ * `{ withheld: {label, credential, fingerprint} | null, warned, files }`,
+ * fingerprint the summary line for a pattern block when the gate exports
+ * hitFingerprint. `telemetry` reads an R2 key pair block again with the trace ids hidden.
+ */
+function scanPaths({ scanLeak, hitFingerprint }, entries, { telemetry = false } = {}) {
   let warned = false;
   let files = 0;
-  const judge = (bytes) => {
-    const { block, credential, warn } = scanLeak(bytes);
-    if (block) return { label: block, credential: Boolean(credential) };
+  const judge = (bytes, where, content = false) => {
+    let result = scanLeak(bytes);
+    if (telemetry && content && result.block === R2) {
+      bytes = hideTraceIds(bytes);
+      result = scanLeak(bytes);
+    }
+    const { block, credential, warn } = result;
+    if (block) {
+      let fingerprint = null;
+      try {
+        if (typeof hitFingerprint === "function") fingerprint = hitFingerprint(bytes, block, where);
+      } catch {}
+      return { label: block, credential: Boolean(credential), fingerprint };
+    }
     warned ||= Boolean(warn);
     return null;
   };
@@ -89,7 +121,7 @@ function scanPaths(scanLeak, entries) {
     if (COMPRESSED.some((magic) => bytes.subarray(0, magic.length).equals(magic))) {
       return { label: "a compressed file, whose bytes the scan cannot read" };
     }
-    return judge(Buffer.from(name, "utf8")) ?? judge(bytes);
+    return judge(Buffer.from(name, "utf8"), "a file name") ?? judge(bytes, name, true);
   };
   for (const line of entries) {
     const entry = line.trim();
@@ -113,19 +145,27 @@ function lstatOrNull(at) {
   }
 }
 
-/** Scan `env.SCAN_PATHS` with the gate at `gatePath` (fetched when absent); returns the exit code. */
+/** Scan `env.SCAN_PATHS` with the gate at `gatePath`, else env.SCAN_GATE, else a fetched one; returns the exit code. */
 async function main(env = process.env, gatePath = null) {
   let result;
   try {
-    const gate = gatePath ?? fetchGate(env.RUNNER_TEMP || os.tmpdir());
-    const { scanLeak } = await import(pathToFileURL(gate).href);
-    if (typeof scanLeak !== "function") throw new Error("the gate exports no scanLeak");
-    result = scanPaths(scanLeak, String(env.SCAN_PATHS ?? "").split(/\r?\n/u));
+    const gate = gatePath ?? (env.SCAN_GATE ? callerGate(env.SCAN_GATE) : fetchGate(env.RUNNER_TEMP || os.tmpdir()));
+    const gateModule = await import(pathToFileURL(gate).href);
+    if (typeof gateModule.scanLeak !== "function") throw new Error("the gate exports no scanLeak");
+    result = scanPaths(gateModule, String(env.SCAN_PATHS ?? "").split(/\r?\n/u), { telemetry: env.SCAN_TELEMETRY === "true" });
   } catch (error) {
     result = { withheld: { label: `no finished scan (${error.name})`, credential: false }, warned: false, files: 0 };
   }
   const { withheld, warned, files } = result;
   if (withheld) {
+    if (withheld.fingerprint && env.GITHUB_STEP_SUMMARY) {
+      try {
+        fs.appendFileSync(
+          env.GITHUB_STEP_SUMMARY,
+          `### scan-upload ${env.SCAN_WITHHOLDS ? `hit: ${env.SCAN_WITHHOLDS}` : "withheld the upload"}\n\n${withheld.fingerprint}\n`,
+        );
+      } catch {}
+    }
     process.stdout.write(`::error::scan-upload: ${withheld.label}; ${env.SCAN_WITHHOLDS || "nothing is uploaded"}${withheld.credential ? ". Rotate this credential" : ""}\n`);
     return 1;
   }
@@ -135,7 +175,7 @@ async function main(env = process.env, gatePath = null) {
   return 0;
 }
 
-module.exports = { checkImports, main };
+module.exports = { checkImports, main, scanPaths };
 
 if (require.main === module) {
   main().then((code) => {

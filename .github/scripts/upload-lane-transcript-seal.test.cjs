@@ -464,12 +464,12 @@ test("every other scan keeps the default message", async () => {
     /^::error::scan-upload: no finished scan \(\w+\); nothing is uploaded\n$/u,
   );
   const transcriptScan = ACTION.runs.steps.find((s) => s.id === "scan");
-  assert.deepEqual(Object.keys(transcriptScan.env), ["SCAN_PATHS"]);
+  assert.equal("SCAN_WITHHOLDS" in transcriptScan.env, false);
   const scanUpload = parseWorkflow(
     fs.readFileSync(
       path.join(__dirname, "../actions/scan-upload/action.yml"),
       "utf8",
     ),
   );
-  assert.deepEqual(Object.keys(scanUpload.runs.steps[0].env), ["SCAN_PATHS"]);
+  assert.equal("SCAN_WITHHOLDS" in scanUpload.runs.steps[0].env, false);
 });
