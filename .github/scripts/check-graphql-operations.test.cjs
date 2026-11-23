@@ -202,6 +202,35 @@ test("the allowlist must match the unreadable sites either way, and every exclud
   );
 });
 
+test("a tracked symlink is not read, and a message stays on one line", () => {
+  const outside = makeTemporaryDirectory("check-graphql-operations-outside-");
+  fs.writeFileSync(
+    path.join(outside, "secret.mjs"),
+    "const q = `query { viewer { zzzz } }`;\n",
+  );
+  const root = repository({
+    "src/a.mjs":
+      'const q = `query { viewer { pullRequests(first: """\n::warning::x\n""") { totalCount } } }`;\n',
+  });
+  fs.symlinkSync(
+    path.join(outside, "secret.mjs"),
+    path.join(root, "src/link.mjs"),
+  );
+  execFileSync("git", ["-C", root, "add", "src/link.mjs"], {
+    env: {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+    },
+  });
+  const { failures, diagnostics } = check({ root, paths: ["src"], schema });
+  assert.ok(failures.length > 0, "the block string is not an Int");
+  for (const line of [...failures, ...diagnostics]) {
+    assert.doesNotMatch(line, /[\r\n]/);
+    assert.doesNotMatch(line, /link\.mjs|zzzz/);
+  }
+});
+
 test("every GraphQL operation under this repository's .github/ validates and every site is readable", (t) => {
   const { failures, diagnostics } = check({
     root: ROOT,

@@ -669,6 +669,10 @@ function check({ root, paths, schema, allowlist = "" }) {
   let unparsed = 0;
   let senders = 0;
   for (const file of trackedSources(root, paths, excluded)) {
+    // A tracked symlink could point outside the checkout; read regular files only.
+    if (!fs.lstatSync(path.join(root, file), { throwIfNoEntry: false })?.isFile()) {
+      continue;
+    }
     const entry = extract(
       schema,
       file,
@@ -710,7 +714,10 @@ function check({ root, paths, schema, allowlist = "" }) {
   diagnostics.push(
     `${validated} operations validated, ${unparsed} unparsed, across ${senders} files`,
   );
-  return { failures, diagnostics };
+  // One line per message: scanned text and file names can hold a newline,
+  // which would let a caller's files write workflow commands into the log.
+  const oneLine = (line) => line.replace(/\r?\n|\r/g, "\\n");
+  return { failures: failures.map(oneLine), diagnostics: diagnostics.map(oneLine) };
 }
 
 function main(argv) {
