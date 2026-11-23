@@ -334,6 +334,7 @@ for (const lane of [codeLane, securityLane]) {
     );
     assert.deepEqual(job.permissions, {
       contents: "read",
+      ...(lane.file === "pr-review.yml" ? { issues: "read" } : {}),
       "pull-requests": "write",
       "id-token": "write",
     });

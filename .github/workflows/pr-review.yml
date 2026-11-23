@@ -16,6 +16,7 @@ name: PR Review
 #       review:
 #         permissions:
 #           contents: read         # checkout + read the diff
+#           issues: read           # closing issues (private repositories)
 #           pull-requests: write   # inline comments + the lane's comment
 #           id-token: write        # OIDC for the Claude GitHub App token
 #         uses: melodic-software/ci-workflows/.github/workflows/pr-review.yml@main
@@ -294,6 +295,7 @@ jobs:
               || github.event.pull_request.head.repo.full_name == github.repository) }}
     permissions:
       contents: read
+      issues: read # closingIssuesReferences in private repositories
       pull-requests: write
       id-token: write
     outputs:
