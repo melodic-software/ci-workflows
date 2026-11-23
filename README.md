@@ -2085,8 +2085,8 @@ read by every leg's shell and script steps, size a review: `READ_BUDGET`
 `MAX_CHUNKS` (20). A diff in scope over the read budget, or with more than 40 files,
 is split at file boundaries, each file whole, into at most 20 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
-`.github/scripts/pr-review-main/split-diff.py`, read from that repository's
-default-branch tip. Each leg reviews the first chunk in its review step
+`.github/scripts/diff-chunking/diff_chunking.py split` (an older source's
+`pr-review-main/split-diff.py`), read from that repository's default-branch tip. Each leg reviews the first chunk in its review step
 and the rest, in order, in one step (`.github/actions/run-review-chunks`),
 which installs the CLI once and runs run-claude-cli's launcher per chunk with
 the same credential, tool rules and protections; a chunk runs only after the
