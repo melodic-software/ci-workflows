@@ -56,12 +56,13 @@ test("each chunk limit is defined once, in the workflow env, and read from there
   );
 });
 
-// A stand-in for claude-code-plugins' split-diff.py with its documented
+// A stand-in for claude-code-plugins' diff_chunking.py with its documented
 // contract (usage line and module docstring): greedy chunks of whole files,
 // at most max-bytes and max-files each, and exit 3 with
 // `split-diff: the diff needs <n> chunks, more than <max>` past max-chunks.
 const SPLITTER = [
   "import sys",
+  "if sys.argv.pop(1) != 'split': sys.exit(2)",
   "from pathlib import Path",
   "patch, out, max_bytes, max_chunks, manifest, _ = sys.argv[1:7]",
   "max_files = int(sys.argv[7]) if len(sys.argv) > 7 else 0",
@@ -122,9 +123,9 @@ const EXTRACT_MODULE = require(EXTRACT_FILE);
 function split(job, files, env = {}, { renames = 0 } = {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-chunks-split-");
   const source = path.join(dir, "source");
-  const scripts = path.join(source, ".github", "scripts", "pr-review-main");
+  const scripts = path.join(source, ".github", "scripts", "diff-chunking");
   fs.mkdirSync(scripts, { recursive: true });
-  fs.writeFileSync(path.join(scripts, "split-diff.py"), SPLITTER);
+  fs.writeFileSync(path.join(scripts, "diff_chunking.py"), SPLITTER);
   const work = path.join(dir, "work");
   fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
   const moved = Array.from({ length: renames }, (_, i) => [
