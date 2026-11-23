@@ -19,7 +19,8 @@ description: >
   name `otel.jsonl.gz` and bound to the same run and job. Telemetry that fails
   its scan, cannot be sealed, or would take the artifact past the puller's size
   limit is left out with an annotation saying so, and the transcript still
-  uploads.
+  uploads. `gate-path` and `hide-trace-ids` reach both scans as scan-upload's
+  inputs of the same names (hide-trace-ids the telemetry's scan only).
   Needs node on PATH.
 
 inputs:
@@ -41,6 +42,19 @@ inputs:
       default) uploads the transcript alone.
     required: false
     default: ""
+  gate-path:
+    description: >-
+      scan-upload's `gate-path`: a lib/publish-gate.mjs the caller trusts.
+      Empty (the default) fetches claude-code-plugins' default-branch tip.
+    required: false
+    default: ""
+  hide-trace-ids:
+    description: >-
+      `true` passes scan-upload's `hide-trace-ids` to the telemetry's scan, so
+      an R2 key pair hit is read again with its trace ids hidden. Default
+      `false`.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -53,6 +67,7 @@ runs:
       shell: bash
       env:
         SCAN_PATHS: ${{ inputs.execution-file }}
+        SCAN_GATE: ${{ inputs.gate-path }}
       run: node "$GITHUB_ACTION_PATH/../scan-upload/scan.cjs"
 
     - name: Seal the transcript
@@ -75,6 +90,8 @@ runs:
       env:
         SCAN_PATHS: ${{ inputs.otel-file }}
         SCAN_WITHHOLDS: the telemetry is left out and the transcript still uploads
+        SCAN_GATE: ${{ inputs.gate-path }}
+        SCAN_TELEMETRY: ${{ inputs.hide-trace-ids }}
       run: node "$GITHUB_ACTION_PATH/../scan-upload/scan.cjs"
 
     - name: Seal the telemetry

@@ -1105,7 +1105,16 @@ consumer to audit it.
   empty key skips with a notice (its `action.yml` describes the record and
   artifact name). An optional `otel-file` adds the leg's telemetry to the same
   artifact as a second sealed file; telemetry that cannot be kept is left out
-  and never costs the transcript.
+  and never costs the transcript. Its `gate-path` and `hide-trace-ids` inputs
+  pass through to `scan-upload`.
+- `.github/actions/scan-upload` — the step before every lane artifact upload:
+  runs claude-code-plugins' `lib/publish-gate.mjs` `scanLeak` over each file
+  the upload would send and sets `clean` only when none is withheld, writing a
+  block's rule, path and line (never the match) to the job summary. The gate
+  is the caller's `gate-path`, a copy it trusts such as its default-branch
+  checkout, else claude-code-plugins' default-branch tip fetched at scan time;
+  `hide-trace-ids` keeps OpenTelemetry trace ids from reading as an R2 key
+  (its `action.yml` and `scan.cjs` state the rules).
 
 Each input's meaning and default is documented inline in the action's `inputs:`
 block.
