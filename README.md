@@ -1544,14 +1544,13 @@ GitHub continues the normal weekly patching of each hosted image generation.
   fail closed even in advisory mode. The verified binary
   runs from a fresh runner-temporary directory with a per-job cache and
   without Docker, a job/service container, or an installer-time privilege
-  escalation. The caller's own zizmor config (`.github/zizmor.yml` or
-  `.yaml`, or `zizmor.yml` or `.yaml` at the root) wins when its checkout has
-  one; otherwise the lane checks out `melodic-software/standards` at one
-  resolved commit with `checkout-standards` and passes that commit's
-  `.github/zizmor.yml` with `--config`, so a third-party ref that is not
-  SHA-pinned is a high finding there. The check reads the pull request's
-  checkout, so a pull request that adds its own zizmor config is audited
-  under that config; review it in the diff.
+  escalation. zizmor always gets its config by `--config`: the caller's own
+  (`.github/zizmor.yml` or `.yaml`, or `zizmor.yml` or `.yaml` at the root),
+  read on a pull request from its base commit, never its head, so a pull
+  request cannot audit itself under a config it adds or edits; otherwise
+  `melodic-software/standards`' `.github/zizmor.yml` at one commit resolved
+  with `download-standards`, where a third-party ref that is not SHA-pinned
+  is a high finding. A base read that fails other than 404 fails the lane.
   `runner` defaults to `ubuntu-24.04` and can consume the caller's governed
   managed runner label for eligible private, non-fork calls. Callers may
   opt into `upload-sarif: true` for durable code-scanning alerts

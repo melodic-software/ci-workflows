@@ -92,7 +92,7 @@ test("native zizmor preserves the reusable interface and read-only default", () 
 
 // Runs the real run-step script with fake curl, sha256sum and tar so the
 // download path succeeds, and a fake zizmor that records its arguments.
-function runLane({ dirs, paths, standardsCheckout = "" }) {
+function runLane({ dirs, paths, standardsCheckout = "", callerConfig = "" }) {
   const step = parseWorkflow(workflow).jobs.zizmor.steps.find(
     (entry) => entry?.id === "zizmor",
   );
@@ -148,6 +148,7 @@ function runLane({ dirs, paths, standardsCheckout = "" }) {
         PINNED_VERSION: pinnedVersion,
         ASSET_NAME: assetName,
         STANDARDS_CHECKOUT: standardsCheckout,
+        CALLER_CONFIG: callerConfig,
       },
     });
     const targets = fs.existsSync(argsFile)
@@ -182,13 +183,14 @@ test("a caller-supplied path that does not exist still reaches zizmor", () => {
   assert.deepEqual(result.targets.slice(-1), ["missing-dir"]);
 });
 
-test("a caller with its own config gets no --config; one without gets standards'", () => {
+test("the caller's config found, else standards', reaches zizmor as --config", () => {
   const own = runLane({
     dirs: [".github/workflows"],
     paths: ".github/workflows",
+    callerConfig: "/base/zizmor.yml",
   });
   assert.equal(own.status, 0);
-  assert.ok(!own.targets.some((arg) => arg.startsWith("--config")));
+  assert.ok(own.targets.includes("--config=/base/zizmor.yml"));
 
   const checkout = fs.mkdtempSync(path.join(os.tmpdir(), "zizmor-standards-"));
   try {
@@ -234,15 +236,114 @@ test("standards is checked out only when the caller's checkout has no zizmor con
     assert.ok(find.run.includes(candidate), candidate);
   }
   const standards = steps.find((entry) => entry?.id === "standards");
-  assert.equal(standards.uses, "$/.github/actions/checkout-standards");
-  assert.equal(standards.if, `\${{ steps.config.outputs.in-tree == 'false' }}`);
+  assert.equal(standards.uses, "$/.github/actions/download-standards");
+  assert.equal(standards.if, `\${{ steps.config.outputs.file == '' }}`);
+  assert.equal(find.env.BASE_SHA, `\${{ github.event.pull_request.base.sha }}`);
   const zizmor = steps.find((entry) => entry?.id === "zizmor");
+  assert.equal(zizmor.env.CALLER_CONFIG, `\${{ steps.config.outputs.file }}`);
   assert.equal(
     zizmor.env.STANDARDS_CHECKOUT,
     `\${{ steps.standards.outputs.path }}`,
   );
   assert.ok(steps.indexOf(find) < steps.indexOf(standards));
   assert.ok(steps.indexOf(standards) < steps.indexOf(zizmor));
+});
+
+// Runs the real find-config step with a fake gh serving `base` (path to text,
+// or a status) as the base commit's files, in a workspace holding `head`.
+function findConfig({ baseSha, base = {}, head = {} }) {
+  const step = parseWorkflow(workflow).jobs.zizmor.steps.find(
+    (entry) => entry?.id === "config",
+  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zizmor-config-"));
+  try {
+    const bin = path.join(root, "bin");
+    const workspace = path.join(root, "ws");
+    fs.mkdirSync(bin);
+    fs.mkdirSync(path.join(root, "tmp"));
+    fs.mkdirSync(workspace);
+    for (const [file, text] of Object.entries(head)) {
+      fs.mkdirSync(path.dirname(path.join(workspace, file)), {
+        recursive: true,
+      });
+      fs.writeFileSync(path.join(workspace, file), text);
+    }
+    fs.writeFileSync(path.join(root, "base.json"), JSON.stringify(base));
+    fs.writeFileSync(
+      path.join(bin, "gh"),
+      `#!/usr/bin/env node
+const base = require(${JSON.stringify(path.join(root, "base.json"))});
+const url = process.argv[process.argv.length - 1];
+const [, file, ref] = url.match(/contents\\/(.+)\\?ref=(.+)$/u);
+if (ref !== ${JSON.stringify(baseSha ?? "")}) { console.error("wrong ref " + ref); process.exit(1); }
+const entry = base[file];
+if (entry === undefined) { console.error("gh: Not Found (HTTP 404)"); process.exit(1); }
+if (typeof entry === "number") { console.error("gh: Server Error (HTTP " + entry + ")"); process.exit(1); }
+process.stdout.write(entry);
+`,
+      { mode: 0o755 },
+    );
+    const output = path.join(root, "github-output");
+    fs.writeFileSync(output, "");
+    const result = spawnSync("bash", ["-c", step.run], {
+      cwd: workspace,
+      encoding: "utf8",
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        RUNNER_TEMP: path.join(root, "tmp"),
+        GITHUB_OUTPUT: output,
+        BASE_SHA: baseSha ?? "",
+        REPOSITORY: "o/r",
+        GH_TOKEN: "token",
+      },
+    });
+    const file = fs.readFileSync(output, "utf8").match(/^file=(.*)$/mu)?.[1];
+    const text = file
+      ? fs.readFileSync(path.resolve(workspace, file), "utf8")
+      : null;
+    return {
+      status: result.status,
+      file,
+      text,
+      stderr: result.stderr + result.stdout,
+    };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("a pull request's own config comes from its base, never its head", () => {
+  const sha = "b".repeat(40);
+  // A config the head adds is ignored: standards' applies.
+  const added = findConfig({
+    baseSha: sha,
+    head: { ".github/zizmor.yml": "rules: {} # added by the head\n" },
+  });
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(added.file, "");
+
+  // A config the base has is applied as the base has it, whatever the head says.
+  const edited = findConfig({
+    baseSha: sha,
+    base: { "zizmor.yaml": "rules: base\n" },
+    head: { "zizmor.yaml": "rules: head\n" },
+  });
+  assert.equal(edited.status, 0);
+  assert.equal(edited.text, "rules: base\n");
+
+  // A base read that fails other than 404 fails closed.
+  const broken = findConfig({
+    baseSha: sha,
+    base: { ".github/zizmor.yml": 500 },
+  });
+  assert.equal(broken.status, 2);
+});
+
+test("outside a pull request the checkout's own config applies", () => {
+  const own = findConfig({ head: { ".github/zizmor.yaml": "rules: own\n" } });
+  assert.equal(own.status, 0);
+  assert.equal(own.file, ".github/zizmor.yaml");
+  assert.equal(findConfig({}).file, "");
 });
 
 test("native zizmor verifies the exact release before executing it", () => {

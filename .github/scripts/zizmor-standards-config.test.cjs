@@ -3,7 +3,7 @@
 // The binary check behind pr-audit-workflows.yml's standards fallback: the
 // lane's own run step, with the real pinned zizmor it downloads and verifies
 // and the real melodic-software/standards .github/zizmor.yml at the commit
-// checkout-standards resolves, fails a caller with no config of its own that
+// download-standards resolves, fails a caller with no config of its own that
 // plants a third-party tag ref, and passes the same caller with that ref
 // SHA-pinned. Needs the network (the zizmor release and standards).
 
@@ -38,7 +38,7 @@ const standardsCheckout = execFileSync(
       repositoryRoot,
       ".github",
       "actions",
-      "checkout-standards",
+      "download-standards",
       "checkout.sh",
     ),
   ],
