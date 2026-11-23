@@ -1796,7 +1796,8 @@ jobs:
 ```
 
 The caller's job must grant those three permissions (a called workflow can only
-downgrade, not elevate); the `CLAUDE_CODE_OAUTH_TOKEN` org secret has
+downgrade, not elevate); the `pr-review.yml` caller also grants `issues: read`,
+which its job needs to read closing issues in private repositories. The `CLAUDE_CODE_OAUTH_TOKEN` org secret has
 visibility "all repositories", so every org repo receives it. Pass that one
 named secret explicitly rather than `secrets: inherit`, which forwards every
 parent secret.
