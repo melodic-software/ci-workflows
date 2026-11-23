@@ -2024,7 +2024,7 @@ test("every review job stages the review plugin from claude-code-plugins' defaul
     [
       'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
       ...clone,
-      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main',
+      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main',
       'echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"',
       "mkdir -p .git/info",
       "echo /.lane/ >>.git/info/exclude",
@@ -4065,7 +4065,7 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(workflow.env.READ_BUDGET, "300000");
   assert.match(
     stepSource(s),
-    /python3 -I "\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"/u,
+    /splitter=\("\$SOURCE\/\.github\/scripts\/diff-chunking\/diff_chunking\.py" split\)\n\[\[ -f "\$\{splitter\[0\]\}" \]\] \|\| splitter=\("\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"\)\npython3 -I "\$\{splitter\[@\]\}" "\$input"/u,
   );
   assert.match(
     stepSource(s),
@@ -4075,6 +4075,25 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(cut.status, 0);
   assert.match(cut.out, /^chunks=2$/mu);
   assert.match(cut.out, /^files=2,1$/mu);
+  // A source with diff_chunking.py runs its `split` subcommand instead.
+  const moduled = split({}, (work) => {
+    const module = path.join(work, "../source/.github/scripts/diff-chunking");
+    fs.mkdirSync(module, { recursive: true });
+    fs.writeFileSync(
+      path.join(module, "diff_chunking.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "assert sys.argv[1] == 'split', sys.argv",
+        "out = Path(sys.argv[3])",
+        "(out / 'chunk-1.patch').write_text('diff --git a/a b/a\\n+1\\n')",
+        "Path(sys.argv[6]).write_text('chunk 1 modified a\\n')",
+        "",
+      ].join("\n"),
+    );
+  });
+  assert.equal(moduled.status, 0);
+  assert.match(moduled.out, /^chunks=1$/mu);
   assert.match(cut.out, /^excluded=0$/mu);
   // The notice names the distinct bytes on a split too: with no copies they
   // are the whole scope.
