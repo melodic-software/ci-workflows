@@ -55,15 +55,21 @@ test("native Linux and Windows analyzer lanes use immutable verified binaries", 
     1,
     "all actions/setup-go pins must share the same SHA",
   );
-  assert.match(workflow, /GOLANGCI_LINT_VERSION: 2\.14\.0/u);
-  assert.match(
-    workflow,
-    /GOLANGCI_LINT_SHA256: ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab/u,
-  );
-  assert.match(
-    workflow,
-    /GOLANGCI_LINT_SHA256: b15f903d1649283a2ab6e8d2f0c317eaf1f9f6b3763950e7e8b7e72a43dd724f/u,
-  );
+  // The version and digests move with the version-bump bot
+  // (.github/version-bump/policy.yaml); the invariant is that both jobs pin
+  // one exact release, each to its own platform asset's SHA-256.
+  const golangciVersions = [
+    ...workflow.matchAll(/^ {6}GOLANGCI_LINT_VERSION: (\S+)$/gmu),
+  ].map((match) => match[1]);
+  assert.equal(golangciVersions.length, 2);
+  assert.match(golangciVersions[0], /^\d+\.\d+\.\d+$/u);
+  assert.equal(golangciVersions[1], golangciVersions[0]);
+  const golangciSums = [
+    ...workflow.matchAll(/^ {6}GOLANGCI_LINT_SHA256: (\S+)$/gmu),
+  ].map((match) => match[1]);
+  assert.equal(golangciSums.length, 2);
+  for (const sum of golangciSums) assert.match(sum, /^[0-9a-f]{64}$/u);
+  assert.notEqual(golangciSums[0], golangciSums[1]);
   assert.match(workflow, /golangci-lint-\$\{version\}-linux-amd64\.tar\.gz/u);
   assert.match(workflow, /golangci-lint-\$version-windows-amd64\.zip/u);
   assert.match(workflow, /sha256sum --check --strict/u);
