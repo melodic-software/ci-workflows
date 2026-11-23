@@ -194,7 +194,7 @@ test("the allowlist must match the unreadable sites either way, and every exclud
       ].join("\n"),
     ),
     [
-      'allowlist: no reason on "src/e.mjs"',
+      "allowlist line 5: no reason",
       "allowlist excludes gone/ (nothing is here), which matches no tracked source",
       'src/b.mjs:1: Cannot query field "zzzz" on type "User".',
       "src/b.mjs: 0 sites cannot be checked, the allowlist lists 1",
@@ -229,6 +229,29 @@ test("a tracked symlink is not read, and a message stays on one line", () => {
     assert.doesNotMatch(line, /[\r\n]/);
     assert.doesNotMatch(line, /link\.mjs|zzzz/);
   }
+  fs.symlinkSync(
+    path.join(outside, "secret.mjs"),
+    path.join(root, "allow.txt"),
+  );
+  const cli = path.join(
+    ROOT,
+    ".github/actions/check-graphql-operations/check.cjs",
+  );
+  let refused;
+  try {
+    execFileSync(
+      "node",
+      [cli, "--root", root, "--allowlist", "allow.txt", "src"],
+      {
+        encoding: "utf8",
+      },
+    );
+  } catch (error) {
+    refused = error;
+  }
+  assert.equal(refused?.status, 1, "a symlinked allowlist fails the check");
+  assert.match(refused.stdout, /allowlist allow\.txt is not a regular file/);
+  assert.doesNotMatch(refused.stdout, /zzzz/);
 });
 
 test("every GraphQL operation under this repository's .github/ validates and every site is readable", (t) => {

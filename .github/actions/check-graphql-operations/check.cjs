@@ -114,16 +114,17 @@ function readAllowlist(text) {
   const excluded = new Map();
   const counts = new Map();
   const errors = [];
-  for (const raw of text.split("\n")) {
+  // Errors name the line number, never the line's text.
+  text.split("\n").forEach((raw, n) => {
     const line = raw.replace(/#.*/, "").trim();
-    if (!line) continue;
+    if (!line) return;
     const [key, value, ...reason] = line.split(/\s+/);
-    if (reason.length === 0) errors.push(`allowlist: no reason on "${line}"`);
+    if (reason.length === 0) errors.push(`allowlist line ${n + 1}: no reason`);
     else if (key === "exclude") excluded.set(value, reason.join(" "));
     else if (!/^\d+$/.test(value)) {
-      errors.push(`allowlist: "${value}" is not a count on "${line}"`);
+      errors.push(`allowlist line ${n + 1}: the second field is not a count`);
     } else counts.set(key, Number(value));
-  }
+  });
   return { excluded, counts, errors };
 }
 
@@ -731,9 +732,13 @@ function main(argv) {
   }
   if (options.paths.length === 0) options.paths.push(".github");
   const root = path.resolve(options.root);
-  const allowlist = options.allowlist
-    ? fs.readFileSync(path.resolve(root, options.allowlist), "utf8")
-    : "";
+  const file = options.allowlist && path.resolve(root, options.allowlist);
+  // The allowlist lives in the caller's checkout, so a symlink could point anywhere.
+  if (file && !fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) {
+    console.log(`::error::allowlist ${options.allowlist} is not a regular file`);
+    return 1;
+  }
+  const allowlist = file ? fs.readFileSync(file, "utf8") : "";
   const { failures, diagnostics } = check({
     root,
     paths: options.paths,

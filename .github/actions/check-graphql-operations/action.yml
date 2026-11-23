@@ -1,4 +1,4 @@
-name: Check GraphQL Operations
+name: Check Graphql Operations
 description: >-
   Validate the GraphQL operations committed in the caller's tracked JS, shell,
   workflow and Python files against GitHub's public schema, which this
