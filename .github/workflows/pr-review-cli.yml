@@ -1507,7 +1507,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff
@@ -2634,7 +2634,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff
@@ -3731,7 +3731,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff
