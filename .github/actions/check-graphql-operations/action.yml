@@ -45,7 +45,7 @@ runs:
         repo="$GITHUB_ACTION_PATH/../../.."
         dir="$(mktemp -d "${RUNNER_TEMP%/}/check-graphql-operations.XXXXXXXX")"
         cp "$repo/package.json" "$repo/package-lock.json" "$GITHUB_ACTION_PATH/check.cjs" "$dir/"
-        npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund
+        npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund --include=dev
         read -ra paths <<<"$(tr '\n' ' ' <<<"$PATHS")"
         args=(--root "$ROOT" --schema "$repo/schemas/github/schema.docs.graphql.gz")
         if [[ -n "$ALLOWLIST" ]]; then args+=(--allowlist "$ALLOWLIST"); fi
