@@ -180,7 +180,11 @@ else
   rm -f "$CHUNK_DIR/sliced.diff"
 fi
 status=0
-python3 -I "$SOURCE/.github/scripts/pr-review-main/split-diff.py" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
+# The source's splitter is diff_chunking.py's `split` subcommand; an older
+# source has the same CLI as pr-review-main/split-diff.py.
+splitter=("$SOURCE/.github/scripts/diff-chunking/diff_chunking.py" split)
+[[ -f "${splitter[0]}" ]] || splitter=("$SOURCE/.github/scripts/pr-review-main/split-diff.py")
+python3 -I "${splitter[@]}" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
 if [[ "$status" -ne 0 ]]; then
   cat "$CHUNK_DIR/split-error.txt" >&2
   # split-diff.py's refusal of a diff over the ceiling names its chunk count.

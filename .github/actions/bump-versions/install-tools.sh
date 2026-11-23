@@ -11,8 +11,8 @@ if [[ "${RUNNER_OS:-}" != Linux || "${RUNNER_ARCH:-}" != X64 ]]; then
   exit 2
 fi
 
-yq_version=v4.53.6
-yq_sha256=c5f056448f973ae7d39b5401949648a78f2dc1947d6a8eb65be60d5c504b9385
+yq_version=v4.54.3
+yq_sha256=129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973
 osslsigncode_deb=osslsigncode_2.8-2_amd64.deb
 osslsigncode_sha256=1aee7be603102633e80b4c67cd939bba2e16a62813e4a3035696727783f632b0
 

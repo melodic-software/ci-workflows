@@ -1494,7 +1494,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
@@ -1507,7 +1507,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff
@@ -2621,7 +2621,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
@@ -2634,7 +2634,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff
@@ -3718,7 +3718,7 @@ jobs:
             exit 1
           fi
           git clone --quiet --depth=1 --filter=blob:none --sparse https://github.com/melodic-software/claude-code-plugins.git "$SOURCE"
-          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/pr-review-main
+          git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main
           echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"
           mkdir -p .lane/plugins
           cp -R "$SOURCE/plugins/review" .lane/plugins/review
@@ -3731,7 +3731,7 @@ jobs:
       # unless its own section is over the budget (then cut at its hunks, each
       # piece under its header), into chunks of at most that budget and that
       # many files by
-      # claude-code-plugins' split-diff.py from the clone above (pr-review-main
+      # claude-code-plugins' diff_chunking.py split from the clone above (pr-review-main
       # and pr-verify split their diffs with it), and each chunk gets its own
       # review below, in order. The identical copies and verified renames the
       # full-diff step listed in scope are left out first: when the whole diff

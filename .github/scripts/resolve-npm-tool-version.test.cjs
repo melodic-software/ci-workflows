@@ -137,7 +137,11 @@ test("biome action wires resolve step before npx", () => {
     "utf8",
   );
   assert.match(action, /^ {2}fallback-version:/mu);
-  assert.match(action, /^ {4}default: 2\.5\.11$/mu);
+  // The version-bump bot moves the value; the contract is an exact pin.
+  assert.match(
+    action,
+    /^ {2}fallback-version:\n(?: {4,}[^\n]*\n)*? {4}default: \d+\.\d+\.\d+$/mu,
+  );
   assert.match(action, /resolve-npm-tool-version\.cjs/u);
   assert.match(action, /PACKAGE_NAME: '@biomejs\/biome'/u);
   assert.match(
