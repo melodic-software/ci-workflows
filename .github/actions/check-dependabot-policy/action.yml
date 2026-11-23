@@ -20,7 +20,7 @@ inputs:
   standards-ref:
     description: >-
       Branch or full commit SHA of melodic-software/standards the policy
-      falls back to (see the checkout-standards action). Pass the run's
+      falls back to (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   config:
@@ -51,7 +51,7 @@ runs:
         DEPENDABOT: ${{ inputs.dependabot }}
       run: |
         set -euo pipefail
-        source "$GITHUB_ACTION_PATH/../checkout-standards/lib.sh"
+        source "$GITHUB_ACTION_PATH/../download-standards/lib.sh"
         # The policy path is relative to root; standards_config tests it
         # against the working directory.
         POLICY="$(cd "$ROOT" && standards_config "$POLICY" \

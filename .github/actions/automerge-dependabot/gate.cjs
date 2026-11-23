@@ -91,14 +91,14 @@ const POLICY_PATH = ".github/standards/dependabot-policy/policy.json";
 // The same policy in melodic-software/standards, read when the copy is absent.
 const STANDARDS_POLICY_PATH = "components/dependabot-policy/policy.json";
 
-// The standards policy at the commit checkout-standards resolves for
+// The standards policy at the commit download-standards resolves for
 // env.STANDARDS_REF: { text } or { failure }. Never { text: undefined }: with
 // no copy and no readable standards policy, nothing arms.
 function readStandardsPolicy(env) {
   try {
     const checkout = execFileSync(
       "bash",
-      [path.join(__dirname, "..", "checkout-standards", "checkout.sh")],
+      [path.join(__dirname, "..", "download-standards", "checkout.sh")],
       { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     ).trim();
     return {

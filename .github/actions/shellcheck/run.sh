@@ -25,8 +25,8 @@ if [[ -z "$jobs" ]]; then
   ((jobs <= 4)) || jobs=4
 fi
 
-# shellcheck source=../checkout-standards/lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../checkout-standards/lib.sh"
+# shellcheck source=../download-standards/lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
 rcfile="$(standards_config "$rcfile" .shellcheckrc .shellcheckrc)"
 if [[ ! -f "$rcfile" ]]; then
   echo "::error::shellcheck: rcfile not found: $rcfile"

@@ -161,7 +161,7 @@ consumer to audit it.
   copy the `dependabot-policy` input names (default
   `.github/standards/dependabot-policy/policy.json`), or, when the default copy
   is absent, from standards' own file at `standards-ref` (see
-  `checkout-standards`). A policy file that still
+  `download-standards`). A policy file that still
   sets `cooldownDays` keeps its own values; with neither, `prepare` fails rather
   than assume a cooldown. Below 1.0 a minor move is class `major` (as the
   Dependabot gate treats it), and `line: major` then keeps the minor number. A
@@ -677,7 +677,7 @@ consumer to audit it.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network for the
   check itself). A caller with no root `lychee.toml` gets standards' canonical
-  one at `standards-ref` (see `checkout-standards`), so a repository outside
+  one at `standards-ref` (see `download-standards`), so a repository outside
   the standards sync needs no copy of its own.
 - `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
@@ -706,7 +706,7 @@ consumer to audit it.
   change a pattern there, a driver here.
 - `.github/actions/check-line-endings` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
-- `.github/actions/checkout-standards` — resolves a ref of
+- `.github/actions/download-standards` — resolves a ref of
   `melodic-software/standards` (`ref`, default `main`; a full SHA is taken as
   given) to one commit with an anonymous `git ls-remote`, writes it to the step
   summary and the `sha` output, and checks that commit out read-only: a depth-1
@@ -1410,7 +1410,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   (`melodic-software/*`). The copy is read through the contents API at the base
   commit, so the pull request cannot change it; with no copy there, standards'
   own `components/dependabot-policy/policy.json` at one resolved commit (see
-  `checkout-standards`) takes its place. Whatever the input, the policy also
+  `download-standards`) takes its place. Whatever the input, the policy also
   narrows: its `autoMerge.ecosystems` bound the ecosystems armed, and its
   `autoMerge.reviewOnly` dependencies for this repository are never armed. A
   policy that cannot be read or parsed arms nothing. No

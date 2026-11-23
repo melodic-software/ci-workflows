@@ -1,4 +1,4 @@
-name: Checkout Standards
+name: Download Standards
 description: >-
   Resolve a ref of melodic-software/standards to one commit, record it in the
   step summary, and check that commit out read-only: an anonymous depth-1
@@ -50,7 +50,7 @@ runs:
             sha="$(bash "$GITHUB_ACTION_PATH/resolve.sh")"
             ;;
           *)
-            echo "::error::checkout-standards: checkout must be true or false, not '$CHECKOUT'"
+            echo "::error::download-standards: checkout must be true or false, not '$CHECKOUT'"
             exit 1
             ;;
         esac

@@ -123,7 +123,7 @@ config .gitleaks.toml .gitleaks.toml absent.toml
 [[ $rc -eq 2 && $err == *"has no absent.toml"* ]] || fail "missing standards file: exit $rc ($err)"
 
 if ((failures > 0)); then
-  printf '%d checkout-standards test(s) failed\n' "$failures"
+  printf '%d download-standards test(s) failed\n' "$failures"
   exit 1
 fi
-echo 'checkout-standards tests passed'
+echo 'download-standards tests passed'

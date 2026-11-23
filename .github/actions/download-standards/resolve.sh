@@ -35,7 +35,7 @@ fi
 recorded="$root/recorded-$sha"
 if [[ ! -e $recorded ]]; then
   : >"$recorded"
-  echo "checkout-standards: melodic-software/standards $ref is $sha" >&2
+  echo "download-standards: melodic-software/standards $ref is $sha" >&2
   if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
     # shellcheck disable=SC2016 # The backticks are Markdown code spans.
     printf 'Standards: melodic-software/standards at [`%s`](https://github.com/melodic-software/standards/tree/%s) (ref `%s`).\n' \

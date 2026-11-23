@@ -13,7 +13,7 @@
 // Run from the repository root; the head is the working tree's HEAD commit.
 // The contract is the synced copy in the working tree, or, when it is absent,
 // standards' own components/runner-policy/policy.json at the commit the
-// checkout-standards action resolves for STANDARDS_REF (default main).
+// download-standards action resolves for STANDARDS_REF (default main).
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -23,11 +23,11 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const POLICY_PATH = ".github/standards/runner-policy-contract/policy.json";
 const STANDARDS_POLICY_PATH = "components/runner-policy/policy.json";
-const CHECKOUT_STANDARDS = join(
+const DOWNLOAD_STANDARDS = join(
   __dirname,
   "..",
   "actions",
-  "checkout-standards",
+  "download-standards",
   "checkout.sh",
 );
 const WORKFLOW_PATH = /^\.github\/workflows\/[^/]+\.ya?ml$/u;
@@ -51,7 +51,7 @@ function readPolicy() {
   }
   let checkout;
   try {
-    checkout = execFileSync("bash", [CHECKOUT_STANDARDS], {
+    checkout = execFileSync("bash", [DOWNLOAD_STANDARDS], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
     }).trim();

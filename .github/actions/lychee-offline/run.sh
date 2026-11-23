@@ -11,8 +11,8 @@ GLOBS="${GLOBS:?}"
 # so a repository without a synced copy runs the same rules with no copy to
 # drift. Only the default path falls back; a caller that names another path
 # and lacks it is misconfigured.
-# shellcheck source=../checkout-standards/lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../checkout-standards/lib.sh"
+# shellcheck source=../download-standards/lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
 CONFIG="$(standards_config "$CONFIG" lychee.toml lychee.toml)"
 echo "lychee-offline: config $CONFIG"
 

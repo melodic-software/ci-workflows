@@ -40,7 +40,7 @@ name: PR Automerge Dependabot
 #     The policy is standards `components/dependabot-policy/policy.json`: the
 #     synced copy at `.github/standards/dependabot-policy/policy.json` in the
 #     base commit, or, when the base holds none, standards' own file at one
-#     resolved commit (the checkout-standards action). When the caller leaves
+#     resolved commit (the download-standards action). When the caller leaves
 #     `publisher-allowlist` at its default (which mirrors that policy's
 #     `autoMerge`), the allowlist is the policy's `tier: auto` publishers plus
 #     its `fastTrack` `github-actions` and `own` globs; a caller list other

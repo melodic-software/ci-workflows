@@ -24,7 +24,7 @@ inputs:
   standards-ref:
     description: >-
       Branch or full commit SHA of melodic-software/standards the config
-      falls back to (see the checkout-standards action). Pass the run's
+      falls back to (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   exclude:
@@ -94,7 +94,7 @@ runs:
         FORMAT: ${{ inputs.format }}
       run: |
         set -euo pipefail
-        source "$GITHUB_ACTION_PATH/../checkout-standards/lib.sh"
+        source "$GITHUB_ACTION_PATH/../download-standards/lib.sh"
         CONFIG="$(standards_config "$CONFIG" .editorconfig-checker.json .editorconfig-checker.json)"
         args=(-config "$CONFIG")
         if [[ -n "${EXCLUDE// }" ]]; then args+=(-exclude "$EXCLUDE"); fi

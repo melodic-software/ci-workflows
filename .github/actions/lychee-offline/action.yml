@@ -15,7 +15,7 @@ inputs:
   standards-ref:
     description: >-
       Branch or full commit SHA of melodic-software/standards the config
-      falls back to (see the checkout-standards action). Pass the run's
+      falls back to (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   exclude:

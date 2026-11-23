@@ -207,12 +207,12 @@ function render(entries, more) {
   return `${lines.join("\n")}\n`;
 }
 
-// standards' trusted-actor list at the commit checkout-standards resolves
+// standards' trusted-actor list at the commit download-standards resolves
 // for env.STANDARDS_REF. Throws when it cannot be read.
 function readStandardsList(env) {
   const checkout = execFileSync(
     "bash",
-    [path.join(__dirname, "..", "checkout-standards", "checkout.sh")],
+    [path.join(__dirname, "..", "download-standards", "checkout.sh")],
     { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
   ).trim();
   return fs.readFileSync(path.join(checkout, STANDARDS_LIST_PATH), "utf8");

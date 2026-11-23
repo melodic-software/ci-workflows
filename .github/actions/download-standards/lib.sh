@@ -3,7 +3,7 @@
 # back to the standards copy. Defines no variable outside a function.
 
 standards_fail() {
-  echo "::error::checkout-standards: $*" >&2
+  echo "::error::download-standards: $*" >&2
   exit 1
 }
 
@@ -18,7 +18,7 @@ standards_retry() {
     timeout 60 "$@" || status=$?
     ((status == 0)) && return 0
     ((++attempt < 3)) || standards_fail "$what failed after 3 tries (exit $status)"
-    echo "::warning::checkout-standards: $what failed on try $attempt (exit $status); retrying" >&2
+    echo "::warning::download-standards: $what failed on try $attempt (exit $status); retrying" >&2
     sleep "$((RANDOM % (2 * attempt + 1)))"
   done
 }

@@ -11,8 +11,8 @@ REDACT="${REDACT:-}"
 REPORT_FORMAT="${REPORT_FORMAT:-}"
 REPORT_PATH="${REPORT_PATH:-}"
 SCAN_MODE="${SCAN_MODE:-}"
-# shellcheck source=../checkout-standards/lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../checkout-standards/lib.sh"
+# shellcheck source=../download-standards/lib.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
 
 workspace="$(realpath -e -- "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}")" || {
   echo '::error::gitleaks: workspace cannot be resolved'

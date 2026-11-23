@@ -17,7 +17,7 @@ inputs:
   standards-ref:
     description: >-
       Branch or full commit SHA of melodic-software/standards the config
-      falls back to (see the checkout-standards action). Pass the run's
+      falls back to (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   color:
@@ -134,7 +134,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ -z "${CONFIG_FILE// }" && ! -e .github/actionlint.yaml && ! -e .github/actionlint.yml ]]; then
-          source "$GITHUB_ACTION_PATH/../checkout-standards/lib.sh"
+          source "$GITHUB_ACTION_PATH/../download-standards/lib.sh"
           CONFIG_FILE="$(standards_config .github/actionlint.yaml .github/actionlint.yaml .github/actionlint.yaml)"
         fi
         # ShellCheck comes from the pinned install above, not the runner image.

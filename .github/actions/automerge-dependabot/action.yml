@@ -31,7 +31,7 @@ inputs:
     description: >-
       Branch or full commit SHA of melodic-software/standards whose
       dependabot policy applies when the base commit holds no synced copy
-      (see the checkout-standards action).
+      (see the download-standards action).
     required: false
     default: main
 

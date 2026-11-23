@@ -320,7 +320,7 @@ test("a reusable with no contract entry is reported and passes", () => {
 
 // A local repository standing in for melodic-software/standards, holding
 // `policyText` (or nothing) at components/runner-policy/policy.json, and the
-// env that points checkout-standards at it.
+// env that points download-standards at it.
 function standards(policyText) {
   const root = makeTemporaryDirectory("surface-standards-");
   const upstream = path.join(root, "standards");
