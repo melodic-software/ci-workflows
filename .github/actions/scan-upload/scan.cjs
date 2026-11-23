@@ -71,10 +71,16 @@ function checkImports(text) {
   if (specifiers.some((name) => !name.startsWith("node:"))) throw new Error("the gate imports more than node builtins");
 }
 
-/** The caller's gate at `gatePath`, held to node: builtins like a fetched one; returns its absolute path. */
-function callerGate(gatePath) {
-  const gate = path.resolve(gatePath);
-  checkImports(fs.readFileSync(gate, "utf8"));
+/**
+ * The caller's gate at `gatePath`, read once, held to node: builtins like a
+ * fetched one, and written into a fresh directory under `temp`, so the file
+ * imported is the one checked; returns the copy's path.
+ */
+function callerGate(gatePath, temp) {
+  const text = fs.readFileSync(path.resolve(gatePath), "utf8");
+  checkImports(text);
+  const gate = path.join(fs.mkdtempSync(path.join(temp, "publish-gate-")), "publish-gate.mjs");
+  fs.writeFileSync(gate, text, { flag: "wx", mode: 0o444 });
   return gate;
 }
 
@@ -149,7 +155,8 @@ function lstatOrNull(at) {
 async function main(env = process.env, gatePath = null) {
   let result;
   try {
-    const gate = gatePath ?? (env.SCAN_GATE ? callerGate(env.SCAN_GATE) : fetchGate(env.RUNNER_TEMP || os.tmpdir()));
+    const temp = env.RUNNER_TEMP || os.tmpdir();
+    const gate = gatePath ?? (env.SCAN_GATE ? callerGate(env.SCAN_GATE, temp) : fetchGate(temp));
     const gateModule = await import(pathToFileURL(gate).href);
     if (typeof gateModule.scanLeak !== "function") throw new Error("the gate exports no scanLeak");
     result = scanPaths(gateModule, String(env.SCAN_PATHS ?? "").split(/\r?\n/u), { telemetry: env.SCAN_TELEMETRY === "true" });

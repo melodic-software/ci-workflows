@@ -56,12 +56,15 @@ function gateFile(dir, text = GATE + FINGERPRINT) {
 function run(dir, paths, extra = {}) {
   const output = path.join(dir, "github-output");
   const summary = path.join(dir, "step-summary");
+  const temp = path.join(dir, "runner-temp");
   fs.writeFileSync(output, "");
   fs.writeFileSync(summary, "");
+  fs.mkdirSync(temp, { recursive: true });
   const result = spawnSync(process.execPath, [SCRIPT], {
     cwd: dir,
     env: {
       PATH: process.env.PATH,
+      RUNNER_TEMP: temp,
       SCAN_PATHS: paths,
       GITHUB_OUTPUT: output,
       GITHUB_STEP_SUMMARY: summary,
@@ -88,6 +91,22 @@ function withheld(result, label) {
     "the matched value is never printed",
   );
 }
+
+test("the caller's gate is imported from a read-only copy under RUNNER_TEMP, the bytes it checked", () => {
+  const dir = makeTemporaryDirectory("scan-gate-copy-");
+  const gate = gateFile(dir);
+  fs.writeFileSync(path.join(dir, "reply.txt"), "a clean reply\n");
+  const result = run(dir, path.join(dir, "reply.txt"), { SCAN_GATE: gate });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const temp = path.join(dir, "runner-temp");
+  const copies = fs
+    .readdirSync(temp)
+    .filter((name) => name.startsWith("publish-gate-"));
+  assert.equal(copies.length, 1);
+  const copy = path.join(temp, copies[0], "publish-gate.mjs");
+  assert.equal(fs.readFileSync(copy, "utf8"), fs.readFileSync(gate, "utf8"));
+  assert.equal(fs.statSync(copy).mode & 0o777, 0o444);
+});
 
 test("SCAN_GATE scans with the caller's gate, relative to the workspace, and fetches nothing", () => {
   const dir = makeTemporaryDirectory("scan-gate-");
