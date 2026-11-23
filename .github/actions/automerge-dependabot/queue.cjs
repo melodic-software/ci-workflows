@@ -16,16 +16,18 @@ const {
   POLICY_PATH,
   gateFailure,
   parseCommitMetadata,
+  readStandardsPolicy,
   resolvePolicyInputs,
 } = require("./gate.cjs");
 
-// The synced policy in the checked-out default branch: { text }, with text
-// undefined when the repository has no copy, or { failure }.
-function readWorkspacePolicy(workspace) {
+// The policy: the synced copy in the checked-out default branch, or, when the
+// repository has none, standards' own at the commit download-standards
+// resolves (readStandards). { text } or { failure }.
+function readWorkspacePolicy(workspace, readStandards) {
   try {
     return { text: fs.readFileSync(path.join(workspace, POLICY_PATH), "utf8") };
   } catch (error) {
-    if (error.code === "ENOENT") return { text: undefined };
+    if (error.code === "ENOENT") return readStandards();
     return { failure: `${POLICY_PATH} could not be read: ${error.message}` };
   }
 }
@@ -162,9 +164,16 @@ async function queueOne({ github, app, repo, core, pr, inputs, policyFailure, ap
   return "queued";
 }
 
-async function runQueue({ github, app, context, core, env }) {
+async function runQueue({
+  github,
+  app,
+  context,
+  core,
+  env,
+  readStandards = () => readStandardsPolicy(env),
+}) {
   const repo = context.repo;
-  const policy = readWorkspacePolicy(env.GITHUB_WORKSPACE);
+  const policy = readWorkspacePolicy(env.GITHUB_WORKSPACE, readStandards);
   // REVIEW_ONLY_LOCKFILE, when set, holds that lockfile's whole runtime tree
   // for review in place of REVIEW_ONLY_DEPENDENCIES.
   const locked = readLockedRuntime(env.GITHUB_WORKSPACE, env.REVIEW_ONLY_LOCKFILE);

@@ -199,6 +199,19 @@ const forgedCommit = () => ({
 
 const success = { id: 2, status: "completed", conclusion: "success" };
 
+// The reusable's default tier, as standards' policy states it.
+const DEFAULT_TIER_POLICY = JSON.stringify({
+  autoMerge: {
+    publishers: {
+      "actions/*": { tier: "auto" },
+      "github/*": { tier: "auto" },
+      "anthropics/*": { tier: "auto" },
+    },
+    ecosystems: ["github-actions", "npm", "pip", "uv", "nuget"],
+    reviewOnly: [],
+  },
+});
+
 async function runWithFakes({
   pulls = [dependabotPull(7)],
   commits = {},
@@ -208,6 +221,9 @@ async function runWithFakes({
   listError = null,
   // The synced policy in the checked-out workspace; absent unless given.
   policy = undefined,
+  // What the standards read returns when the workspace has no copy: by
+  // default a policy with the reusable's default tier.
+  standardsPolicy = { text: DEFAULT_TIER_POLICY },
   // A directory at the policy path, so the read fails with something other than ENOENT.
   policyIsDirectory = false,
   // REVIEW_ONLY_LOCKFILE, and the text written there when given.
@@ -277,11 +293,16 @@ async function runWithFakes({
     warning: (message) => warnings.push(message),
     info: () => {},
   };
+  const standardsReads = [];
   const counts = await runQueue({
     github,
     app,
     context: { repo: { owner: "melodic-software", repo: "ci-workflows" } },
     core,
+    readStandards: () => {
+      standardsReads.push(true);
+      return standardsPolicy;
+    },
     env: {
       APP_SLUG: "melodic-release",
       GITHUB_WORKSPACE: workspace,
@@ -292,8 +313,48 @@ async function runWithFakes({
     },
   });
   fs.rmSync(workspace, { recursive: true, force: true });
-  return { counts, reads, appCalls, notices, warnings };
+  return { counts, reads, appCalls, notices, warnings, standardsReads };
 }
+
+test("with no synced copy, standards' policy sets the publishers the queue arms", async () => {
+  const { counts, notices, standardsReads } = await runWithFakes({
+    standardsPolicy: {
+      text: JSON.stringify({
+        autoMerge: {
+          publishers: { "github/*": { tier: "auto" } },
+          ecosystems: ["github-actions"],
+          reviewOnly: [],
+        },
+      }),
+    },
+  });
+  assert.equal(standardsReads.length, 1);
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.match(
+    notices[0],
+    /actions\/setup-dotnet is not an allowlisted publisher/u,
+  );
+});
+
+test("a synced copy wins over standards' policy", async () => {
+  const { standardsReads } = await runWithFakes({
+    policy: DEFAULT_TIER_POLICY,
+  });
+  assert.equal(standardsReads.length, 0);
+});
+
+test("with no synced copy and no readable standards policy, every pull request is left alone", async () => {
+  const { counts, appCalls, notices } = await runWithFakes({
+    pulls: [appArmedPull(7), dependabotPull(8)],
+    standardsPolicy: { failure: "the standards policy could not be read" },
+  });
+  assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
+  assert.deepEqual(
+    appCalls.map((call) => [call.mutation, call.variables.id]),
+    [["disablePullRequestAutoMerge", "PR_7"]],
+  );
+  assert.match(notices[0], /the standards policy could not be read/u);
+});
 
 test("the workspace's synced policy sets the publishers the queue arms", async () => {
   const { counts, notices } = await runWithFakes({
