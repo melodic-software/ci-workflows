@@ -16,9 +16,9 @@ const workflow = fs.readFileSync(
 );
 const readme = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
 
-const pinnedVersion = "1.30.0";
+const pinnedVersion = "1.32.0";
 const pinnedSha256 =
-  "ec8c95cd800845abb9bbc5f377ec7c57d2eb8e2386a00a201d3a74ee4092e5ed";
+  "bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b";
 const assetName = "zizmor-x86_64-unknown-linux-gnu.tar.gz";
 
 function inputDefault(inputName) {
@@ -121,7 +121,7 @@ function runLane({ dirs, paths }) {
       "tar",
       [
         "while (($#)); do case $1 in --directory=*) d=$(cut -d= -f2 <<<$1) ;; esac; shift; done",
-        'printf \'#!/usr/bin/env bash\\nif [[ $1 == --version ]]; then echo "zizmor 1.30.0"; exit 0; fi\\nprintf "%%s\\\\n" "$@" >"$ARGS_FILE"\\n\' >"$d/zizmor"',
+        'printf \'#!/usr/bin/env bash\\nif [[ $1 == --version ]]; then echo "zizmor 1.32.0"; exit 0; fi\\nprintf "%%s\\\\n" "$@" >"$ARGS_FILE"\\n\' >"$d/zizmor"',
         'chmod +x "$d/zizmor"',
       ].join("\n"),
     );
