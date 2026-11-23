@@ -16,7 +16,7 @@ Each line names a rule CI does not enforce; the linked file states it in full.
 - Configurable, not forkable: [rule](README.md#contract).
 - Policy is authored in standards; `fixtures/` configs only exercise contracts:
   [rule](README.md#policy-ownership-and-action-inputs).
-- Local-lane guard wrappers keep parity with the standards component:
-  [rule](README.md#actions), the note after `check-comment-markers`.
+- The reference, exec-bit, machine-path and comment-marker actions are the only implementation of
+  their guards; pattern bodies change in standards: [rule](README.md#actions), the note after `check-comment-markers`.
 - Lanes consolidate as composite actions; `CI Status` stays the single required check:
   [rule](README.md#contract).

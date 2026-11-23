@@ -677,9 +677,17 @@ consumer to audit it.
   (TODO/FIXME/HACK/XXX) and tracker references against its bundled organization
   policy, with an optional complete caller replacement.
 
-  Local (non-CI) invocation of the four bespoke guards above is **not** owned
-  here: use the standards `local-lane-guards` component
-  (standards ADR-0004 / ci-workflows#190). Composite actions remain the CI wrappers.
+  `check-markdown-references`, `check-exec-bit`, `check-machine-paths` and
+  `check-comment-markers` are the only implementation of their guards
+  ([standards ADR-0009](https://github.com/melodic-software/standards/blob/main/docs/adr/0009-delete-local-lane-guards-drivers.md)).
+  To run one locally, run its script from a ci-workflows checkout with the
+  action's inputs as upper-case environment variables, for example
+  `bash <ci-workflows-checkout>/.github/actions/check-exec-bit/check-exec-bit.sh`;
+  `check-comment-markers` runs `scan-tree.sh` and needs `PATTERNS_FILE` set to
+  its bundled `comment-hygiene-patterns.sh`.
+  The bundled `comment-hygiene-patterns.sh` and `machine-path-patterns.sh` are
+  synced from the standards `comment-hygiene` and `path-detection` components;
+  change a pattern there, a driver here.
 - `.github/actions/check-line-endings` — detects index-level line-ending drift via
   git's clean filter, driven by the caller's `.gitattributes` (read-only).
 - `.github/actions/check-workflow-naming` — runs the standards
