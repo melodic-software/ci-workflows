@@ -1457,8 +1457,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   own Dependabot merge path, not a reusable. Every 30 minutes and on dispatch,
   on main only, it lists the open PRs authored by `49699333`, reads each head
   commit's Dependabot metadata, runs the same gate with the reusable's
-  default inputs (a synced dependabot-policy copy in the checked-out main
-  would set the publishers the same way; this repository has none yet), and
+  default inputs, at which the standards dependabot-policy sets the
+  publishers: a synced copy in the checked-out main, else standards' own at
+  the commit `download-standards` resolves (an unreadable policy queues
+  nothing and disarms what was armed), and
   requires a `CI Status` check run that succeeded on the head. Every package
   `check-dependabot-policy/package-lock.json` installs, transitive ones
   included, is review-only, since consumers run that checker. It then arms each passing PR with the melodic-release App token from
@@ -1477,9 +1479,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   with the reason). Each tool is capped at its current major, since a merged
   bump reaches every `@main` caller. It opens each bump with the melodic-release
   App token from the `plugin-release` environment. The cooldowns come from the
-  standards-synced `.github/standards/dependabot-policy/policy.json`; this
-  repository does not receive that file yet, so until a standards sync target
-  adds it the run warns and bumps nothing.
+  standards-synced `.github/standards/dependabot-policy/policy.json`, or, with
+  no copy, from standards' own `components/dependabot-policy/policy.json` at
+  the commit `download-standards` resolves; when neither can be read the run
+  fails and bumps nothing.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution
   from the schema-v2 component manifest in `melodic-software/standards`. The

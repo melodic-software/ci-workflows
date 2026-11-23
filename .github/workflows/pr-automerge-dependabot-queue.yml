@@ -80,9 +80,10 @@ jobs:
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          # The reusable's input defaults, which this repository's tier uses.
-          # A synced standards dependabot-policy copy in the checkout, once
-          # this repository receives one, sets the publishers instead.
+          # The reusable's input defaults. At them, the standards
+          # dependabot-policy sets the publishers instead: the synced copy in
+          # the checkout when there is one, else standards' own at the commit
+          # download-standards resolves.
           PUBLISHER_ALLOWLIST: '["actions/*","github/*","anthropics/*"]'
           PACKAGE_AUTO_MERGE: "true"
           # Every package the check-dependabot-policy action's lockfile
