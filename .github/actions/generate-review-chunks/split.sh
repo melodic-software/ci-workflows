@@ -180,10 +180,14 @@ else
   rm -f "$CHUNK_DIR/sliced.diff"
 fi
 status=0
-python3 -I "$SOURCE/.github/scripts/diff-chunking/diff_chunking.py" split "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
+# The source's splitter is diff_chunking.py's `split` subcommand; an older
+# source has the same CLI as pr-review-main/split-diff.py.
+splitter=("$SOURCE/.github/scripts/diff-chunking/diff_chunking.py" split)
+[[ -f "${splitter[0]}" ]] || splitter=("$SOURCE/.github/scripts/pr-review-main/split-diff.py")
+python3 -I "${splitter[@]}" "$input" "$CHUNK_DIR" "$READ_BUDGET" "$MAX_CHUNKS" "$CHUNK_DIR/manifest.txt" "$READ_BUDGET" "$MAX_CHUNK_FILES" 2>"$CHUNK_DIR/split-error.txt" || status=$?
 if [[ "$status" -ne 0 ]]; then
   cat "$CHUNK_DIR/split-error.txt" >&2
-  # diff_chunking.py's refusal of a diff over the ceiling names its chunk count.
+  # split-diff.py's refusal of a diff over the ceiling names its chunk count.
   needed=$(grep -oE '^split-diff: the diff needs [0-9]{1,6} chunks, more than [0-9]+$' "$CHUNK_DIR/split-error.txt" | grep -oE '[0-9]+' | head -n 1) || needed=
   if [[ -n "$needed" ]]; then
     echo "over-chunks=$needed" >>"$GITHUB_OUTPUT"
@@ -194,7 +198,7 @@ if [[ "$status" -ne 0 ]]; then
   unsplit
 fi
 chunks=$(find "$CHUNK_DIR" -name 'chunk-*.patch' | wc -l)
-# A chunk over the file cap (a splitter that ignored it) is one
+# A chunk over the file cap (a split-diff.py that ignored it) is one
 # review, which the extract step then calls partial. A cut file
 # counts once, in the chunk holding its last piece, so the chunks'
 # counts add up to the files in scope.

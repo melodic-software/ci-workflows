@@ -27,7 +27,7 @@ const LEGS = ["review-key", "review-subscription", "review-fallback"].map(
 );
 const LIMITS = ["MAX_CHUNK_FILES", "READ_BUDGET", "MAX_CHUNKS"];
 
-// A stand-in for claude-code-plugins' diff_chunking.py with its documented
+// A stand-in for claude-code-plugins' split-diff.py with its documented
 // contract (module docstring) and its line split (lines_of: on \n only):
 // greedy chunks of whole `diff --git` sections,
 // at most max-bytes and max-files each; a section over max-bytes, or more
@@ -35,7 +35,6 @@ const LIMITS = ["MAX_CHUNK_FILES", "READ_BUDGET", "MAX_CHUNKS"];
 // was given to $SPLIT_RECORD.
 const SPLITTER = [
   "import os, sys",
-  "if sys.argv.pop(1) != 'split': sys.exit(2)",
   "from pathlib import Path",
   "patch, out, max_bytes, max_chunks, manifest, _ = sys.argv[1:7]",
   "max_files = int(sys.argv[7]) if len(sys.argv) > 7 else 0",
@@ -88,10 +87,10 @@ function split(job, diff, env = {}, prepare = () => {}) {
     "source",
     ".github",
     "scripts",
-    "diff-chunking",
+    "pr-review-main",
   );
   fs.mkdirSync(scripts, { recursive: true });
-  fs.writeFileSync(path.join(scripts, "diff_chunking.py"), SPLITTER);
+  fs.writeFileSync(path.join(scripts, "split-diff.py"), SPLITTER);
   const work = path.join(dir, "work");
   fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
   fs.writeFileSync(path.join(work, ".claude-lane", "pr.diff"), diff);

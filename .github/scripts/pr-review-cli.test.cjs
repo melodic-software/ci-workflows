@@ -2024,7 +2024,7 @@ test("every review job stages the review plugin from claude-code-plugins' defaul
     [
       'if [ -e .lane ] || [ -L .lane ] || [ -n "$(git ls-tree HEAD -- .lane)" ]; then',
       ...clone,
-      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking',
+      'git -C "$SOURCE" sparse-checkout set plugins/review .github/actions .github/scripts/diff-chunking .github/scripts/pr-review-main',
       'echo "Review plugin from claude-code-plugins@$(git -C "$SOURCE" rev-parse HEAD)"',
       "mkdir -p .git/info",
       "echo /.lane/ >>.git/info/exclude",
@@ -4001,7 +4001,7 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
 // whole files, one model step each, and only every chunk's verdict together
 // is a complete review.
 
-// Runs the split step in a fresh checkout with a stand-in for diff_chunking.py
+// Runs the split step in a fresh checkout with a stand-in for split-diff.py
 // that writes the chunks the real one would for the fixture: two files, then
 // one. The legs' split steps are one step by construction (the subscription
 // and fallback jobs repeat the key job's steps, asserted above), so the key
@@ -4009,13 +4009,12 @@ test("the full-diff step fails when git diff fails inside its pipe", () => {
 function split(env = {}, prepare = () => {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-split-");
   const source = path.join(dir, "source");
-  const script = path.join(source, ".github/scripts/diff-chunking");
+  const script = path.join(source, ".github/scripts/pr-review-main");
   fs.mkdirSync(script, { recursive: true });
   fs.writeFileSync(
-    path.join(script, "diff_chunking.py"),
+    path.join(script, "split-diff.py"),
     [
       "import sys",
-      "if sys.argv.pop(1) != 'split': sys.exit(2)",
       "from pathlib import Path",
       "patch, out = sys.argv[1], Path(sys.argv[2])",
       "if Path(sys.argv[1]).read_text().startswith('TOO LARGE'): sys.exit(3)",
@@ -4066,7 +4065,7 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(workflow.env.READ_BUDGET, "300000");
   assert.match(
     stepSource(s),
-    /python3 -I "\$SOURCE\/\.github\/scripts\/diff-chunking\/diff_chunking\.py" split "\$input"/u,
+    /splitter=\("\$SOURCE\/\.github\/scripts\/diff-chunking\/diff_chunking\.py" split\)\n\[\[ -f "\$\{splitter\[0\]\}" \]\] \|\| splitter=\("\$SOURCE\/\.github\/scripts\/pr-review-main\/split-diff\.py"\)\npython3 -I "\$\{splitter\[@\]\}" "\$input"/u,
   );
   assert.match(
     stepSource(s),
@@ -4076,6 +4075,25 @@ test("the split step cuts only a diff over the read budget or the file cap, coun
   assert.equal(cut.status, 0);
   assert.match(cut.out, /^chunks=2$/mu);
   assert.match(cut.out, /^files=2,1$/mu);
+  // A source with diff_chunking.py runs its `split` subcommand instead.
+  const moduled = split({}, (work) => {
+    const module = path.join(work, "../source/.github/scripts/diff-chunking");
+    fs.mkdirSync(module, { recursive: true });
+    fs.writeFileSync(
+      path.join(module, "diff_chunking.py"),
+      [
+        "import sys",
+        "from pathlib import Path",
+        "assert sys.argv[1] == 'split', sys.argv",
+        "out = Path(sys.argv[3])",
+        "(out / 'chunk-1.patch').write_text('diff --git a/a b/a\\n+1\\n')",
+        "Path(sys.argv[6]).write_text('chunk 1 modified a\\n')",
+        "",
+      ].join("\n"),
+    );
+  });
+  assert.equal(moduled.status, 0);
+  assert.match(moduled.out, /^chunks=1$/mu);
   assert.match(cut.out, /^excluded=0$/mu);
   // The notice names the distinct bytes on a split too: with no copies they
   // are the whole scope.
@@ -4264,19 +4282,18 @@ test("a diff over every chunk whose files but the copies fit one review is one r
   );
 });
 
-// A splitter that ignores the file cap must not leave a chunk too large to
-// read whole.
+// A split-diff.py that ignores the file cap (an older claude-code-plugins
+// tip) must not leave a chunk too large to read whole.
 test("a chunk over the file cap reviews unsplit, and two sections of one file count once", () => {
   const standIn = (chunk1) => (work) =>
     fs.writeFileSync(
       path.join(
         work,
         "..",
-        "source/.github/scripts/diff-chunking/diff_chunking.py",
+        "source/.github/scripts/pr-review-main/split-diff.py",
       ),
       [
         "import sys",
-        "if sys.argv.pop(1) != 'split': sys.exit(2)",
         "from pathlib import Path",
         "out = Path(sys.argv[2])",
         `(out / 'chunk-1.patch').write_text(${JSON.stringify(chunk1)})`,
@@ -4302,7 +4319,7 @@ test("a chunk over the file cap reviews unsplit, and two sections of one file co
   );
 });
 
-// A split refused for file count (diff_chunking.py's TooLarge, a planted chunk
+// A split refused for file count (split-diff.py's TooLarge, a planted chunk
 // directory, a chunk over the cap) leaves one review of more files than it
 // reads whole: partial, past the copies it skips.
 test("one review of more files that are not copies than the cap is partial", async () => {
@@ -4443,7 +4460,7 @@ test("a diff of many small added files, some identical, is chunked without its c
     Number(fullDiff.bytes) < 300000,
     "under the read budget: only the file count splits it",
   );
-  // A stand-in for diff_chunking.py that honors max-bytes, max-chunks and the
+  // A stand-in for split-diff.py that honors max-bytes, max-chunks and the
   // seventh argument, max-files, as the real one does.
   const source = standInSplitter(dir);
   const s = step(key, "split");
@@ -4577,7 +4594,7 @@ test("an added workflow identical to a fixture is reviewed in a chunk, not credi
     fs.readFileSync(path.join(work, ".claude-lane/identical.txt"), "utf8"),
     "docs/a.md\tdocs/b.md\n",
   );
-  // The many-files test's stand-in for diff_chunking.py, which honors the cap.
+  // The many-files test's stand-in for split-diff.py, which honors the cap.
   const source = standInSplitter(dir);
   const s = step(job, "split");
   const cut = run("split", {
@@ -4705,13 +4722,12 @@ test("a whole-file deletion counts in no file total, so a review of the rest is 
   });
   // Two sections a chunk: a chunk of deletions alone counts 0 files.
   const source = path.join(dir, "source");
-  const script = path.join(source, ".github/scripts/diff-chunking");
+  const script = path.join(source, ".github/scripts/pr-review-main");
   fs.mkdirSync(script, { recursive: true });
   fs.writeFileSync(
-    path.join(script, "diff_chunking.py"),
+    path.join(script, "split-diff.py"),
     [
       "import sys",
-      "if sys.argv.pop(1) != 'split': sys.exit(2)",
       "from pathlib import Path",
       "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
       "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
@@ -4945,13 +4961,12 @@ test("an incremental review leaves a file the push deleted out of its file count
   const work = path.join(dir, "work");
   fs.mkdirSync(path.join(work, ".claude-lane"), { recursive: true });
   fs.copyFileSync(diffFile, path.join(work, ".claude-lane/incremental.diff"));
-  const script = path.join(dir, "source/.github/scripts/diff-chunking");
+  const script = path.join(dir, "source/.github/scripts/pr-review-main");
   fs.mkdirSync(script, { recursive: true });
   fs.writeFileSync(
-    path.join(script, "diff_chunking.py"),
+    path.join(script, "split-diff.py"),
     [
       "import sys",
-      "if sys.argv.pop(1) != 'split': sys.exit(2)",
       "from pathlib import Path",
       "patch, out = sys.argv[1], Path(sys.argv[2])",
       "units = ['diff --git ' + u for u in Path(patch).read_text().split('diff --git ')[1:]]",
@@ -6878,17 +6893,16 @@ const fullDiffEnv = (repo, env = {}) => ({
   ...env,
 });
 
-// A stand-in for diff_chunking.py that honors max-bytes, max-chunks and
+// A stand-in for split-diff.py that honors max-bytes, max-chunks and
 // max-files, as the many-files test's does.
 function standInSplitter(dir) {
   const source = path.join(dir, "source");
-  const script = path.join(source, ".github/scripts/diff-chunking");
+  const script = path.join(source, ".github/scripts/pr-review-main");
   fs.mkdirSync(script, { recursive: true });
   fs.writeFileSync(
-    path.join(script, "diff_chunking.py"),
+    path.join(script, "split-diff.py"),
     [
       "import sys",
-      "if sys.argv.pop(1) != 'split': sys.exit(2)",
       "from pathlib import Path",
       "patch, out, max_bytes, max_chunks = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])",
       "max_files = int(sys.argv[7])",
