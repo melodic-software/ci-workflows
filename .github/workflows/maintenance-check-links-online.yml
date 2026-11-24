@@ -147,6 +147,7 @@ jobs:
           CONFIG: ${{ inputs.config }}
         run: |
           set -euo pipefail
+          CONFIG="${CONFIG:?the config input is empty}"
           file=$CONFIG
           if [[ ! -e $CONFIG && ! -L $CONFIG && $CONFIG == lychee.toml ]]; then
             file=

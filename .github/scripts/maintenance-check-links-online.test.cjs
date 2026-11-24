@@ -130,6 +130,9 @@ test("a caller with no lychee.toml at the default path gets standards' copy; a n
     runConfig("custom.toml", { withFile: false }).output,
     "file=custom.toml\n",
   );
+  const empty = runConfig("", { withFile: false });
+  assert.notEqual(empty.status, 0);
+  assert.equal(empty.output, "");
   assert.match(
     lychee.with.args,
     /--config '\$\{\{ steps\.config\.outputs\.file \|\| format\('\{0\}\/lychee\.toml', steps\.standards\.outputs\.path\) \}\}'/u,
