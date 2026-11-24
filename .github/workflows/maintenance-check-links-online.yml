@@ -1,9 +1,10 @@
 name: Maintenance Check Links Online
 
 # Reusable workflow: runs lychee with the network on over the caller's
-# Markdown, with the caller's lychee.toml (the standards-synced config the
-# offline lane also reads) and the .lycheeignore lychee picks up from the
-# working directory. The report goes to the job summary and any broken link
+# Markdown, with the caller's lychee.toml, or standards' canonical lychee.toml
+# when the caller has none at the default path (the offline lane's fallback,
+# via the download-standards action), and the .lycheeignore lychee picks up
+# from the working directory. The report goes to the job summary and any broken link
 # fails the job red. Links the caller's lychee.toml accepts as transient (a
 # 429 or 5xx in `accept`, a timeout under `accept_timeouts`) do not fail it but
 # are listed in the summary, so a host that stays down is still noticed. It
@@ -49,7 +50,10 @@ on:
         type: string
         default: link-check-online
       config:
-        description: Path to the lychee.toml ruleset in the caller repository.
+        description: >-
+          Path to the lychee.toml ruleset in the caller repository. When the
+          default path is absent, melodic-software/standards' lychee.toml is
+          used instead.
         type: string
         default: lychee.toml
       extra-args:
@@ -134,6 +138,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # Only the default path falls back; a caller that names another path and
+      # lacks it is left to lychee's own config error.
+      - name: Find the lychee config
+        id: config
+        if: steps.gate.outputs.run == 'true'
+        env:
+          CONFIG: ${{ inputs.config }}
+        run: |
+          set -euo pipefail
+          file=$CONFIG
+          if [[ ! -e $CONFIG && ! -L $CONFIG && $CONFIG == lychee.toml ]]; then
+            file=
+            echo "The repository has no lychee.toml; using standards' canonical one."
+          fi
+          echo "file=$file" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the standards lychee config
+        id: standards
+        if: steps.gate.outputs.run == 'true' && steps.config.outputs.file == ''
+        uses: $/.github/actions/download-standards
+
       # Pacing: some hosts throttle lychee's default per-host burst from a
       # runner IP, so each host gets fewer parallel requests, spaced out, with
       # longer retries and timeout. Pacing did not stop every 429
@@ -159,7 +184,7 @@ jobs:
           args: >-
             --no-progress
             --verbose
-            --config '${{ inputs.config }}'
+            --config '${{ steps.config.outputs.file || format('{0}/lychee.toml', steps.standards.outputs.path) }}'
             --host-concurrency 4
             --host-request-interval 250ms
             --max-retries 4
