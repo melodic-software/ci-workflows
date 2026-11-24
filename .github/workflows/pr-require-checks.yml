@@ -150,7 +150,6 @@ jobs:
             # Gates one step of `test-contracts`, not a lane.
             workflow-call-surface:
               .github/workflows/**
-              .github/standards/runner-policy-contract/**
               .github/scripts/check-workflow-call-surface.cjs
               .github/actions/download-standards/**
             selector-contract:
@@ -614,7 +613,7 @@ jobs:
       - name: Test govulncheck SARIF classification
         run: bash .github/scripts/govulncheck-sarif-guard.test.sh
       - name: Check reusable workflow_call surfaces against the runner-policy contract
-        # Callers outside this repository may pass only what the synced
+        # Callers outside this repository may pass only what standards'
         # contract lists, so a reusable's surface changes expand/contract.
         # Last, so a red verdict here never skips the test steps above.
         if: ${{ contains(fromJSON('["pull_request","merge_group"]'), github.event_name) && fromJSON(needs.detect-changes.outputs.results || '{}')['workflow-call-surface'] != 'false' }}

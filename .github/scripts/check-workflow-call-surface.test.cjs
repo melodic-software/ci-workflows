@@ -1,8 +1,9 @@
 "use strict";
 
 // Runs check-workflow-call-surface.cjs end to end in a scratch repository: a
-// base commit holds a contracted reusable and the synced policy, a head commit
-// changes the reusable, and the script compares the two against the contract.
+// base commit holds a contracted reusable, a head commit changes the reusable,
+// and the script compares the two against the contract in a local repository
+// standing in for melodic-software/standards.
 
 const assert = require("node:assert/strict");
 const { execFileSync, spawnSync } = require("node:child_process");
@@ -10,7 +11,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { POLICY_PATH } = require("./check-workflow-call-surface.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 
 const SCRIPT = path.join(__dirname, "check-workflow-call-surface.cjs");
@@ -75,8 +75,51 @@ function write(root, file, content) {
   fs.writeFileSync(path.join(root, file), content);
 }
 
-/** Commit `base`, then `head` on top, and run the check from the head. */
-function check({ base, head, policyText = policy(), env = {} }) {
+// A local repository standing in for melodic-software/standards, holding
+// `policyText` (or nothing) at components/runner-policy/policy.json, and the
+// env that points download-standards at it.
+function standards(policyText) {
+  const root = makeTemporaryDirectory("surface-standards-");
+  const upstream = path.join(root, "standards");
+  fs.mkdirSync(upstream);
+  git(upstream, ["init", "-q", "-b", "main"]);
+  git(upstream, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
+  write(upstream, "README.md", "standards\n");
+  if (policyText !== null) {
+    write(upstream, "components/runner-policy/policy.json", policyText);
+  }
+  git(upstream, ["add", "-A"]);
+  git(upstream, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-q",
+    "-m",
+    "standards",
+  ]);
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: upstream,
+    encoding: "utf8",
+  }).trim();
+  fs.mkdirSync(path.join(root, "temp"));
+  return {
+    sha,
+    env: {
+      RUNNER_TEMP: path.join(root, "temp"),
+      STANDARDS_REF: "main",
+      STANDARDS_URL: `file://${upstream}`,
+    },
+  };
+}
+
+/**
+ * Commit `base`, then `head` on top, and run the check from the head against
+ * a standards repository holding `policyText`.
+ */
+function check({ base, head, policyText = policy() }) {
+  const upstream = standards(policyText);
   const root = makeTemporaryDirectory("surface-");
   git(root, ["init", "-q", "-b", "main"]);
   git(root, ["config", "user.email", "test@example.invalid"]);
@@ -90,15 +133,19 @@ function check({ base, head, policyText = policy(), env = {} }) {
     git(root, ["add", "-A"]);
     git(root, ["commit", "-q", "--allow-empty", "-m", message]);
   };
-  commit({ [POLICY_PATH]: policyText, ...base }, "base");
+  commit(base, "base");
   git(root, ["branch", "base"]);
   commit(head, "head");
   const result = spawnSync(process.execPath, [SCRIPT, "base", REPOSITORY], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, GITHUB_STEP_SUMMARY: "", ...env },
+    env: { ...process.env, GITHUB_STEP_SUMMARY: "", ...upstream.env },
   });
-  return { status: result.status, output: result.stdout + result.stderr };
+  return {
+    status: result.status,
+    output: result.stdout + result.stderr,
+    sha: upstream.sha,
+  };
 }
 
 const errors = (output) =>
@@ -266,7 +313,7 @@ test("a new required secret must be in every secret map", () => {
   assert.equal(partial.status, 1);
   assert.match(
     errors(partial.output)[0],
-    /required secret 'NEW_TOKEN' was added, but the synced runner-policy contract does not list it in every secret map/u,
+    /required secret 'NEW_TOKEN' was added, but the standards runner-policy contract does not list it in every secret map/u,
   );
   const full = check({
     policyText: policy({
@@ -318,51 +365,10 @@ test("a reusable with no contract entry is reported and passes", () => {
   );
 });
 
-// A local repository standing in for melodic-software/standards, holding
-// `policyText` (or nothing) at components/runner-policy/policy.json, and the
-// env that points download-standards at it.
-function standards(policyText) {
-  const root = makeTemporaryDirectory("surface-standards-");
-  const upstream = path.join(root, "standards");
-  fs.mkdirSync(upstream);
-  git(upstream, ["init", "-q", "-b", "main"]);
-  git(upstream, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
-  write(upstream, "README.md", "standards\n");
-  if (policyText !== null) {
-    write(upstream, "components/runner-policy/policy.json", policyText);
-  }
-  git(upstream, ["add", "-A"]);
-  git(upstream, [
-    "-c",
-    "user.name=t",
-    "-c",
-    "user.email=t@example.invalid",
-    "commit",
-    "-q",
-    "-m",
-    "standards",
-  ]);
-  const sha = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: upstream,
-    encoding: "utf8",
-  }).trim();
-  fs.mkdirSync(path.join(root, "temp"));
-  return {
-    sha,
-    env: {
-      RUNNER_TEMP: path.join(root, "temp"),
-      STANDARDS_REF: "main",
-      STANDARDS_URL: `file://${upstream}`,
-    },
-  };
-}
-
-test("with no synced copy, standards' own contract is checked at the resolved commit", () => {
-  const { sha, env } = standards(policy());
-  const { status, output } = check({
+test("standards' contract is checked at the resolved commit", () => {
+  const { status, output, sha } = check({
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [POLICY_PATH]: null, [REUSABLE]: WITHOUT_LABEL },
-    env,
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 1);
   assert.match(errors(output)[0], /input 'label' was removed or renamed/u);
@@ -375,35 +381,38 @@ test("with no synced copy, standards' own contract is checked at the resolved co
   );
 });
 
-test("the synced copy wins over standards' contract", () => {
-  const { env } = standards(policy({ allowedInputs: ["runner"] }));
-  const { status, output } = check({
-    base: { [REUSABLE]: BASE_REUSABLE },
+test("a leftover synced copy in the repository is ignored in favor of standards' contract", () => {
+  const leftover = ".github/standards/runner-policy-contract/policy.json";
+  const { status, output, sha } = check({
+    base: {
+      [REUSABLE]: BASE_REUSABLE,
+      [leftover]: policy({ allowedInputs: ["runner"] }),
+    },
     head: { [REUSABLE]: WITHOUT_LABEL },
-    env,
   });
   assert.equal(status, 1);
   assert.match(errors(output)[0], /input 'label' was removed or renamed/u);
-  assert.match(output, new RegExp(`against ${POLICY_PATH}:`, "u"));
+  assert.match(output, new RegExp(`policy\\.json at ${sha}`, "u"));
+  assert.doesNotMatch(output, /runner-policy-contract/u);
 });
 
-test("with no synced copy and no contract in standards, the check fails with a named error", () => {
-  const { sha, env } = standards(null);
-  const { status, output } = check({
+test("with no contract in standards, the check fails with a named error", () => {
+  const { status, output, sha } = check({
+    policyText: null,
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [POLICY_PATH]: null },
-    env,
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 1);
   assert.deepEqual(errors(output), [
-    `::error::runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards at ${sha} has no components/runner-policy/policy.json.`,
+    `::error::runner-policy contract missing: melodic-software/standards at ${sha} has no components/runner-policy/policy.json.`,
   ]);
 });
 
 test("an unparsable policy file fails with a named error", () => {
   const { status, output } = check({
+    policyText: "{ not json",
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [POLICY_PATH]: "{ not json" },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 1);
   const found = errors(output);
@@ -413,8 +422,9 @@ test("an unparsable policy file fails with a named error", () => {
 
 test("a policy without approvedReusableWorkflowContracts fails with a named error", () => {
   const { status, output } = check({
+    policyText: JSON.stringify({ schemaVersion: 5 }),
     base: { [REUSABLE]: BASE_REUSABLE },
-    head: { [POLICY_PATH]: JSON.stringify({ schemaVersion: 5 }) },
+    head: { [REUSABLE]: WITHOUT_LABEL },
   });
   assert.equal(status, 1);
   assert.match(
