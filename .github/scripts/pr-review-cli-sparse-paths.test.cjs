@@ -69,15 +69,44 @@ function referencedPaths(text, variables) {
 const stepText = (s) =>
   [s.run, s.with?.script].filter((t) => typeof t === "string").join("\n");
 
+// The names in an env or with: map that carry the clone, each with the
+// clone-relative prefix its value adds: "" for the clone itself, "x/" for a
+// value naming the subpath x.
 const carriers = (map, value) =>
-  Object.entries(map ?? {})
-    .filter(([, v]) => v === value)
-    .map(([k]) => k);
+  Object.entries(map ?? {}).flatMap(([k, v]) => {
+    if (v === value) return [{ name: k, prefix: "" }];
+    if (typeof v === "string" && v.startsWith(`${value}/`))
+      return [{ name: k, prefix: `${v.slice(value.length + 1)}/` }];
+    return [];
+  });
+
+// The clone named by its location, with no carrying variable:
+// "<clone>" and "$RUNNER_TEMP/<clone directory>".
+function literalForms(clone) {
+  const tail = clone.replace(/^\$\{\{\s*runner\.temp\s*\}\}\//u, "");
+  return `(?:${escapeRegExp(clone)}|\\$\\{?RUNNER_TEMP\\}?/${escapeRegExp(tail)})`;
+}
+
+const literalReads = (text, clone) =>
+  [
+    ...text.matchAll(
+      new RegExp(`${literalForms(clone)}/([A-Za-z0-9._/-]+)`, "gu"),
+    ),
+  ].map((m) => m[1]);
+
+const namesClone = (text, clone) =>
+  new RegExp(literalForms(clone), "u").test(text);
+
+// The reads a text makes through the carrying names, each with its prefix.
+const carriedReads = (text, names) =>
+  names.flatMap(({ name, prefix }) =>
+    referencedPaths(text, [name]).map((p) => `${prefix}${p}`),
+  );
 
 // The paths one local action reads from the clone, given the env names and
-// input names that carry it into the action. Every file in the action's
+// input names that carry it into the action. Every file under the action's
 // directory is scanned, so a script it runs is never skipped.
-function actionReads(uses, envNames, inputNames) {
+function actionReads(uses, envNames, inputNames, clone) {
   const directory = path.join(
     repositoryRoot,
     uses.replace(/^(?:\$|\.)\//u, ""),
@@ -85,31 +114,41 @@ function actionReads(uses, envNames, inputNames) {
   const action = parseWorkflow(
     fs.readFileSync(path.join(directory, "action.yml"), "utf8"),
   );
+  const files = fs
+    .readdirSync(directory, { recursive: true })
+    .map(String)
+    .filter(
+      (file) =>
+        file !== "action.yml" &&
+        !/\.test\./u.test(file) &&
+        !file.split(path.sep).includes("node_modules") &&
+        fs.statSync(path.join(directory, file)).isFile(),
+    )
+    .map((file) => [file, fs.readFileSync(path.join(directory, file), "utf8")]);
   const found = new Map();
+  for (const [file, text] of files)
+    for (const p of literalReads(text, clone)) found.set(p, `${uses}/${file}`);
   for (const s of action.runs?.steps ?? []) {
+    const where = `${uses} / ${s.name ?? s.id}`;
+    for (const p of literalReads(stepText(s), clone)) found.set(p, where);
     const names = [
       ...envNames,
-      ...Object.entries(s.env ?? {})
-        .filter(([, v]) =>
-          inputNames.some((i) =>
+      ...Object.entries(s.env ?? {}).flatMap(([k, v]) =>
+        inputNames
+          .filter(({ name }) =>
             new RegExp(
-              `^\\$\\{\\{\\s*inputs\\.${escapeRegExp(i)}\\s*\\}\\}$`,
+              `^\\$\\{\\{\\s*inputs\\.${escapeRegExp(name)}\\s*\\}\\}$`,
               "u",
             ).test(String(v)),
-          ),
-        )
-        .map(([k]) => k),
+          )
+          .map(({ prefix }) => ({ name: k, prefix })),
+      ),
     ];
     if (names.length === 0) continue;
-    const where = `${uses} / ${s.name ?? s.id}`;
-    for (const p of referencedPaths(stepText(s), names)) found.set(p, where);
-    for (const file of fs.readdirSync(directory)) {
-      if (file === "action.yml" || /\.test\./u.test(file)) continue;
-      const full = path.join(directory, file);
-      if (!fs.statSync(full).isFile()) continue;
-      for (const p of referencedPaths(fs.readFileSync(full, "utf8"), names))
+    for (const p of carriedReads(stepText(s), names)) found.set(p, where);
+    for (const [file, text] of files)
+      for (const p of carriedReads(text, names))
         found.set(p, `${uses}/${file}`);
-    }
   }
   return found;
 }
@@ -171,6 +210,38 @@ test("the source-root reference forms are recognized", () => {
   );
 });
 
+test("clone paths named by location or through a subpath carrier are recognized", () => {
+  const clone = `\${{ runner.temp }}/claude-code-plugins`;
+  assert.deepEqual(
+    literalReads(
+      [
+        `node "${clone}/plugins/work-items/x.mjs"`,
+        'cat "$RUNNER_TEMP/claude-code-plugins/a/b.txt"',
+        `cat "\${RUNNER_TEMP}/claude-code-plugins/c/d.txt"`,
+        'cat "$RUNNER_TEMP/other/e.txt"',
+      ].join("\n"),
+      clone,
+    ),
+    ["plugins/work-items/x.mjs", "a/b.txt", "c/d.txt"],
+  );
+  assert.deepEqual(
+    carriers(
+      { A: clone, B: `${clone}/plugins/other`, C: `\${{ runner.temp }}/x` },
+      clone,
+    ),
+    [
+      { name: "A", prefix: "" },
+      { name: "B", prefix: "plugins/other/" },
+    ],
+  );
+  assert.deepEqual(
+    carriedReads('cp "$B/lib/f.mjs" .', [
+      { name: "B", prefix: "plugins/other/" },
+    ]),
+    ["plugins/other/lib/f.mjs"],
+  );
+});
+
 test("pr-review-cli.yml has review legs that sparse-clone claude-code-plugins", () => {
   assert.ok(legs.length > 0, "no job runs git sparse-checkout set");
   for (const leg of legs) {
@@ -186,15 +257,25 @@ for (const leg of legs) {
       const where = s.name ?? s.id;
       const envNames = carriers(s.env, leg.clone);
       const inputNames = carriers(s.with, leg.clone);
-      if (envNames.length === 0 && inputNames.length === 0) continue;
       const found = new Map();
-      for (const p of referencedPaths(stepText(s), envNames))
-        found.set(p, where);
+      for (const { prefix } of [...envNames, ...inputNames])
+        if (prefix) found.set(prefix.slice(0, -1), where);
+      for (const p of literalReads(stepText(s), leg.clone)) found.set(p, where);
+      for (const p of carriedReads(stepText(s), envNames)) found.set(p, where);
       if (/^(?:\$|\.)\//u.test(s.uses ?? ""))
-        for (const [p, w] of actionReads(s.uses, envNames, inputNames))
+        for (const [p, w] of actionReads(
+          s.uses,
+          envNames,
+          inputNames,
+          leg.clone,
+        ))
           found.set(p, `${where} -> ${w}`);
+      const receives =
+        envNames.length > 0 ||
+        inputNames.length > 0 ||
+        namesClone(stepText(s), leg.clone);
       assert.ok(
-        found.size > 0,
+        !receives || found.size > 0,
         `${leg.name} / ${where} receives the clone but names no path in a form this test recognizes; extend referencedPaths`,
       );
       for (const [p, w] of found) reads.set(p, w);
