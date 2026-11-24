@@ -720,7 +720,7 @@ jobs:
         if: steps.scope.outputs.review != 'false' && steps.sandbox.outcome != 'failure'
         continue-on-error: true
         timeout-minutes: 13
-        uses: anthropics/claude-code-action@469588f42e6b1e94cd14ad09dccfeaec772ce0fd # v1.0.280
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         env:
           # The action stops reading at Claude's first result message
           # (base-action/src/run-claude-sdk.ts:198-209), so background work
@@ -912,7 +912,7 @@ jobs:
         if: steps.fallback.outputs.run == 'true'
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(steps.fallback.outputs.timeout-minutes || '13') }}
-        uses: anthropics/claude-code-action@469588f42e6b1e94cd14ad09dccfeaec772ce0fd # v1.0.280
+        uses: anthropics/claude-code-action@acfe7992852970efb4fee683d63d628e3e52df67 # v1.0.286
         env:
           # The action stops reading at Claude's first result message
           # (base-action/src/run-claude-sdk.ts:198-209), so background work
