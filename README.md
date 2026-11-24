@@ -130,6 +130,9 @@ consumer to audit it.
 ## Actions
 
 - `.github/actions/markdownlint` — markdownlint-cli2 over the repo's markdown.
+  A caller with no root `.markdownlint-cli2.jsonc` gets standards' at
+  `standards-ref` (see `download-standards`); the caller's own file wins while
+  present.
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
   (installs a pinned, checksum-verified binary). Its default discovery remains
   tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
@@ -220,8 +223,9 @@ consumer to audit it.
   reads in full.
 - `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
-- `.github/actions/typos` — `typos` spell-check over source against a
-  caller-supplied config.
+- `.github/actions/typos` — `typos` spell-check over source. A caller with no
+  root `_typos.toml` gets standards' at `standards-ref` (see
+  `download-standards`); the caller's own file wins while present.
 - `.github/actions/gitleaks` — gitleaks secret scan over a directory or local
   Git history against a caller-supplied config. Git mode requires a valid,
   non-shallow local worktree or repository (`fetch-depth: 0`) and always passes
@@ -720,7 +724,8 @@ consumer to audit it.
   caller's copy when it has one: `gitleaks` (`.gitleaks.toml`),
   `editorconfig-checker` (`.editorconfig-checker.json`), `lychee-offline`
   (`lychee.toml`), `shellcheck` (`.shellcheckrc`), `actionlint`
-  (`.github/actionlint.yaml`), `check-dependabot-policy` and `bump-versions`
+  (`.github/actionlint.yaml`), `typos` (`_typos.toml`), `markdownlint`
+  (`.markdownlint-cli2.jsonc`), `check-dependabot-policy` and `bump-versions`
   (`components/dependabot-policy/policy.json`), `automerge-dependabot`'s gate
   (the same policy) and `collect-settled-threads`
   (`components/trusted-actors/trusted-actors.json`). Each takes a

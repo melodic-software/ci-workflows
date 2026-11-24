@@ -1,5 +1,7 @@
 name: Typos
-description: Spell-check source code with typos against a caller-supplied config.
+description: >-
+  Spell-check source code with typos against the caller's config, or
+  standards' when the caller has none.
 
 inputs:
   paths:
@@ -8,8 +10,17 @@ inputs:
       Directories recurse. Default checks the whole repo.
     default: '.'
   config:
-    description: Path to the typos config (_typos.toml) in the caller repo.
+    description: >-
+      Path to the typos config in the caller repo. When the default path is
+      absent, melodic-software/standards' own _typos.toml at `standards-ref`
+      is used instead.
     default: _typos.toml
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the download-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   exclude:
     description: >-
       Gitignore-syntax globs to skip, space-separated (e.g. intentionally-bad
@@ -90,42 +101,10 @@ runs:
       env:
         PATHS: ${{ inputs.paths }}
         CONFIG: ${{ inputs.config }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         EXCLUDE: ${{ inputs.exclude }}
         HIDDEN: ${{ inputs.hidden }}
         FORMAT: ${{ inputs.format }}
         REPORT_PATH: ${{ inputs.report-path }}
         ANNOTATIONS: ${{ inputs.annotations }}
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::typos: config file not found: $CONFIG"
-          exit 2
-        fi
-        args=(--config "$CONFIG")
-        # set -f stops bash from pathname-expanding a gitignore-glob
-        # (e.g. fixtures/**) before typos sees it.
-        set -f
-        for e in $EXCLUDE; do args+=(--exclude "$e"); done
-        set +f
-        # In args, so both passes walk the same files. --hidden also descends
-        # .git/, which is not prose to spell-check.
-        if [[ "$HIDDEN" == "true" ]]; then args+=(--hidden --exclude '.git/'); fi
-        # -d '' takes the whole value so a multi-line input still splits; read hits
-        # EOF without finding that delimiter, hence the `|| true`.
-        paths=()
-        read -r -d '' -a paths <<<"$PATHS" || true
-        # Advisory annotation pass: `|| true` so the gate pass below owns
-        # pass/fail; col is the 1-based byte offset.
-        if [[ "$ANNOTATIONS" == "true" ]]; then
-          typos "${args[@]}" --format json "${paths[@]}" 2>/dev/null \
-            | jq -r 'select(.type == "typo")
-                | "::warning file=\(.path),line=\(.line_num),col=\(.byte_offset + 1)::\"\(.typo)\" should be \"\(.corrections | join("\", \""))\"."' \
-            || true
-        fi
-        # Gate pass: respects the caller's format (default long); its exit fails.
-        if [[ -n "${FORMAT// }" ]]; then args+=(--format "$FORMAT"); fi
-        if [[ -n "${REPORT_PATH// }" ]]; then
-          typos "${args[@]}" "${paths[@]}" >"$REPORT_PATH"
-        else
-          typos "${args[@]}" "${paths[@]}"
-        fi
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

@@ -1,5 +1,7 @@
 name: markdownlint
-description: Lint Markdown with markdownlint-cli2 against a caller-supplied config.
+description: >-
+  Lint Markdown with markdownlint-cli2 against the caller's config, or
+  standards' when the caller has none.
 
 inputs:
   globs:
@@ -8,8 +10,17 @@ inputs:
       runner). Prefix a glob with '!' to exclude. Default lints all markdown.
     default: '**/*.md'
   config:
-    description: Path to the markdownlint-cli2 config file in the caller repo.
+    description: >-
+      Path to the markdownlint-cli2 config file in the caller repo. When the
+      default path is absent, melodic-software/standards' own
+      .markdownlint-cli2.jsonc at `standards-ref` is used instead.
     default: .markdownlint-cli2.jsonc
+  standards-ref:
+    description: >-
+      Branch or full commit SHA of melodic-software/standards the config
+      falls back to (see the download-standards action). Pass the run's
+      resolved SHA so every job reads one commit.
+    default: main
   annotations:
     description: >-
       Register a problem matcher so each finding renders as a GitHub inline
@@ -46,21 +57,8 @@ runs:
       env:
         GLOBS: ${{ inputs.globs }}
         CONFIG: ${{ inputs.config }}
+        STANDARDS_REF: ${{ inputs.standards-ref }}
         ANNOTATIONS: ${{ inputs.annotations }}
         VERSION: ${{ inputs.version }}
         MATCHER: ${{ github.action_path }}/markdownlint-problem-matcher.json
-      run: |
-        set -euo pipefail
-        if [[ ! -f "$CONFIG" ]]; then
-          echo "::error::markdown: config file not found: $CONFIG"
-          exit 2
-        fi
-        if [[ "$ANNOTATIONS" == "true" ]]; then echo "::add-matcher::$MATCHER"; fi
-        rc=0
-        # -d '' takes the whole value so a multi-line input still splits; read hits
-        # EOF without finding that delimiter, hence the `|| true`.
-        globs=()
-        read -r -d '' -a globs <<<"$GLOBS" || true
-        npx --yes "markdownlint-cli2@$VERSION" --config "$CONFIG" "${globs[@]}" || rc=$?
-        if [[ "$ANNOTATIONS" == "true" ]]; then echo "::remove-matcher owner=markdownlint-cli2::"; fi
-        exit $rc
+      run: bash "$GITHUB_ACTION_PATH/run.sh"

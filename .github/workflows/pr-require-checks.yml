@@ -517,6 +517,10 @@ jobs:
         run: bash .github/actions/check-exec-bit/check-exec-bit.test.sh
       - name: Test lychee-offline config resolution
         run: bash .github/actions/lychee-offline/run.test.sh
+      - name: Test typos config resolution
+        run: bash .github/actions/typos/run.test.sh
+      - name: Test markdownlint config resolution
+        run: bash .github/actions/markdownlint/run.test.sh
 
   shfmt:
     name: Shfmt

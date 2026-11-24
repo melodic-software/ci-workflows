@@ -4,7 +4,8 @@
 // composite default, so the workflow repeats that default and appends
 // `markdown-extra-globs`. The expression is the GitHub `case`/`format` pair
 // pinned below; the arguments markdownlint-cli2 actually receives are that
-// string after the composite's `read -a` word-split, which this file executes.
+// string after the composite runner's `read -a` word-split, which this file
+// executes.
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -24,13 +25,11 @@ const checks = parseWorkflow(readRepo(".github/workflows/pr-run-checks.yml"));
 const markdownAction = parseWorkflow(
   readRepo(".github/actions/markdownlint/action.yml"),
 );
+const markdownRunner = readRepo(".github/actions/markdownlint/run.sh");
 const markdownStep = checks.jobs.check.steps.find(
   (step) => step?.id === "markdown",
 );
 const extraGlobs = checks.on.workflow_call.inputs["markdown-extra-globs"];
-const lintStep = markdownAction.runs.steps.find((step) =>
-  String(step?.run ?? "").includes("read -r -d '' -a globs"),
-);
 
 // Pinned in this file so neither side can change alone. The workflow literal
 // and the composite `globs` default are the same string.
@@ -42,7 +41,6 @@ const DOTFILES_EXTRA = [
 ].join(" ");
 
 assert.ok(markdownStep !== undefined, "pr-run-checks.yml has no markdown step");
-assert.ok(lintStep !== undefined, "markdown composite has no glob split");
 
 function forwardedGlobs(extra) {
   // case(inputs.markdown-extra-globs == '', BASE, format('BASE {0}', extra))
@@ -51,7 +49,7 @@ function forwardedGlobs(extra) {
 
 function wordSplit(value) {
   const readLine = /^read -r -d '' -a globs <<<"\$GLOBS" \|\| true$/mu.exec(
-    lintStep.run,
+    markdownRunner,
   );
   assert.ok(readLine, "the composite no longer word-splits globs with read -a");
   const script = [
