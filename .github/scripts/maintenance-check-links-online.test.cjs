@@ -25,7 +25,8 @@ const source = fs.readFileSync(
 );
 const workflow = parseWorkflow(source);
 const job = workflow.jobs["check-links"];
-const [gate, checkout, lychee, report, dead, upload] = job.steps;
+const [gate, checkout, config, standards, lychee, report, dead, upload] =
+  job.steps;
 
 async function runGate({ eventName, properties }) {
   const original = process.env.OPT_IN_PROPERTY;
@@ -93,12 +94,49 @@ test("lychee uses the GITHUB_TOKEN and hands a verbose JSON report to the report
 });
 
 test("every step after the gate runs only when the gate says so", () => {
-  for (const step of [checkout, lychee]) {
+  for (const step of [checkout, config, lychee]) {
     assert.equal(step.if, "steps.gate.outputs.run == 'true'");
   }
   assert.equal(report.if, "steps.gate.outputs.run == 'true' && !cancelled()");
   assert.equal(dead.if, "steps.gate.outputs.run == 'true' && !cancelled()");
   assert.equal(upload.if, "steps.dead.outputs.artifact != '' && !cancelled()");
+});
+
+function runConfig(configInput, { withFile }) {
+  const directory = makeTemporaryDirectory("check-links-online-config-");
+  const outputPath = path.join(directory, "output");
+  if (withFile) fs.writeFileSync(path.join(directory, configInput), "");
+  fs.writeFileSync(outputPath, "");
+  const result = spawnSync("bash", ["-c", config.run], {
+    cwd: directory,
+    env: { ...process.env, CONFIG: configInput, GITHUB_OUTPUT: outputPath },
+    encoding: "utf8",
+  });
+  return { status: result.status, output: fs.readFileSync(outputPath, "utf8") };
+}
+
+test("a caller with no lychee.toml at the default path gets standards' copy; a named path is never replaced", () => {
+  assert.equal(standards.uses, "$/.github/actions/download-standards");
+  assert.equal(
+    standards.if,
+    "steps.gate.outputs.run == 'true' && steps.config.outputs.file == ''",
+  );
+  assert.equal(runConfig("lychee.toml", { withFile: false }).output, "file=\n");
+  assert.equal(
+    runConfig("lychee.toml", { withFile: true }).output,
+    "file=lychee.toml\n",
+  );
+  assert.equal(
+    runConfig("custom.toml", { withFile: false }).output,
+    "file=custom.toml\n",
+  );
+  const empty = runConfig("", { withFile: false });
+  assert.notEqual(empty.status, 0);
+  assert.equal(empty.output, "");
+  assert.match(
+    lychee.with.args,
+    /--config '\$\{\{ steps\.config\.outputs\.file \|\| format\('\{0\}\/lychee\.toml', steps\.standards\.outputs\.path\) \}\}'/u,
+  );
 });
 
 // Recorded from lychee 0.24.2 `--format json --verbose` against a local status

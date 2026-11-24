@@ -1358,8 +1358,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   workflow only guarantees a floor and does not police tier assignment.
 - `.github/workflows/maintenance-check-links-online.yml` — the weekly online
   link check: lychee with the network on over the caller's Markdown, reading
-  its `lychee.toml` (the standards-synced config the offline lane uses) and
-  `.lycheeignore`. The report goes to the job summary and a broken link fails
+  its `lychee.toml` (a caller with none at the default path gets standards'
+  canonical one, as in the offline lane) and `.lycheeignore`. The report goes to the job summary and a broken link fails
   the job red. The 429 and 5xx responses the config accepts are listed in the
   summary without failing the job, and so are timeouts when the config sets
   `accept_timeouts` (otherwise a timeout fails it). It opens no issue and posts
