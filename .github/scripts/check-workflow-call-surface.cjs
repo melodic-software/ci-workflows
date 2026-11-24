@@ -11,9 +11,9 @@
 //
 // Usage: node check-workflow-call-surface.cjs <base-ref> [repository]
 // Run from the repository root; the head is the working tree's HEAD commit.
-// The contract is the synced copy in the working tree, or, when it is absent,
-// standards' own components/runner-policy/policy.json at the commit the
-// download-standards action resolves for STANDARDS_REF (default main).
+// The contract is standards' own components/runner-policy/policy.json at the
+// commit the download-standards action resolves for STANDARDS_REF (default
+// main).
 
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -21,7 +21,6 @@ const { basename, join } = require("node:path");
 
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
-const POLICY_PATH = ".github/standards/runner-policy-contract/policy.json";
 const STANDARDS_POLICY_PATH = "components/runner-policy/policy.json";
 const DOWNLOAD_STANDARDS = join(
   __dirname,
@@ -42,13 +41,10 @@ class SurfaceCheckError extends Error {
 }
 
 /**
- * The contract's text and a label for it: the synced copy when the working
- * tree has one, else standards' own, failing with a named error.
+ * The contract's text and a label for it, read from standards and failing
+ * with a named error.
  */
 function readPolicy() {
-  if (fs.existsSync(POLICY_PATH)) {
-    return { text: fs.readFileSync(POLICY_PATH, "utf8"), source: POLICY_PATH };
-  }
   let checkout;
   try {
     checkout = execFileSync("bash", [DOWNLOAD_STANDARDS], {
@@ -57,13 +53,13 @@ function readPolicy() {
     }).trim();
   } catch (error) {
     throw new SurfaceCheckError(
-      `runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards could not be checked out: ${error.message}`,
+      `runner-policy contract missing: melodic-software/standards could not be checked out: ${error.message}`,
     );
   }
   const file = join(checkout, STANDARDS_POLICY_PATH);
   if (!fs.existsSync(file)) {
     throw new SurfaceCheckError(
-      `runner-policy contract missing: ${POLICY_PATH} does not exist and melodic-software/standards at ${basename(checkout)} has no ${STANDARDS_POLICY_PATH}.`,
+      `runner-policy contract missing: melodic-software/standards at ${basename(checkout)} has no ${STANDARDS_POLICY_PATH}.`,
     );
   }
   return {
@@ -146,14 +142,14 @@ function compareSurface({ key, base, head, contract }) {
     for (const name of before[field].keys()) {
       if (after[field].has(name) || !listedBy[kind].any(name)) continue;
       findings.push(
-        `${key}: ${kind} '${name}' was removed or renamed, but the synced runner-policy contract still lists it, so callers may still pass it and GitHub would refuse their call. Contract first: remove '${name}' from every caller, then from this path's contract in standards components/runner-policy/policy.json, let the component sync land, then remove it from the reusable (${ORDER_SOURCE}).`,
+        `${key}: ${kind} '${name}' was removed or renamed, but the standards runner-policy contract still lists it, so callers may still pass it and GitHub would refuse their call. Contract first: remove '${name}' from every caller, then from this path's contract in standards components/runner-policy/policy.json, let that standards change merge, then remove it from the reusable (${ORDER_SOURCE}).`,
       );
     }
     for (const [name, spec] of after[field]) {
       if (!spec.required || before[field].get(name)?.required) continue;
       if (listedBy[kind].every(name)) continue;
       findings.push(
-        `${key}: required ${kind} '${name}' was added, but the synced runner-policy contract does not list it${kind === "secret" ? " in every secret map" : ""}, so no caller may pass it and every call would fail. Expand first: add '${name}' to this path's contract in standards components/runner-policy/policy.json, let the component sync land and callers pass it, then make it required here; or add it as optional (${ORDER_SOURCE}).`,
+        `${key}: required ${kind} '${name}' was added, but the standards runner-policy contract does not list it${kind === "secret" ? " in every secret map" : ""}, so no caller may pass it and every call would fail. Expand first: add '${name}' to this path's contract in standards components/runner-policy/policy.json, let that standards change merge and callers pass it, then make it required here; or add it as optional (${ORDER_SOURCE}).`,
       );
     }
   }
@@ -247,6 +243,5 @@ function main(argv) {
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
 module.exports = Object.freeze({
-  POLICY_PATH,
   main,
 });
