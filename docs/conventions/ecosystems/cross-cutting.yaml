@@ -16,10 +16,12 @@ build-cmd: null
 test-cmd: null
 check-cmd: |
   rc=0
-  typos --config _typos.toml . || rc=1
-  gitleaks dir . --config .gitleaks.toml --no-banner --redact || rc=1
+  # The standards configs CI's composites read: STANDARDS_DIR names a standards checkout, else the ghq root (ghq.root, default ~/ghq)
+  std="${STANDARDS_DIR:-$(git config --path --get ghq.root || printf '%s' "$HOME/ghq")/github.com/melodic-software/standards}"
+  typos --config "$std/_typos.toml" . || rc=1
+  gitleaks dir . --config "$std/.gitleaks.toml" --no-banner --redact || rc=1
   # editorconfig-checker: binary name varies by install method (ec / editorconfig-checker / ec-windows-amd64)
-  if [ -n "$EC_BIN" ]; then "$EC_BIN" -config .editorconfig-checker.json || rc=1; else echo 'editorconfig-checker: no binary resolved (EC_BIN is empty)' >&2; rc=1; fi
+  if [ -n "$EC_BIN" ]; then "$EC_BIN" -config "$std/.editorconfig-checker.json" || rc=1; else echo 'editorconfig-checker: no binary resolved (EC_BIN is empty)' >&2; rc=1; fi
   # lychee-offline: on-disk link and anchor integrity, no network
   lychee --offline --no-progress --config lychee.toml '**/*.md' || rc=1
   bash .github/actions/check-exec-bit/check-exec-bit.sh || rc=1
@@ -29,7 +31,7 @@ check-cmd: |
   exit "$rc"
 fix-cmd: null
 code-fix-cmd: null
-opt-in: "each tool's own config at the repository root (_typos.toml, .gitleaks.toml, .editorconfig-checker.json, lychee.toml)"
+opt-in: "a melodic-software/standards checkout (STANDARDS_DIR, else under the ghq root) for the typos, gitleaks and editorconfig-checker configs; lychee.toml at the repository root"
 install-hint: |
   typos: winget install Crate-CI.Typos | brew install typos-cli
   gitleaks: winget install Gitleaks.Gitleaks | brew install gitleaks

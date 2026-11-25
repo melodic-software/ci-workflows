@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Conforming shell fixture: passes ShellCheck (against the root .shellcheckrc)
+# Conforming shell fixture: passes ShellCheck (against standards' .shellcheckrc)
 # and shfmt (reading this repo's .editorconfig). The shfmt and ShellCheck dogfood
 # lanes exercise the actions against this file.
 set -euo pipefail
