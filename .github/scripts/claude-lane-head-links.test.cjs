@@ -62,13 +62,22 @@ test("every review job removes the head's .claude-lane right after the checkout,
     );
     steps.forEach((s, i) => {
       if (i === clear) return;
-      if (JSON.stringify(s).includes(".claude-lane/")) {
+      if (/\.claude-lane(?:\/|\\?")/u.test(JSON.stringify(s))) {
         assert.ok(
           i > clear,
           `${name}: "${s.name}" names .claude-lane before it is cleared`,
         );
       }
     });
+    // build-review-criteria names the lane directory as a bare LANE_DIR value.
+    const criteria = steps.findIndex((s) => s.id === "criteria");
+    if (criteria >= 0) {
+      assert.equal(steps[criteria].env.LANE_DIR, ".claude-lane", name);
+      assert.ok(
+        criteria > clear,
+        `${name}: the criteria step runs after the clear`,
+      );
+    }
   }
 });
 
