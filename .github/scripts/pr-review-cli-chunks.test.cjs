@@ -997,7 +997,7 @@ test("each chunk's prompt keeps the most severe findings and counts every CRITIC
     assert.match(prompt, /every CRITICAL first/u, job.name);
     assert.match(
       prompt,
-      /critical-findings line count every CRITICAL you found, posted or not/u,
+      /critical-findings line count every CRITICAL you did not post as a comment/u,
       job.name,
     );
   }

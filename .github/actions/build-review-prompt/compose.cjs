@@ -359,7 +359,7 @@ async function run({ github, context, core }) {
           `Return at most ${caps.comments} comments and a summary of at most ${caps.summary} characters.`,
           "When this chunk has more findings than that, post the most severe as comments, every CRITICAL first; set",
           "findings to every finding you found; list each one not posted in the summary by path and line, most severe",
-          "first; and make the summary's critical-findings line count every CRITICAL you found, posted or not.",
+          "first; and make the summary's critical-findings line count every CRITICAL you did not post as a comment.",
         ].join("\n");
   const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "pr-review-cli-"));
   fs.writeFileSync(path.join(directory, "prompt.md"), `${prompt(chunkNote(1))}\n`);
