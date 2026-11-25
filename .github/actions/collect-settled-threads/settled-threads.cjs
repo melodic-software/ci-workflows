@@ -5,9 +5,9 @@
 // Env: PR_NUMBER, HEAD_SHA, BASE_SHA, HEAD_REF, SOURCE (the claude-code-plugins
 // default-branch clone the plugin step staged), GIT_TOKEN (the job token),
 // OUTPUT_FILE, STANDARDS_REF. Text comes only through claude-code-plugins'
-// select-trusted-text, run against the trusted-actor list at the base commit
-// (or, with no copy there, standards' own at one resolved commit):
-// a comment body is written only when that action kept it, or when it is
+// select-trusted-text, run against standards' own trusted-actor list at one
+// resolved commit, read only when the base commit's source-control.yaml names
+// melodic-software/standards: a comment body is written only when that action kept it, or when it is
 // this review lane's own unedited finding (laneFinding). A thread is
 // settled when a listed account resolved it, or a listed human replied in it.
 // For each settled thread the step diffs its resolution head against the head
@@ -20,9 +20,12 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const SHA = /^[0-9a-f]{40}$/u;
-const LIST_PATH = ".github/standards/trusted-actors/trusted-actors.json";
-// The same list in melodic-software/standards, read when the copy is absent.
+// The trusted-actor list in melodic-software/standards. No reader takes a
+// repository's synced copy: standards no longer syncs it, so a copy goes stale.
 const STANDARDS_LIST_PATH = "components/trusted-actors/trusted-actors.json";
+// Where a repository names its standards repository (standards_repository).
+const SOURCE_CONTROL_PATH = "docs/conventions/source-control.yaml";
+const DOWNLOAD_STANDARDS = path.join(__dirname, "..", "download-standards");
 const MAX_THREADS = 50;
 const MAX_BODY = 4000;
 const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
@@ -207,15 +210,33 @@ function render(entries, more) {
   return `${lines.join("\n")}\n`;
 }
 
+// Throws unless a repository's source-control.yaml text names the standards
+// repository download-standards reads (download-standards/named.sh).
+function requireStandardsNamed(sourceControl) {
+  try {
+    execFileSync("bash", [path.join(DOWNLOAD_STANDARDS, "named.sh")], {
+      input: sourceControl,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    throw new Error(`${String(error.stderr ?? "").trim() || error.message}, so no trusted-actor list is read`);
+  }
+}
+
 // standards' trusted-actor list at the commit download-standards resolves
 // for env.STANDARDS_REF. Throws when it cannot be read.
 function readStandardsList(env) {
-  const checkout = execFileSync(
-    "bash",
-    [path.join(__dirname, "..", "download-standards", "checkout.sh")],
-    { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
-  ).trim();
-  return fs.readFileSync(path.join(checkout, STANDARDS_LIST_PATH), "utf8");
+  try {
+    const checkout = execFileSync("bash", [path.join(DOWNLOAD_STANDARDS, "checkout.sh")], {
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    }).trim();
+    return fs.readFileSync(path.join(checkout, STANDARDS_LIST_PATH), "utf8");
+  } catch (error) {
+    throw new Error(`the standards ${STANDARDS_LIST_PATH} could not be read: ${error.message}`);
+  }
 }
 
 async function run({ github, context, core, readStandards = readStandardsList }) {
@@ -236,21 +257,30 @@ async function run({ github, context, core, readStandards = readStandardsList })
   }
   const temp = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "settled-threads-"));
 
-  // The trusted-actor list: the base commit's synced copy, never the head's;
-  // with none there, standards' own at the run's resolved commit. Any other
-  // failure to read it fails the step, so nothing is written on a guess.
-  let list;
+  // The trusted-actor list is standards' own at the run's resolved commit,
+  // read only when the base commit's source-control.yaml (never the head's)
+  // names that standards repository; a synced copy is never read. Any failure
+  // fails the step, so nothing is written on a guess.
+  let sourceControl = "";
   try {
-    list = (
-      await github.rest.repos.getContent({ owner, repo, path: LIST_PATH, ref: env.BASE_SHA, mediaType: { format: "raw" } })
-    ).data;
+    sourceControl = String(
+      (
+        await github.rest.repos.getContent({
+          owner,
+          repo,
+          path: SOURCE_CONTROL_PATH,
+          ref: env.BASE_SHA,
+          mediaType: { format: "raw" },
+        })
+      ).data,
+    );
   } catch (error) {
     if (error.status !== 404) {
-      throw new Error(`The trusted-actor list could not be read at the base commit: ${error.message}`);
+      throw new Error(`${SOURCE_CONTROL_PATH} could not be read at the base commit: ${error.message}`);
     }
-    core.info(`No trusted-actor list at the base commit; reading ${STANDARDS_LIST_PATH} from melodic-software/standards.`);
-    list = readStandards(env);
   }
+  requireStandardsNamed(sourceControl);
+  const list = readStandards(env);
   const listFile = path.join(temp, "trusted-actors.json");
   fs.writeFileSync(listFile, String(list));
   const actors = (JSON.parse(String(list)).actors ?? []).filter((a) => Number.isInteger(a?.id));
@@ -338,4 +368,15 @@ async function run({ github, context, core, readStandards = readStandardsList })
   );
 }
 
-module.exports = { boundLaneFindings, judge, laneFinding, render, resolutionHead, run, settledThreads, touches };
+module.exports = {
+  boundLaneFindings,
+  judge,
+  laneFinding,
+  readStandardsList,
+  render,
+  resolutionHead,
+  run,
+  settledThreads,
+  STANDARDS_LIST_PATH,
+  touches,
+};

@@ -1553,9 +1553,12 @@ jobs:
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
-      # above against the base commit's trusted-actor list), and whether the
-      # lines under each changed since it was settled. Any failure writes no
-      # file and the review runs as before.
+      # above against standards' trusted-actor list, read only when the base
+      # commit's source-control.yaml names melodic-software/standards; never
+      # a synced copy), and whether the lines under each changed since it was
+      # settled. Any failure writes no file and the review runs as before.
+      # download-standards resolves main once per job, so this step and the
+      # criteria step below read one standards commit.
       - name: Write the settled review threads
         id: settled
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
@@ -2725,9 +2728,12 @@ jobs:
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
-      # above against the base commit's trusted-actor list), and whether the
-      # lines under each changed since it was settled. Any failure writes no
-      # file and the review runs as before.
+      # above against standards' trusted-actor list, read only when the base
+      # commit's source-control.yaml names melodic-software/standards; never
+      # a synced copy), and whether the lines under each changed since it was
+      # settled. Any failure writes no file and the review runs as before.
+      # download-standards resolves main once per job, so this step and the
+      # criteria step below read one standards commit.
       - name: Write the settled review threads
         id: settled
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
@@ -3867,9 +3873,12 @@ jobs:
       # Review threads a listed account resolved or a listed person
       # answered, with only the text
       # claude-code-plugins' select-trusted-text keeps (run from the clone
-      # above against the base commit's trusted-actor list), and whether the
-      # lines under each changed since it was settled. Any failure writes no
-      # file and the review runs as before.
+      # above against standards' trusted-actor list, read only when the base
+      # commit's source-control.yaml names melodic-software/standards; never
+      # a synced copy), and whether the lines under each changed since it was
+      # settled. Any failure writes no file and the review runs as before.
+      # download-standards resolves main once per job, so this step and the
+      # criteria step below read one standards commit.
       - name: Write the settled review threads
         id: settled
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success'
