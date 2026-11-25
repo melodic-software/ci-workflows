@@ -73,6 +73,13 @@ async function run({ github, context, core }) {
     chunkFiles.every((n) => /^(?:0|[1-9][0-9]{0,5})$/u.test(n))
       ? Number(env.CHUNKS)
       : 1;
+  // A chunked review's caps come from four workflow values; one that is
+  // not a whole number would make every cap check pass, so it fails here.
+  const CAP_VALUES = ["CHUNK_SUMMARY_CHARS", "CHUNK_COMMENTS", "CHUNK_SUMMARY_TOTAL", "CHUNK_COMMENTS_TOTAL"];
+  if (chunks > 1 && !CAP_VALUES.every((name) => /^[1-9][0-9]{0,6}$/u.test(env[name] ?? ""))) {
+    core.setFailed(`The chunk caps ${CAP_VALUES.join(", ")} must be whole numbers.`);
+    return;
+  }
   // A chunk's summary keeps its share of one review's 20000
   // characters, and never less than CHUNK_SUMMARY_CHARS.
   const caps =
@@ -350,6 +357,9 @@ async function run({ github, context, core }) {
                 ...pieceLines(k),
               ]),
           `Return at most ${caps.comments} comments and a summary of at most ${caps.summary} characters.`,
+          "When this chunk has more findings than that, post the most severe as comments, every CRITICAL first; set",
+          "findings to every finding you found; list each one not posted in the summary by path and line, most severe",
+          "first; and make the summary's critical-findings line count every CRITICAL you found, posted or not.",
         ].join("\n");
   const directory = fs.mkdtempSync(path.join(env.RUNNER_TEMP, "pr-review-cli-"));
   fs.writeFileSync(path.join(directory, "prompt.md"), `${prompt(chunkNote(1))}\n`);

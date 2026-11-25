@@ -56,7 +56,12 @@ async function run({ core }) {
   if (env.SCOPE !== "incremental" && env.FULL_DIFF !== "true") {
     return incomplete("the full diff could not be written, so the review saw only part of the pull request");
   }
-  // Each chunk's share of the caps one review has.
+  // Each chunk's share of the caps one review has, from four workflow values
+  // that must be whole numbers, or every cap check below would pass.
+  const CAP_VALUES = ["CHUNK_SUMMARY_CHARS", "CHUNK_COMMENTS", "CHUNK_SUMMARY_TOTAL", "CHUNK_COMMENTS_TOTAL"];
+  if (chunks > 1 && !CAP_VALUES.every((name) => /^[1-9][0-9]{0,6}$/u.test(env[name] ?? ""))) {
+    return incomplete("the job could not read the chunk caps");
+  }
   // A chunk's summary keeps its share of one review's 20000
   // characters, and never less than CHUNK_SUMMARY_CHARS.
   const caps =

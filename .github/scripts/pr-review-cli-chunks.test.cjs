@@ -250,6 +250,10 @@ const runCompose = (compose, n, env) =>
     CHUNKS: String(n),
     CHUNK_FILES: Array(n).fill("1").join(","),
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
     ...env,
   });
 
@@ -947,6 +951,55 @@ test("20 chunks every one at its caps merge into a review under 100 KB that list
       20 * comments,
     );
     assert.equal(review.findings, 20 * comments);
+  }
+});
+
+test("a chunked review with a missing or malformed cap value fails closed in compose and extract", async () => {
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    for (const [name, value] of [
+      ["CHUNK_SUMMARY_TOTAL", ""],
+      ["CHUNK_COMMENTS_TOTAL", "abc"],
+      ["CHUNK_SUMMARY_CHARS", "0"],
+    ]) {
+      await assert.rejects(
+        runCompose(compose, 21, {
+          LEG_MINUTES: "11",
+          CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+          CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+          CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+          CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
+          [name]: value,
+        }),
+        /chunk caps/u,
+        `${job.name}: ${name}=${JSON.stringify(value)}`,
+      );
+    }
+    const outputs = await extractChunked(job, 3, {});
+    assert.equal(outputs.verdict, "complete", job.name);
+  }
+});
+
+test("each chunk's prompt keeps the most severe findings and counts every CRITICAL when over its caps", async () => {
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    const outputs = await runCompose(compose, 75, {
+      LEG_MINUTES: "11",
+      CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+      CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+      CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+      CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
+    });
+    const prompt = fs.readFileSync(
+      path.join(outputs["prompt-dir"], "prompt-75.md"),
+      "utf8",
+    );
+    assert.match(prompt, /every CRITICAL first/u, job.name);
+    assert.match(
+      prompt,
+      /critical-findings line count every CRITICAL you found, posted or not/u,
+      job.name,
+    );
   }
 });
 
