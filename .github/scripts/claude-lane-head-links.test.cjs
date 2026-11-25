@@ -20,11 +20,13 @@ const read = (name) =>
   parseWorkflow(fs.readFileSync(path.join(root, "workflows", name), "utf8"));
 const cli = read("pr-review-cli.yml");
 const hosted = read("pr-review.yml");
+const security = read("pr-review-security.yml");
 const JOBS = [
   ["pr-review-cli review-key", cli.jobs["review-key"]],
   ["pr-review-cli review-subscription", cli.jobs["review-subscription"]],
   ["pr-review-cli review-fallback", cli.jobs["review-fallback"]],
   ["pr-review claude", hosted.jobs.claude],
+  ["pr-review-security claude", security.jobs.claude],
 ];
 
 // Every path a step of the two lanes writes under .claude-lane.
@@ -118,19 +120,34 @@ test("links the head commits under .claude-lane are removed, never written throu
     }),
   );
   for (const [name, job] of JOBS) {
-    // The job's steps in order up to the PR-context step, a write site: the
-    // run steps among them (clear-lane on the fixed code) then the write.
+    // The job's steps in order up to its first write: the run steps among
+    // them (clear-lane on the fixed code), then the write. That is the
+    // PR-context step where the job has one; pr-review-security's first
+    // write, the full diff, is a script, so the test writes
+    // .claude-lane/pr.diff the way build-review-diff/diff.sh does.
     const steps = job.steps;
-    const upTo = steps.findIndex((s) => s.id === "pr-context");
+    const context = steps.findIndex((s) => s.id === "pr-context");
+    const upTo =
+      context >= 0 ? context : steps.findIndex((s) => s.id === "full-diff");
     for (const s of steps.slice(0, upTo)) {
       if (s.id === "clear-lane") run(s.run, workspace);
     }
-    const result = run(steps[upTo].run, workspace, {
-      RUNNER_TEMP: dir,
-      REPOSITORY: "o/r",
-      TRUSTED: "[]",
-      CONTEXT_FILE: ".claude-lane/pr-context.md",
-    });
+    const written = context >= 0 ? "pr-context.md" : "pr.diff";
+    const result =
+      context >= 0
+        ? run(steps[upTo].run, workspace, {
+            RUNNER_TEMP: dir,
+            REPOSITORY: "o/r",
+            TRUSTED: "[]",
+            CONTEXT_FILE: ".claude-lane/pr-context.md",
+          })
+        : run(
+            'mkdir -p "$(dirname "$DIFF_FILE")"; printf "diff\\n" >"$DIFF_FILE"',
+            workspace,
+            {
+              DIFF_FILE: ".claude-lane/pr.diff",
+            },
+          );
     assert.equal(result.status, 0, `${name}: ${result.stderr}`);
     assert.equal(
       fs.readFileSync(path.join(outside, "file"), "utf8"),
@@ -139,8 +156,8 @@ test("links the head commits under .claude-lane are removed, never written throu
     );
     assert.deepEqual(fs.readdirSync(path.join(outside, "chunks")), [], name);
     assert.ok(fs.lstatSync(lane).isDirectory(), name);
-    assert.ok(fs.lstatSync(path.join(lane, "pr-context.md")).isFile(), name);
-    for (const file of WRITTEN.filter((f) => f !== "pr-context.md")) {
+    assert.ok(fs.lstatSync(path.join(lane, written)).isFile(), name);
+    for (const file of WRITTEN.filter((f) => f !== written)) {
       assert.equal(
         fs.existsSync(path.join(lane, file)),
         false,
