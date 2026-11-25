@@ -1,6 +1,6 @@
 name: Compose Review Criteria
 description: >-
-  pr-review-cli's criteria step, with no model: when the checkout opts in to
+  The criteria step of pr-review-cli and pr-review, with no model: when the checkout opts in to
   melodic-software/standards as its org layer, writes the review criteria in
   effect (the organization's REVIEW.md with the repository's appended, or the
   repository's alone behind the replace marker) and a copy of the org
