@@ -139,7 +139,7 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
       "chunk-outcomes": list
         .map((l) => (l === null ? "skipped" : l.failed ? "failure" : "success"))
         .join(","),
-      "chunk-classes": list.map((l) => l?.laneClass ?? "").join(","),
+      "chunk-classes": JSON.stringify(list.map((l) => l?.laneClass ?? "")),
       "results-dir": results,
       "transcript-file": transcript(
         ran.map((l) => l.execution).filter(Boolean),
