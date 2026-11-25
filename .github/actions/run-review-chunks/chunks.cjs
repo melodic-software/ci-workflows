@@ -139,6 +139,7 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
       "chunk-outcomes": list
         .map((l) => (l === null ? "skipped" : l.failed ? "failure" : "success"))
         .join(","),
+      "chunk-classes": list.map((l) => l?.laneClass ?? "").join(","),
       "results-dir": results,
       "transcript-file": transcript(
         ran.map((l) => l.execution).filter(Boolean),
@@ -183,6 +184,9 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
     legs[i] = {
       k,
       failed,
+      // Empty on a failed leg run-claude-cli left unclassed: its credential
+      // scan stop, which a caller may count as a withheld result.
+      laneClass: status !== 0 ? (leg["lane-class"] ?? "") : failed ? "other" : "",
       execution,
       summary,
       stop: {

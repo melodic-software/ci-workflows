@@ -161,6 +161,14 @@ outputs:
       One outcome per chunk from chunk-first to chunk-last, comma-separated:
       success, failure or skipped. Empty when the loop did not finish.
     value: ${{ steps.loop.outputs.chunk-outcomes }}
+  chunk-classes:
+    description: >-
+      One lane class per chunk, in chunk-outcomes' order, comma-separated: the
+      leg's own run-claude-cli lane-class, `other` for a leg that exited 0
+      with no well-formed result, and empty for a chunk that succeeded, was
+      skipped, or failed with no class (run-claude-cli's credential scan
+      stop). Empty when the loop did not finish.
+    value: ${{ steps.loop.outputs.chunk-classes }}
   started-at:
     description: Unix epoch seconds the last chunk that ran started.
     value: ${{ steps.loop.outputs.started-at }}
