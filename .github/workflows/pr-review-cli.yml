@@ -909,7 +909,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
     if: >-
       needs.check-key-credit.result != 'skipped'
       && needs.check-key-credit.outputs.next-leg != 'subscription'
@@ -1017,6 +1017,17 @@ jobs:
           ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
+
+      # The head may commit .claude-lane, symlinks included, and the steps
+      # below write their files there from outside any sandbox. Nothing has
+      # written there yet, so the head's copy is removed (rm takes a link
+      # itself, never its target) and every later write lands in a directory
+      # this job creates.
+      - name: Remove the head's .claude-lane
+        id: clear-lane
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
       # Whole, incremental or no review, as pr-review.yml's step of the same
       # name decides it, from this lane's marker comment. Any failure here
@@ -2070,7 +2081,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
     if: >-
       (needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription' || needs.check-key-credit.result == 'skipped')
       && !cancelled()
@@ -2178,6 +2189,17 @@ jobs:
           ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
+
+      # The head may commit .claude-lane, symlinks included, and the steps
+      # below write their files there from outside any sandbox. Nothing has
+      # written there yet, so the head's copy is removed (rm takes a link
+      # itself, never its target) and every later write lands in a directory
+      # this job creates.
+      - name: Remove the head's .claude-lane
+        id: clear-lane
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
       # Whole, incremental or no review, as pr-review.yml's step of the same
       # name decides it, from this lane's marker comment. Any failure here
@@ -3201,7 +3223,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
     if: >-
       needs.review-subscription.outputs.next-leg == 'fallback'
       && !cancelled()
@@ -3309,6 +3331,17 @@ jobs:
           ref: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
           filter: blob:none
           persist-credentials: false
+
+      # The head may commit .claude-lane, symlinks included, and the steps
+      # below write their files there from outside any sandbox. Nothing has
+      # written there yet, so the head's copy is removed (rm takes a link
+      # itself, never its target) and every later write lands in a directory
+      # this job creates.
+      - name: Remove the head's .claude-lane
+        id: clear-lane
+        continue-on-error: ${{ inputs.publish != 'comments' }}
+        timeout-minutes: 1
+        run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
       # Whole, incremental or no review, as pr-review.yml's step of the same
       # name decides it, from this lane's marker comment. Any failure here

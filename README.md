@@ -2119,7 +2119,7 @@ chunk for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
-for the ceiling (312 or 352 minutes, under the 6-hour job limit) and every
+for the ceiling (313 or 353 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one
