@@ -909,7 +909,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 349 || 309 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
     if: >-
       needs.check-key-credit.result != 'skipped'
       && needs.check-key-credit.outputs.next-leg != 'subscription'
@@ -982,6 +982,7 @@ jobs:
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
+      standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
@@ -1577,6 +1578,38 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # melodic-software/standards at one commit per run (download-standards):
+      # the first review job to run resolves main, and a later leg reuses the
+      # commit it records. Any failure leaves the path empty, and the
+      # criteria step writes no line.
+      - name: Check out the organization standards
+        id: standards
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/download-standards
+        with:
+          ref: main
+
+      # The review criteria in effect, as claude-code-plugins' review lanes
+      # read them: the organization's REVIEW.md with the head's appended, or
+      # the head's alone when its first non-blank line is the replace marker,
+      # composed by that repository's org-standards.sh from the clone above,
+      # for a checkout whose source-control.yaml names melodic-software/standards.
+      # Any failure writes no line and the review reads the head's REVIEW.md.
+      - name: Compose the review criteria
+        id: criteria
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/compose-review-criteria
+        env:
+          SOURCE: ${{ runner.temp }}/claude-code-plugins
+          STANDARDS_DIR: ${{ steps.standards.outputs.path }}
+          STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
+          CRITERIA_FILE: .claude-lane/review-criteria.md
+          ORG_COPY: .claude-lane/org
+
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
       # fails.
@@ -1619,6 +1652,8 @@ jobs:
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           PRIOR_NOTE: ${{ steps.prior.outputs.note }}
+          CRITERIA_NOTE: ${{ steps.criteria.outputs.note }}
+          ORG_NOTE: ${{ steps.criteria.outputs.org-note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.
@@ -2036,7 +2071,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 349 || 309 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
     if: >-
       (needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription' || needs.check-key-credit.result == 'skipped')
       && !cancelled()
@@ -2108,6 +2143,7 @@ jobs:
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
+      standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
       # BEGIN GENERATED: pr-review-cli review-subscription
       # Managed settings need sudo, so they come first; isolation then removes
@@ -2704,6 +2740,38 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # melodic-software/standards at one commit per run (download-standards):
+      # the first review job to run resolves main, and a later leg reuses the
+      # commit it records. Any failure leaves the path empty, and the
+      # criteria step writes no line.
+      - name: Check out the organization standards
+        id: standards
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/download-standards
+        with:
+          ref: ${{ needs.review-key.outputs.standards-sha || 'main' }}
+
+      # The review criteria in effect, as claude-code-plugins' review lanes
+      # read them: the organization's REVIEW.md with the head's appended, or
+      # the head's alone when its first non-blank line is the replace marker,
+      # composed by that repository's org-standards.sh from the clone above,
+      # for a checkout whose source-control.yaml names melodic-software/standards.
+      # Any failure writes no line and the review reads the head's REVIEW.md.
+      - name: Compose the review criteria
+        id: criteria
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/compose-review-criteria
+        env:
+          SOURCE: ${{ runner.temp }}/claude-code-plugins
+          STANDARDS_DIR: ${{ steps.standards.outputs.path }}
+          STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
+          CRITERIA_FILE: .claude-lane/review-criteria.md
+          ORG_COPY: .claude-lane/org
+
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
       # fails.
@@ -2746,6 +2814,8 @@ jobs:
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           PRIOR_NOTE: ${{ steps.prior.outputs.note }}
+          CRITERIA_NOTE: ${{ steps.criteria.outputs.note }}
+          ORG_NOTE: ${{ steps.criteria.outputs.org-note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.
@@ -3133,7 +3203,7 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 349 || 309 }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 352 || 312 }}
     if: >-
       needs.review-subscription.outputs.next-leg == 'fallback'
       && !cancelled()
@@ -3205,6 +3275,7 @@ jobs:
       marker-id: ${{ steps.scope.outputs.marker-id }}
       merge-base: ${{ steps.scope.outputs.merge-base }}
       pr-files: ${{ steps.scope.outputs.pr-files }}
+      standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
       # BEGIN GENERATED: pr-review-cli review-fallback
       # Managed settings need sudo, so they come first; isolation then removes
@@ -3801,6 +3872,38 @@ jobs:
           pr-number: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.number || github.event.pull_request.number }}
           head-sha: ${{ inputs.pr-number && needs.resolve-pull-request.outputs.head-sha || github.event.pull_request.head.sha }}
 
+      # melodic-software/standards at one commit per run (download-standards):
+      # the first review job to run resolves main, and a later leg reuses the
+      # commit it records. Any failure leaves the path empty, and the
+      # criteria step writes no line.
+      - name: Check out the organization standards
+        id: standards
+        if: steps.scope.outputs.review != 'false'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: $/.github/actions/download-standards
+        with:
+          ref: ${{ needs.review-subscription.outputs.standards-sha || needs.review-key.outputs.standards-sha || 'main' }}
+
+      # The review criteria in effect, as claude-code-plugins' review lanes
+      # read them: the organization's REVIEW.md with the head's appended, or
+      # the head's alone when its first non-blank line is the replace marker,
+      # composed by that repository's org-standards.sh from the clone above,
+      # for a checkout whose source-control.yaml names melodic-software/standards.
+      # Any failure writes no line and the review reads the head's REVIEW.md.
+      - name: Compose the review criteria
+        id: criteria
+        if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
+        continue-on-error: true
+        timeout-minutes: 1
+        uses: $/.github/actions/compose-review-criteria
+        env:
+          SOURCE: ${{ runner.temp }}/claude-code-plugins
+          STANDARDS_DIR: ${{ steps.standards.outputs.path }}
+          STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
+          CRITERIA_FILE: .claude-lane/review-criteria.md
+          ORG_COPY: .claude-lane/org
+
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
       # fails.
@@ -3843,6 +3946,8 @@ jobs:
           CONTEXT_NOTE: ${{ steps.pr-context.outputs.note }}
           SETTLED_NOTE: ${{ steps.settled.outputs.note }}
           PRIOR_NOTE: ${{ steps.prior.outputs.note }}
+          CRITERIA_NOTE: ${{ steps.criteria.outputs.note }}
+          ORG_NOTE: ${{ steps.criteria.outputs.org-note }}
           HOLD_PATHS: ${{ inputs.hold-paths }}
           CHUNKS: ${{ steps.split.outputs.chunks }}
           # Each chunk leg's wall-clock cap, the review steps' leg-timeout-minutes.

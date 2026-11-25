@@ -1,0 +1,24 @@
+name: Compose Review Criteria
+description: >-
+  pr-review-cli's criteria step, with no model: when the checkout opts in to
+  melodic-software/standards as its org layer, writes the review criteria in
+  effect (the organization's REVIEW.md with the repository's appended, or the
+  repository's alone behind the replace marker) and a copy of the org
+  standards for the review to read. Every value arrives through env;
+  compose.sh documents what it reads.
+
+outputs:
+  note:
+    description: The prompt's REVIEW CRITERIA line, or empty when no criteria file was written.
+    value: ${{ steps.compose.outputs.note }}
+  org-note:
+    description: The prompt's ORG STANDARDS line, or empty when no org copy was written.
+    value: ${{ steps.compose.outputs.org-note }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compose the review criteria
+      id: compose
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/compose.sh"

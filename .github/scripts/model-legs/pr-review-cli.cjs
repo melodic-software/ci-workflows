@@ -11,7 +11,7 @@ const KEY_COMMENT = `      # check, extract and outcome steps; the status job ca
 const OUTCOME_END = `          handoff: \${{ steps.chunks.outputs.handoff || steps.claude.outputs.handoff }}
 `;
 
-const leg = ({ job, name, secret, input, reason, comment }) => ({
+const leg = ({ job, name, secret, input, reason, comment, standardsRef }) => ({
   job,
   substitutions: [
     {
@@ -30,6 +30,12 @@ const leg = ({ job, name, secret, input, reason, comment }) => ({
       count: 1,
     },
     { find: KEY_COMMENT, replace: comment, count: 1 },
+    // The standards commit an earlier leg of this run resolved.
+    {
+      find: "          ref: main\n",
+      replace: `          ref: \${{ ${standardsRef} || 'main' }}\n`,
+      count: 1,
+    },
     {
       find: `          api-key: \${{ secrets.CLAUDE_API_KEY }}\n`,
       replace: `          ${input}: \${{ secrets.${secret} }}\n`,
@@ -55,6 +61,7 @@ module.exports = {
       name: "subscription",
       secret: "CLAUDE_CODE_OAUTH_TOKEN",
       input: "subscription-token",
+      standardsRef: "needs.review-key.outputs.standards-sha",
       reason:
         "needs.review-key.outputs.next-reason || needs.check-key-credit.outputs.next-reason || needs.check-key-credit.result == 'skipped' && 'no-key' || ''",
       comment: `      # check, extract and outcome steps; the status job carries the red. With
@@ -69,6 +76,8 @@ module.exports = {
       name: "fallback",
       secret: "FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
       input: "fallback-token",
+      standardsRef:
+        "needs.review-subscription.outputs.standards-sha || needs.review-key.outputs.standards-sha",
       reason: "needs.review-subscription.outputs.next-reason",
       comment: `      # check, extract and outcome steps; the status job carries the red. The
       # fallback leg never hands off. The step's env holds no GitHub token.

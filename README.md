@@ -1022,6 +1022,15 @@ consumer to audit it.
 - `.github/actions/generate-review-chunks` — `pr-review-cli.yml`'s diff-split
   step, with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
+- `.github/actions/compose-review-criteria` — `pr-review-cli.yml`'s criteria
+  step, with no model: for a head whose `docs/conventions/source-control.yaml`
+  names `melodic-software/standards`, runs claude-code-plugins'
+  `org-standards.sh review` over the standards checkout `download-standards`
+  made, so the review reads the organization's `REVIEW.md` with the
+  repository's appended, or the repository's alone behind
+  `<!-- review-base: replace -->` (the standards contract's "Review criteria:
+  `REVIEW.md`"); otherwise the review reads the repository's `REVIEW.md` as
+  before (its `action.yml` describes what it does).
 - `.github/actions/build-review-prompt` — `pr-review-cli.yml`'s compose step,
   with no model; internal to that workflow, which passes it everything through
   env (its `action.yml` describes what it does).
@@ -2110,7 +2119,7 @@ chunk for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
-for the ceiling (309 or 349 minutes, under the 6-hour job limit) and every
+for the ceiling (312 or 352 minutes, under the 6-hour job limit) and every
 step keeps its own limit. The later chunks' transcripts are sealed as one,
 under the job id ending `-chunks`. The identical copies and verified renames in scope are left out first:
 when the whole diff fits the read budget and the rest fits 40 files it is one
