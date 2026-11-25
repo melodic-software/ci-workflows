@@ -4,8 +4,8 @@
 # bump-versions entry in README.md.
 #
 # Cooldowns come from the standards dependabot-policy (cooldownDays per change class), read from
-# the copy the standards sync places at .github/standards/dependabot-policy/policy.json. This file
-# sets none of its own.
+# standards' own components/dependabot-policy/policy.json in the standards repository
+# docs/conventions/source-control.yaml names. This file sets none of its own.
 #
 # Every tool is capped at its current major (line: major, or minor for Python): a bump reaches
 # every caller of this repository's reusable workflows at @main as soon as it merges, so a major

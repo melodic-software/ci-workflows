@@ -162,13 +162,14 @@ consumer to audit it.
   verification and pins; a pin in a file yq cannot parse is addressed by a regex
   with one capture group that must match one line). The cooldown days per change
   class (`own`, `patch`, `minor`, `major`) come from the org update policy, the
-  standards `dependabot-policy` `cooldownDays`, read from the standards-synced
-  copy the `dependabot-policy` input names (default
-  `.github/standards/dependabot-policy/policy.json`), or, when the default copy
-  is absent, from standards' own file at `standards-ref` (see
-  `download-standards`). A policy file that still
-  sets `cooldownDays` keeps its own values; with neither, `prepare` fails rather
-  than assume a cooldown. Below 1.0 a minor move is class `major` (as the
+  standards `dependabot-policy` `cooldownDays`: standards' own
+  `components/dependabot-policy/policy.json` at `standards-ref` (see
+  `download-standards`), read only when the repository's
+  `docs/conventions/source-control.yaml` names `melodic-software/standards` as
+  its `standards_repository`. A synced copy in the repository is never read. A
+  policy file that still sets `cooldownDays` keeps its own values; otherwise a
+  repository that names no standards repository, or a standards policy that
+  cannot be read, fails `prepare` rather than assume a cooldown. Below 1.0 a minor move is class `major` (as the
   Dependabot gate treats it), and `line: major` then keeps the minor number. A
   bump holding any major move opens its pull request without auto-merge, so a
   person reviews it. `command: prepare` resolves
@@ -185,10 +186,12 @@ consumer to audit it.
   commands in the policy run from the repository root after the pins are rewritten and
   read the bump from `VERSION_BUMP_READY`.
 - `.github/actions/check-dependabot-policy` — checks a repository's
-  `.github/dependabot.yml` against the org update policy, the standards-synced
-  `.github/standards/dependabot-policy/policy.json`, or standards' own
-  `components/dependabot-policy/policy.json` at `standards-ref` when that copy
-  is absent, and fails closed (exit 2) when neither can be read. It runs the standards `dependabot-policy` analyzer's
+  `.github/dependabot.yml` against the org update policy, standards' own
+  `components/dependabot-policy/policy.json` at `standards-ref`, read only when
+  the repository's `docs/conventions/source-control.yaml` names
+  `melodic-software/standards` as its `standards_repository`. A synced copy in
+  the repository is never read, and the check fails closed (exit 2) when no
+  standards repository is named or its policy cannot be read. It runs the standards `dependabot-policy` analyzer's
   rules (schedule, cooldown floor, groups, open-pull-request cap, disabling
   ignores, the `.github/dependabot-policy.json` exceptions) plus two that
   analyzer does not: `cooldown.semver-major-days`, when set, is at least the
@@ -730,11 +733,15 @@ consumer to audit it.
   `lib.sh` when the caller has no copy at the default path, and keep the
   caller's copy when it has one: `gitleaks` (`.gitleaks.toml`),
   `editorconfig-checker` (`.editorconfig-checker.json`), `shellcheck`
-  (`.shellcheckrc`), `actionlint` (`.github/actionlint.yaml`),
-  `check-dependabot-policy` and `bump-versions`
-  (`components/dependabot-policy/policy.json`), `automerge-dependabot`'s gate
-  (the same policy) and `collect-settled-threads`
-  (`components/trusted-actors/trusted-actors.json`). `lychee-offline`
+  (`.shellcheckrc`), `actionlint` (`.github/actionlint.yaml`) and
+  `collect-settled-threads`
+  (`components/trusted-actors/trusted-actors.json`). `check-dependabot-policy`,
+  `bump-versions` and `automerge-dependabot`'s gate and queue read
+  `components/dependabot-policy/policy.json` only from standards, and only
+  when the repository's `docs/conventions/source-control.yaml` names
+  `melodic-software/standards` (`named.sh`, the rule `build-review-criteria`
+  also applies); a synced copy is never read, and with no standards repository
+  named or its policy unreadable they fail closed. `lychee-offline`
   (`lychee.toml`), `typos` (`_typos.toml`) and `markdownlint`
   (`.markdownlint-cli2.jsonc`) instead always read the standards file through
   this action's `checkout.sh` and merge the caller's own into it with the
@@ -1426,22 +1433,23 @@ GitHub continues the normal weekly patching of each hosted image generation.
   not a JSON array of non-empty strings arms nothing). The allowlist is the
   caller's `publisher-allowlist` JSON array (default
   `["actions/*","github/*","anthropics/*"]`, mirroring standards
-  `dependabot-policy` `autoMerge`), except that at the default, when the pull
-  request's base commit holds the standards-synced
-  `.github/standards/dependabot-policy/policy.json`, it is that copy's
-  `tier: auto` publishers plus its `fastTrack` `github-actions` and `own` globs
-  (`melodic-software/*`). The copy is read through the contents API at the base
-  commit, so the pull request cannot change it; with no copy there, standards'
-  own `components/dependabot-policy/policy.json` at one resolved commit (see
-  `download-standards`) takes its place. Whatever the input, the policy also
+  `dependabot-policy` `autoMerge`), except that at the default it is the
+  standards policy's `tier: auto` publishers plus its `fastTrack`
+  `github-actions` and `own` globs (`melodic-software/*`). The policy is
+  standards' own `components/dependabot-policy/policy.json` at one resolved
+  commit (see `download-standards`), read only when the pull request's base
+  commit's `docs/conventions/source-control.yaml` (read through the contents
+  API, so the pull request cannot change it) names `melodic-software/standards`
+  as its `standards_repository`; a synced copy is never read, and naming no
+  standards repository arms nothing. Whatever the input, the policy also
   narrows: its `autoMerge.ecosystems` bound the ecosystems armed, and its
   `autoMerge.reviewOnly` dependencies for this repository are never armed. A
   policy that cannot be read or parsed arms nothing. No
   package name is in the caller's
   `review-only-dependencies` JSON array (its `autoMerge.reviewOnly` entries);
   every update is semver patch or minor, and a version below 1.0 keeps its
-  minor component unless its name matches the synced copy's `fastTrack` `own`
-  globs (the organization's own releases); the metadata names exactly the updates and versions the
+  minor component unless its name matches the standards policy's `fastTrack`
+  `own` globs (the organization's own releases); the metadata names exactly the updates and versions the
   title or the body's `Updates` lines name; and every commit, head included, has author `49699333`, committer web-flow
   (`19864447`) and a signature verified with reason `valid`. A
   skipped PR that was armed earlier is disarmed. The gate lives in the
@@ -1481,8 +1489,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   on main only, it lists the open PRs authored by `49699333`, reads each head
   commit's Dependabot metadata, runs the same gate with the reusable's
   default inputs, at which the standards dependabot-policy sets the
-  publishers: a synced copy in the checked-out main, else standards' own at
-  the commit `download-standards` resolves (an unreadable policy queues
+  publishers: standards' own at the commit `download-standards` resolves, read
+  only when the checked-out main's `docs/conventions/source-control.yaml` names
+  `melodic-software/standards` (naming none, or an unreadable policy, queues
   nothing and disarms what was armed), and
   requires a `CI Status` check run that succeeded on the head. Every package
   `check-dependabot-policy/package-lock.json` installs, transitive ones
@@ -1501,10 +1510,10 @@ GitHub continues the normal weekly patching of each hosted image generation.
   Dependabot (the policy lists each pin, and the ones it leaves to a person
   with the reason). Each tool is capped at its current major, since a merged
   bump reaches every `@main` caller. It opens each bump with the melodic-release
-  App token from the `plugin-release` environment. The cooldowns come from the
-  standards-synced `.github/standards/dependabot-policy/policy.json`, or, with
-  no copy, from standards' own `components/dependabot-policy/policy.json` at
-  the commit `download-standards` resolves; when neither can be read the run
+  App token from the `plugin-release` environment. The cooldowns come from
+  standards' own `components/dependabot-policy/policy.json` at the commit
+  `download-standards` resolves, which this repository's
+  `docs/conventions/source-control.yaml` names; when it cannot be read the run
   fails and bumps nothing.
 
 - `.github/workflows/maintenance-sync-standards.yml` — orchestrates exact-file distribution

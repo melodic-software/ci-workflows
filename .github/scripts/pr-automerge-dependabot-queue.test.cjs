@@ -9,9 +9,12 @@ const test = require("node:test");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
-const { POLICY_PATH, parseCommitMetadata } = require(
+const { SOURCE_CONTROL_PATH, parseCommitMetadata } = require(
   path.join(actionDir, "gate.cjs"),
 );
+// Where the standards sync used to place the policy; no reader takes it now.
+const SYNCED_COPY_PATH = ".github/standards/dependabot-policy/policy.json";
+const NAMES_STANDARDS = "standards_repository: melodic-software/standards\n";
 const { runQueue } = require(path.join(actionDir, "queue.cjs"));
 const workflowsDir = path.join(__dirname, "..", "workflows");
 const readWorkflow = (name) =>
@@ -219,24 +222,34 @@ async function runWithFakes({
   inQueue = {},
   appErrors = {},
   listError = null,
-  // The synced policy in the checked-out workspace; absent unless given.
-  policy = undefined,
-  // What the standards read returns when the workspace has no copy: by
-  // default a policy with the reusable's default tier.
-  standardsPolicy = { text: DEFAULT_TIER_POLICY },
-  // A directory at the policy path, so the read fails with something other than ENOENT.
-  policyIsDirectory = false,
+  // The standards policy text; by default the reusable's default tier.
+  policy = DEFAULT_TIER_POLICY,
+  // What the standards read returns: by default `policy`.
+  standardsPolicy = { text: policy },
+  // The workspace's docs/conventions/source-control.yaml; absent when null.
+  sourceControl = NAMES_STANDARDS,
+  // A directory at that path, so the read fails with something other than ENOENT.
+  sourceControlIsDirectory = false,
+  // A leftover synced copy in the workspace, which no reader may take.
+  syncedCopy = undefined,
   // REVIEW_ONLY_LOCKFILE, and the text written there when given.
   reviewOnlyLockfile = undefined,
   lockfileText = undefined,
 } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "queue-workspace-"));
-  const policyFile = path.join(workspace, POLICY_PATH);
-  if (policyIsDirectory) fs.mkdirSync(policyFile, { recursive: true });
-  if (policy !== undefined) {
-    fs.mkdirSync(path.dirname(policyFile), { recursive: true });
-    fs.writeFileSync(policyFile, policy);
+  const write = (relative, text) => {
+    const file = path.join(workspace, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+  if (sourceControlIsDirectory) {
+    fs.mkdirSync(path.join(workspace, SOURCE_CONTROL_PATH), {
+      recursive: true,
+    });
+  } else if (sourceControl !== null) {
+    write(SOURCE_CONTROL_PATH, sourceControl);
   }
+  if (syncedCopy !== undefined) write(SYNCED_COPY_PATH, syncedCopy);
   if (lockfileText !== undefined) {
     const lockfile = path.join(workspace, reviewOnlyLockfile);
     fs.mkdirSync(path.dirname(lockfile), { recursive: true });
@@ -316,7 +329,7 @@ async function runWithFakes({
   return { counts, reads, appCalls, notices, warnings, standardsReads };
 }
 
-test("with no synced copy, standards' policy sets the publishers the queue arms", async () => {
+test("standards' policy sets the publishers the queue arms", async () => {
   const { counts, notices, standardsReads } = await runWithFakes({
     standardsPolicy: {
       text: JSON.stringify({
@@ -336,16 +349,29 @@ test("with no synced copy, standards' policy sets the publishers the queue arms"
   );
 });
 
-test("a synced copy wins over standards' policy", async () => {
-  const { standardsReads } = await runWithFakes({
-    policy: DEFAULT_TIER_POLICY,
+test("a leftover synced copy is ignored in favor of standards' policy", async () => {
+  const { counts, notices, standardsReads } = await runWithFakes({
+    syncedCopy: DEFAULT_TIER_POLICY,
+    policy: JSON.stringify({
+      autoMerge: {
+        publishers: { "github/*": { tier: "auto" } },
+        ecosystems: ["github-actions"],
+        reviewOnly: [],
+      },
+    }),
   });
-  assert.equal(standardsReads.length, 0);
+  assert.equal(standardsReads.length, 1);
+  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
+  assert.match(
+    notices[0],
+    /actions\/setup-dotnet is not an allowlisted publisher/u,
+  );
 });
 
-test("with no synced copy and no readable standards policy, every pull request is left alone", async () => {
+test("with no readable standards policy, every pull request is left alone, a synced copy notwithstanding", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
     pulls: [appArmedPull(7), dependabotPull(8)],
+    syncedCopy: DEFAULT_TIER_POLICY,
     standardsPolicy: { failure: "the standards policy could not be read" },
   });
   assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
@@ -356,24 +382,31 @@ test("with no synced copy and no readable standards policy, every pull request i
   assert.match(notices[0], /the standards policy could not be read/u);
 });
 
-test("the workspace's synced policy sets the publishers the queue arms", async () => {
-  const { counts, notices } = await runWithFakes({
-    policy: JSON.stringify({
-      autoMerge: {
-        publishers: { "github/*": { tier: "auto" } },
-        ecosystems: ["github-actions"],
-        reviewOnly: [],
-      },
-    }),
+for (const [label, sourceControl] of [
+  ["no source-control.yaml", null],
+  ["no standards_repository", "convention: conventional\n"],
+  ["another standards repository", "standards_repository: other/standards\n"],
+]) {
+  test(`with ${label}, no policy is read and every pull request is left alone, a synced copy notwithstanding`, async () => {
+    const { counts, appCalls, notices, standardsReads } = await runWithFakes({
+      pulls: [appArmedPull(7), dependabotPull(8)],
+      sourceControl,
+      syncedCopy: DEFAULT_TIER_POLICY,
+    });
+    assert.equal(standardsReads.length, 0);
+    assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
+    assert.deepEqual(
+      appCalls.map((call) => [call.mutation, call.variables.id]),
+      [["disablePullRequestAutoMerge", "PR_7"]],
+    );
+    assert.match(
+      notices[0],
+      /#7 left alone: docs\/conventions\/source-control\.yaml names .*, not melodic-software\/standards, so no dependabot policy is read/u,
+    );
   });
-  assert.deepEqual(counts, { queued: 0, skipped: 1, failed: 0 });
-  assert.match(
-    notices[0],
-    /actions\/setup-dotnet is not an allowlisted publisher/u,
-  );
-});
+}
 
-test("an unreadable synced policy leaves every pull request alone", async () => {
+test("an unreadable standards policy leaves every pull request alone", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
     pulls: [dependabotPull(7), dependabotPull(8)],
     policy: "{",
@@ -386,7 +419,7 @@ test("an unreadable synced policy leaves every pull request alone", async () => 
   );
 });
 
-test("an armed pull request is disarmed when the synced policy is malformed", async () => {
+test("an armed pull request is disarmed when the standards policy is malformed", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
     pulls: [appArmedPull(7)],
     policy: "{",
@@ -402,10 +435,10 @@ test("an armed pull request is disarmed when the synced policy is malformed", as
   );
 });
 
-test("a synced policy path that cannot be read leaves pull requests alone and disarms armed ones", async () => {
+test("a source-control.yaml that cannot be read leaves pull requests alone and disarms armed ones", async () => {
   const { counts, appCalls, notices } = await runWithFakes({
     pulls: [appArmedPull(7), dependabotPull(8)],
-    policyIsDirectory: true,
+    sourceControlIsDirectory: true,
   });
   assert.deepEqual(counts, { queued: 0, skipped: 2, failed: 0 });
   assert.deepEqual(
@@ -414,7 +447,7 @@ test("a synced policy path that cannot be read leaves pull requests alone and di
   );
   assert.match(
     notices[0],
-    /#7 left alone: .*policy\.json could not be read: EISDIR/u,
+    /#7 left alone: .*source-control\.yaml could not be read: EISDIR/u,
   );
 });
 
@@ -480,7 +513,7 @@ const ownPolicy = (fastTrack) =>
     },
   });
 
-test("an own action's minor below 1.0 is queued when the synced policy lists it in fastTrack.own", async () => {
+test("an own action's minor below 1.0 is queued when the standards policy lists it in fastTrack.own", async () => {
   const { counts, notices } = await runWithFakes({
     pulls: [ownPull],
     commits: { 10: [dependabotCommit(OWN_MESSAGE)] },

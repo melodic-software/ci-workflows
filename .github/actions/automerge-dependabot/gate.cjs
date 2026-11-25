@@ -86,19 +86,39 @@ function parseJson(text) {
   }
 }
 
-// Where the standards sync places the org dependabot-policy in a repository.
-const POLICY_PATH = ".github/standards/dependabot-policy/policy.json";
-// The same policy in melodic-software/standards, read when the copy is absent.
+// The org dependabot-policy in the standards repository. No reader takes a
+// repository's synced copy: a copy standards no longer updates would go stale.
 const STANDARDS_POLICY_PATH = "components/dependabot-policy/policy.json";
+// Where a repository names its standards repository (standards_repository).
+const SOURCE_CONTROL_PATH = "docs/conventions/source-control.yaml";
+const DOWNLOAD_STANDARDS = path.join(__dirname, "..", "download-standards");
+
+// {} when a repository's source-control.yaml text names the standards
+// repository download-standards reads (download-standards/named.sh), else
+// { failure }: with no standards repository named, no policy is read and
+// nothing arms.
+function standardsNamed(sourceControl) {
+  try {
+    execFileSync("bash", [path.join(DOWNLOAD_STANDARDS, "named.sh")], {
+      input: sourceControl,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return {};
+  } catch (error) {
+    return {
+      failure: `${String(error.stderr ?? "").trim() || error.message}, so no dependabot policy is read`,
+    };
+  }
+}
 
 // The standards policy at the commit download-standards resolves for
-// env.STANDARDS_REF: { text } or { failure }. Never { text: undefined }: with
-// no copy and no readable standards policy, nothing arms.
+// env.STANDARDS_REF: { text } or { failure }, never { text: undefined }.
 function readStandardsPolicy(env) {
   try {
     const checkout = execFileSync(
       "bash",
-      [path.join(__dirname, "..", "download-standards", "checkout.sh")],
+      [path.join(DOWNLOAD_STANDARDS, "checkout.sh")],
       { env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     ).trim();
     return {
@@ -106,7 +126,7 @@ function readStandardsPolicy(env) {
     };
   } catch (error) {
     return {
-      failure: `${POLICY_PATH} is absent and the standards ${STANDARDS_POLICY_PATH} could not be read: ${error.message}`,
+      failure: `the standards ${STANDARDS_POLICY_PATH} could not be read: ${error.message}`,
     };
   }
 }
@@ -129,9 +149,8 @@ const METADATA_ECOSYSTEM = {
   nuget: "nuget",
 };
 
-// The gate's inputs once the synced policy (its text, undefined when the
-// repository has no copy) is applied to the caller's. With no copy the inputs
-// stand. With one, its autoMerge.reviewOnly entries for `repository` join the
+// The gate's inputs once the standards policy (its text) is applied to the
+// caller's. Its autoMerge.reviewOnly entries for `repository` join the
 // caller's review-only names and its autoMerge.ecosystems bound the
 // ecosystems armed; both only narrow. When the caller leaves the
 // publisher-allowlist at its default, the list becomes the policy's
@@ -139,9 +158,8 @@ const METADATA_ECOSYSTEM = {
 // patch and minor bumps arm like any other allowlisted publisher's. ownGlobs
 // is the policy's fastTrack.own, exempt from the below-1.0 minor rule; it
 // comes only from the policy, so any caller value is replaced.
-// Returns { inputs } or { failure }.
+// Returns { inputs } or { failure }; a missing policy text is a failure.
 function resolvePolicyInputs(inputs, policyText, repository) {
-  if (policyText === undefined) return { inputs: { ...inputs, ownGlobs: [] } };
   const policy = parseJson(policyText);
   const autoMerge = policy?.autoMerge;
   const publishers = autoMerge?.publishers;
@@ -163,7 +181,7 @@ function resolvePolicyInputs(inputs, policyText, repository) {
     !tracks.every(isGlobList)
   ) {
     return {
-      failure: `${POLICY_PATH} is not a readable dependabot policy (autoMerge.publishers, ecosystems, reviewOnly, fastTrack)`,
+      failure: `the standards ${STANDARDS_POLICY_PATH} is not a readable dependabot policy (autoMerge.publishers, ecosystems, reviewOnly, fastTrack)`,
     };
   }
   const resolved = {
@@ -198,7 +216,7 @@ function resolvePolicyInputs(inputs, policyText, repository) {
 // is fetch-metadata's updated-dependencies shape. `listCommits` returns the
 // REST commit list, read only once every cheaper gate holds. `inputs` holds
 // the caller's raw strings: publisherAllowlist and reviewOnly (JSON arrays)
-// and packageAutoMerge ("true" or anything else), plus, from a synced policy,
+// and packageAutoMerge ("true" or anything else), plus, from the standards policy,
 // ecosystems: the fetch-metadata ecosystem ids that may arm at all, and
 // ownGlobs: the names exempt from the below-1.0 minor rule.
 async function gateFailure({ pr, updates, listCommits, inputs }) {
@@ -394,24 +412,28 @@ async function runEvent({
     });
   }
 
-  // Read at the base commit, so the pull request cannot change its own tier;
-  // with no copy there, standards' own policy at one resolved commit, which
-  // the pull request cannot change either.
+  // The standards repository is the one the base commit's source-control.yaml
+  // names, and the policy is standards' own at one resolved commit; the pull
+  // request can change neither. Naming none reads no policy.
   async function readBasePolicy() {
+    let sourceControl = "";
     try {
       const { data } = await github.rest.repos.getContent({
         ...context.repo,
-        path: POLICY_PATH,
+        path: SOURCE_CONTROL_PATH,
         ref: pr.base.sha,
         mediaType: { format: "raw" },
       });
-      return { text: String(data) };
+      sourceControl = String(data);
     } catch (error) {
-      if (error.status === 404) return readStandards(env);
-      return {
-        failure: `${POLICY_PATH} could not be read at the base: ${error.message}`,
-      };
+      if (error.status !== 404) {
+        return {
+          failure: `${SOURCE_CONTROL_PATH} could not be read at the base: ${error.message}`,
+        };
+      }
     }
+    const named = standardsNamed(sourceControl);
+    return named.failure ? named : readStandards(env);
   }
 
   const reason = await eventFailure();
@@ -438,12 +460,13 @@ async function runEvent({
 module.exports = {
   DEFAULT_PUBLISHER_ALLOWLIST,
   DEPENDABOT_ID,
-  POLICY_PATH,
+  SOURCE_CONTROL_PATH,
   STANDARDS_POLICY_PATH,
   WEB_FLOW_ID,
   gateFailure,
   parseCommitMetadata,
   readStandardsPolicy,
+  standardsNamed,
   resolvePolicyInputs,
   runEvent,
 };

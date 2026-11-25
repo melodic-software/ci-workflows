@@ -3,11 +3,11 @@ name: Maintenance Bump Pinned Versions
 # Moves every pin in .github/version-bump/policy.yaml (the tool versions and
 # release digests the actions and reusable workflows pin outside Dependabot) to
 # its newest release past the cooldown, checked against the publisher's data.
-# The cooldown per change class comes from the standards dependabot-policy copy
-# at .github/standards/dependabot-policy/policy.json, or, while this repository
-# has no copy, from standards' own components/dependabot-policy/policy.json at
-# the commit the download-standards action resolves (the bump-versions
-# action's fallback; it fails the run when neither can be read). Each tool, or group of
+# The cooldown per change class comes from standards' own
+# components/dependabot-policy/policy.json at the commit the download-standards
+# action resolves, in the standards repository this repository's
+# docs/conventions/source-control.yaml names (the bump-versions action fails the
+# run when it cannot be read). Each tool, or group of
 # tools that must move together, gets its own pull request on
 # version-bump/<name>, opened by the melodic-release App and armed for the
 # merge queue; ci-status still gates each one.

@@ -13,23 +13,28 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   DEPENDABOT_ID,
-  POLICY_PATH,
+  SOURCE_CONTROL_PATH,
   gateFailure,
   parseCommitMetadata,
   readStandardsPolicy,
   resolvePolicyInputs,
+  standardsNamed,
 } = require("./gate.cjs");
 
-// The policy: the synced copy in the checked-out default branch, or, when the
-// repository has none, standards' own at the commit download-standards
-// resolves (readStandards). { text } or { failure }.
+// The policy: standards' own at the commit download-standards resolves
+// (readStandards), when the checked-out default branch's source-control.yaml
+// names that standards repository. { text } or { failure }.
 function readWorkspacePolicy(workspace, readStandards) {
+  let sourceControl = "";
   try {
-    return { text: fs.readFileSync(path.join(workspace, POLICY_PATH), "utf8") };
+    sourceControl = fs.readFileSync(path.join(workspace, SOURCE_CONTROL_PATH), "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return readStandards();
-    return { failure: `${POLICY_PATH} could not be read: ${error.message}` };
+    if (error.code !== "ENOENT") {
+      return { failure: `${SOURCE_CONTROL_PATH} could not be read: ${error.message}` };
+    }
   }
+  const named = standardsNamed(sourceControl);
+  return named.failure ? named : readStandards();
 }
 
 // Every non-dev package an npm lockfile installs, nested and scoped ones

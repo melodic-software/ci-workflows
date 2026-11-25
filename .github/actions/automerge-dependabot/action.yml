@@ -30,8 +30,9 @@ inputs:
   standards-ref:
     description: >-
       Branch or full commit SHA of melodic-software/standards whose
-      dependabot policy applies when the base commit holds no synced copy
-      (see the download-standards action).
+      dependabot policy applies (see the download-standards action), read
+      only when the base commit's docs/conventions/source-control.yaml names
+      melodic-software/standards as its standards_repository.
     required: false
     default: main
 

@@ -38,7 +38,7 @@ export function parseUniqueJson(source, location) {
 }
 
 const MODULE_DIRECTORY = import.meta.dirname;
-const DEFAULT_POLICY_PATH = ".github/standards/dependabot-policy/policy.json";
+const STANDARDS_POLICY_PATH = "components/dependabot-policy/policy.json";
 const DEFAULT_CONFIG_PATH = ".github/dependabot-policy.json";
 const DEFAULT_DEPENDABOT_PATH = ".github/dependabot.yml";
 const POLICY_SCHEMA_PATH = path.join(MODULE_DIRECTORY, "policy.schema.json");
@@ -346,9 +346,16 @@ function entryFindings(file, key, entry, policy) {
 export async function auditRepository({
   root = process.cwd(),
   configPath = DEFAULT_CONFIG_PATH,
-  policyPath = DEFAULT_POLICY_PATH,
+  policyPath,
   dependabotPath = DEFAULT_DEPENDABOT_PATH,
 } = {}) {
+  // No default: the policy is standards' own, which the action resolves
+  // (policy.sh), never a copy in the repository.
+  if (!policyPath) {
+    throw new ConfigurationError(
+      `no dependabot policy given; pass --policy with ${STANDARDS_POLICY_PATH} from the standards repository`,
+    );
+  }
   const resolvedRoot = path.resolve(root);
   const resolve = (candidate) =>
     path.isAbsolute(candidate) ? candidate : path.join(resolvedRoot, candidate);
@@ -356,7 +363,7 @@ export async function auditRepository({
   const rawPolicy = await readJson(resolvedPolicyPath, "dependabot policy");
   if (rawPolicy === undefined) {
     throw new ConfigurationError(
-      `dependabot policy not found at ${resolvedPolicyPath}; the repository must receive the standards dependabot-policy sync component`,
+      `dependabot policy not found at ${resolvedPolicyPath}; pass ${STANDARDS_POLICY_PATH} from the standards repository`,
     );
   }
   const policy = validateStructure(rawPolicy, validatePolicyStructure, "policy");
@@ -506,7 +513,7 @@ export function parseArguments(argv) {
         config: { default: DEFAULT_CONFIG_PATH, type: "string" },
         dependabot: { default: DEFAULT_DEPENDABOT_PATH, type: "string" },
         json: { default: false, type: "boolean" },
-        policy: { default: DEFAULT_POLICY_PATH, type: "string" },
+        policy: { type: "string" },
         root: { default: process.cwd(), type: "string" },
       },
       strict: true,

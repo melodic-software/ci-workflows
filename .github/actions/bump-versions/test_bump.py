@@ -851,44 +851,71 @@ class HookTest(unittest.TestCase):
         run.assert_not_called()
 
 
-class SyncedCooldownTest(unittest.TestCase):
-    """cooldownDays come from the policy file, else the synced standards dependabot-policy."""
+class StandardsCooldownTest(unittest.TestCase):
+    """cooldownDays come from the policy file, else the standards dependabot-policy.
+
+    The standards policy is read only from the standards repository the repository's
+    docs/conventions/source-control.yaml names; a synced copy is never read.
+    """
 
     # standards components/dependabot-policy/policy.json schemaVersion 2 (standards#987).
-    SYNCED = {
+    STANDARDS = {
         "schemaVersion": 2,
         "cooldownMinimumDays": 3,
         "cooldownDays": {"own": 0, "patch": 3, "minor": 3, "major": 7},
     }
+    # Where the standards sync used to place the policy; no reader takes it now.
+    SYNCED_COPY = Path(".github/standards/dependabot-policy/policy.json")
+    NAMES_STANDARDS = "standards_repository: melodic-software/standards\n"
 
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        cwd = Path.cwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, cwd)
         self.yaml = self.root / "policy.yaml"
-        self.synced = self.root / "policy.json"
+        self.write(bump.SOURCE_CONTROL, self.NAMES_STANDARDS)
+        self.standards = self.root / "standards"
+        self.standards_policy = self.standards / bump.STANDARDS_DEPENDABOT_POLICY
+        self.standards_policy.parent.mkdir(parents=True)
+
+    def write(self, relative: Path, text: str) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def load_with_checkout(self, yaml_doc: dict[str, Any]) -> tuple[dict[str, Any], mock.Mock]:
+        with (
+            mock.patch.object(bump, "yq_json", return_value=yaml_doc),
+            mock.patch.object(
+                bump, "standards_checkout", return_value=self.standards
+            ) as checkout,
+        ):
+            return bump.load_policy(self.yaml), checkout
 
     def load(self, yaml_doc: dict[str, Any]) -> dict[str, Any]:
-        with mock.patch.object(bump, "yq_json", return_value=yaml_doc):
-            return bump.load_policy(self.yaml, self.synced)
+        return self.load_with_checkout(yaml_doc)[0]
 
-    def test_policy_without_cooldown_takes_the_synced_classes(self) -> None:
-        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
-        policy = self.load({"tools": {}})
+    def test_policy_without_cooldown_takes_the_standards_classes(self) -> None:
+        self.standards_policy.write_text(json.dumps(self.STANDARDS), encoding="utf-8")
+        policy, checkout = self.load_with_checkout({"tools": {}})
+        checkout.assert_called_once_with()
         self.assertEqual(
             policy["cooldownDays"], {"own": 0, "patch": 3, "minor": 3, "major": 7}
         )
         self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 7)
         self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "1.0.1"), 3)
 
-    def test_policy_cooldown_wins_over_the_synced_copy(self) -> None:
-        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+    def test_policy_cooldown_wins_over_the_standards_policy(self) -> None:
+        self.standards_policy.write_text(json.dumps(self.STANDARDS), encoding="utf-8")
         own = {"own": 1, "patch": 2, "minor": 4, "major": 9}
         policy = self.load({"cooldownDays": own, "tools": {}})
         self.assertEqual(policy["cooldownDays"], own)
         self.assertEqual(bump.cooldown_days(policy, THIRD, "1.0.0", "2.0.0"), 9)
 
-    def test_policy_cooldown_needs_no_synced_copy(self) -> None:
+    def test_policy_cooldown_needs_no_standards_policy(self) -> None:
         own = {"own": 0, "patch": 3, "minor": 3, "major": 7}
         self.assertEqual(self.load({"cooldownDays": own})["cooldownDays"], own)
 
@@ -896,68 +923,85 @@ class SyncedCooldownTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             self.load({"tools": {}})
         self.assertIn(str(self.yaml), str(raised.exception))
-        self.assertIn(str(self.synced), str(raised.exception))
+        self.assertIn(str(self.standards_policy), str(raised.exception))
 
-    def test_synced_copy_missing_a_class_fails(self) -> None:
-        self.synced.write_text(
+    def test_standards_policy_missing_a_class_fails(self) -> None:
+        self.standards_policy.write_text(
             json.dumps({"cooldownDays": {"own": 0, "patch": 3, "minor": 3}}),
             encoding="utf-8",
         )
         with self.assertRaisesRegex(SystemExit, "own, patch, minor, major"):
             self.load({"tools": {}})
 
-    def test_synced_copy_with_a_non_integer_class_fails(self) -> None:
+    def test_standards_policy_with_a_non_integer_class_fails(self) -> None:
         days = {"own": False, "patch": 3, "minor": 3, "major": 7}
-        self.synced.write_text(json.dumps({"cooldownDays": days}), encoding="utf-8")
+        self.standards_policy.write_text(json.dumps({"cooldownDays": days}), encoding="utf-8")
         with self.assertRaisesRegex(SystemExit, "non-negative integer"):
             self.load({"tools": {}})
 
-    def test_synced_copy_that_is_not_json_fails(self) -> None:
-        self.synced.write_text("{", encoding="utf-8")
+    def test_standards_policy_that_is_not_json_fails(self) -> None:
+        self.standards_policy.write_text("{", encoding="utf-8")
         with self.assertRaisesRegex(SystemExit, "not valid JSON"):
             self.load({"tools": {}})
 
-    def load_default_path(self, yaml_doc: dict[str, Any]) -> tuple[dict[str, Any], mock.Mock]:
-        """load_policy at the action's default copy path, run from self.root."""
-        standards = self.root / "standards"
-        policy_file = standards / bump.STANDARDS_DEPENDABOT_POLICY
-        policy_file.parent.mkdir(parents=True)
-        policy_file.write_text(
+    def test_a_leftover_synced_copy_is_ignored_in_favor_of_standards(self) -> None:
+        self.write(
+            self.SYNCED_COPY,
             json.dumps({"cooldownDays": {"own": 1, "patch": 2, "minor": 4, "major": 8}}),
-            encoding="utf-8",
         )
-        cwd = Path.cwd()
-        os.chdir(self.root)
-        self.addCleanup(os.chdir, cwd)
-        with (
-            mock.patch.object(bump, "yq_json", return_value=yaml_doc),
-            mock.patch.object(bump, "standards_checkout", return_value=standards) as checkout,
-        ):
-            return bump.load_policy(self.yaml, Path(bump.DEPENDABOT_POLICY)), checkout
-
-    def test_absent_default_copy_reads_the_standards_policy(self) -> None:
-        policy, checkout = self.load_default_path({"tools": {}})
+        self.standards_policy.write_text(json.dumps(self.STANDARDS), encoding="utf-8")
+        policy, checkout = self.load_with_checkout({"tools": {}})
         checkout.assert_called_once_with()
-        self.assertEqual(
-            policy["cooldownDays"], {"own": 1, "patch": 2, "minor": 4, "major": 8}
-        )
-
-    def test_present_default_copy_wins_over_standards(self) -> None:
-        synced = self.root / bump.DEPENDABOT_POLICY
-        synced.parent.mkdir(parents=True)
-        synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
-        policy, checkout = self.load_default_path({"tools": {}})
-        checkout.assert_not_called()
-        self.assertEqual(policy["cooldownDays"], self.SYNCED["cooldownDays"])
+        self.assertEqual(policy["cooldownDays"], self.STANDARDS["cooldownDays"])
 
     def test_policy_cooldown_reads_no_standards(self) -> None:
         own = {"own": 0, "patch": 3, "minor": 3, "major": 7}
-        policy, checkout = self.load_default_path({"cooldownDays": own})
+        policy, checkout = self.load_with_checkout({"cooldownDays": own})
         checkout.assert_not_called()
         self.assertEqual(policy["cooldownDays"], own)
 
-    def test_cpython_source_waits_the_synced_patch_cooldown(self) -> None:
-        self.synced.write_text(json.dumps(self.SYNCED), encoding="utf-8")
+    def test_naming_no_standards_repository_fails_closed(self) -> None:
+        self.write(self.SYNCED_COPY, json.dumps(self.STANDARDS))
+        self.standards_policy.write_text(json.dumps(self.STANDARDS), encoding="utf-8")
+        for label, source_control, shown in [
+            ("no source-control.yaml", None, "no standards_repository"),
+            ("no key", "convention: conventional\n", "no standards_repository"),
+            ("another repository", "standards_repository: other/standards\n", "other/standards"),
+        ]:
+            with self.subTest(label):
+                (self.root / bump.SOURCE_CONTROL).unlink(missing_ok=True)
+                if source_control is not None:
+                    self.write(bump.SOURCE_CONTROL, source_control)
+                with (
+                    mock.patch.object(bump, "yq_json", return_value={"tools": {}}),
+                    mock.patch.object(bump, "standards_checkout") as checkout,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    bump.load_policy(self.yaml)
+                checkout.assert_not_called()
+                self.assertIn(
+                    f"source-control.yaml names {shown}, not melodic-software/standards,"
+                    " so no dependabot policy is read",
+                    str(raised.exception),
+                )
+
+    def test_unreadable_standards_fails_closed(self) -> None:
+        """The real download-standards read: a ref it cannot resolve fails the run."""
+        self.write(self.SYNCED_COPY, json.dumps(self.STANDARDS))
+        temp = self.root / "temp"
+        temp.mkdir()
+        env = {"RUNNER_TEMP": str(temp), "STANDARDS_REF": "bad..ref"}
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(bump, "yq_json", return_value={"tools": {}}),
+            self.assertRaisesRegex(
+                SystemExit, "the standards dependabot policy could not be read"
+            ),
+        ):
+            bump.load_policy(self.yaml)
+
+    def test_cpython_source_waits_the_standards_patch_cooldown(self) -> None:
+        self.standards_policy.write_text(json.dumps(self.STANDARDS), encoding="utf-8")
         policy = self.load({"tools": {}})
         uv = {
             "draft": False,
@@ -993,7 +1037,7 @@ class OwnPolicyPinsTest(unittest.TestCase):
         bump.locate_line(text, path, old, bump.yq_line(path, file))
         return old
 
-    def test_cooldowns_come_from_the_synced_org_policy(self) -> None:
+    def test_cooldowns_come_from_the_standards_org_policy(self) -> None:
         self.assertNotIn("cooldownDays", self.policy)
 
     def test_every_tool_sets_a_line(self) -> None:

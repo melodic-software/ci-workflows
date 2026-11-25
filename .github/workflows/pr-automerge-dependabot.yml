@@ -37,10 +37,11 @@ name: PR Automerge Dependabot
 #     `package-auto-merge: false`, `npm_and_yarn`, `pip`, `uv` or `nuget`; any
 #     other ecosystem (docker, dotnet_sdk and the rest) is left for a human;
 #   - every GitHub Actions dependency name matches a glob in the allowlist.
-#     The policy is standards `components/dependabot-policy/policy.json`: the
-#     synced copy at `.github/standards/dependabot-policy/policy.json` in the
-#     base commit, or, when the base holds none, standards' own file at one
-#     resolved commit (the download-standards action). When the caller leaves
+#     The policy is standards' own `components/dependabot-policy/policy.json`
+#     at one resolved commit (the download-standards action), read only when
+#     the base commit's `docs/conventions/source-control.yaml` names
+#     `melodic-software/standards` as its `standards_repository`; a synced copy
+#     is never read, and naming none arms nothing. When the caller leaves
 #     `publisher-allowlist` at its default (which mirrors that policy's
 #     `autoMerge`), the allowlist is the policy's `tier: auto` publishers plus
 #     its `fastTrack` `github-actions` and `own` globs; a caller list other
@@ -54,7 +55,7 @@ name: PR Automerge Dependabot
 #     (its entries in that policy's `autoMerge.reviewOnly`);
 #   - every update is a semver patch or minor, and a version below 1.0 keeps
 #     its minor component (the policy's non-major rule) unless its name
-#     matches the synced copy's `fastTrack` `own` globs, the organization's
+#     matches the standards policy's `fastTrack` `own` globs, the organization's
 #     own releases; a grouped PR with one major bump, or an update type
 #     Dependabot could not compute, is skipped;
 #   - the updates in the metadata are exactly those the title or the body's
@@ -79,9 +80,10 @@ name: PR Automerge Dependabot
 # TRUST: every PR-derived value (dependency names, versions, the metadata
 # JSON) is untrusted. Values reach the script through `env:` only, never a
 # `${{ }}` expansion inside script text. No checkout of the pull request:
-# nothing from it is executed, and the synced policy is read through the
-# contents API at the pull request's base commit, or from a checkout of
-# standards, so the pull request cannot change it. The gate is the automerge-dependabot composite, reached
+# nothing from it is executed. The standards repository is named by the
+# base commit's source-control.yaml, read through the contents API, and the
+# policy comes from a checkout of standards, so the pull request cannot change
+# either. The gate is the automerge-dependabot composite, reached
 # through `$/`, so it runs at the commit of this workflow the caller calls.
 on:
   workflow_call:
@@ -106,8 +108,8 @@ on:
         description: >-
           JSON array of GitHub Actions publisher globs (`*` matches any run of
           characters) whose patch and minor bumps are armed. At this default,
-          the standards dependabot-policy (the synced copy at the base, else
-          standards' own) sets the list instead. Narrow it to keep a
+          the standards dependabot-policy (standards' own, from the standards
+          repository the base names) sets the list instead. Narrow it to keep a
           publisher's bumps for a person.
         type: string
         default: '["actions/*","github/*","anthropics/*"]'

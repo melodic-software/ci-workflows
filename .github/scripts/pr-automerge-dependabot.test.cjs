@@ -8,10 +8,14 @@ const test = require("node:test");
 const actionDir = path.join(__dirname, "..", "actions", "automerge-dependabot");
 const {
   DEFAULT_PUBLISHER_ALLOWLIST,
+  SOURCE_CONTROL_PATH,
   gateFailure,
   resolvePolicyInputs,
   runEvent,
 } = require(path.join(actionDir, "gate.cjs"));
+// Where the standards sync used to place the policy; no reader takes it now.
+const SYNCED_COPY_PATH = ".github/standards/dependabot-policy/policy.json";
+const NAMES_STANDARDS = "standards_repository: melodic-software/standards\n";
 const workflowPath = path.join(
   __dirname,
   "..",
@@ -105,11 +109,18 @@ async function runGate({
   packageAutoMerge = "true",
   reviewOnly = "[]",
   publisherAllowlist = defaultAllowlist(),
-  // The synced policy at the base: absent (404) unless a text or an error is given.
-  basePolicy = undefined,
-  basePolicyError = undefined,
-  // What the standards read returns when the base has no copy.
-  standardsPolicy = { text: syncedPolicy() },
+  // The standards policy text.
+  policy = policyText(),
+  // What the standards read returns: by default `policy`.
+  standardsPolicy = { text: policy },
+  // The base's docs/conventions/source-control.yaml: absent (404) when null.
+  baseSourceControl = NAMES_STANDARDS,
+  baseSourceControlError = undefined,
+  // A leftover synced copy at the base, which no reader may take.
+  baseSyncedCopy = undefined,
+  // download-standards' env (RUNNER_TEMP, STANDARDS_URL, STANDARDS_REF) for
+  // the real standards read in place of standardsPolicy.
+  standardsEnv = undefined,
 } = {}) {
   const graphqlCalls = [];
   const policyReads = [];
@@ -130,11 +141,15 @@ async function runGate({
       repos: {
         getContent: async (params) => {
           policyReads.push(params);
-          if (basePolicyError) throw basePolicyError;
-          if (basePolicy === undefined) {
+          if (baseSourceControlError) throw baseSourceControlError;
+          const data = {
+            [SOURCE_CONTROL_PATH]: baseSourceControl,
+            [SYNCED_COPY_PATH]: baseSyncedCopy,
+          }[params.path];
+          if (data === undefined || data === null) {
             throw Object.assign(new Error("Not Found"), { status: 404 });
           }
-          return { data: basePolicy };
+          return { data };
         },
       },
     },
@@ -173,11 +188,14 @@ async function runGate({
     github,
     context,
     core,
-    env,
-    readStandards: (readEnv) => {
-      standardsReads.push(readEnv);
-      return standardsPolicy;
-    },
+    env: { ...env, ...standardsEnv },
+    // With standardsEnv, the real download-standards read runs.
+    readStandards: standardsEnv
+      ? undefined
+      : (readEnv) => {
+          standardsReads.push(readEnv);
+          return standardsPolicy;
+        },
   });
   const armCalls = graphqlCalls.filter((call) =>
     /enablePullRequestAutoMerge/u.test(call.query),
@@ -257,7 +275,7 @@ for (const malformed of [
 // The publisher and fast-track shape of standards
 // components/dependabot-policy/policy.json schemaVersion 2 (standards#987),
 // plus one review-tier publisher the real file does not list.
-const syncedPolicy = ({ fastTrack, ecosystems, reviewOnly } = {}) =>
+const policyText = ({ fastTrack, ecosystems, reviewOnly } = {}) =>
   JSON.stringify({
     schemaVersion: 2,
     fastTrack: fastTrack ?? {
@@ -283,20 +301,20 @@ test("the gate's default allowlist is the reusable's publisher-allowlist default
   assert.deepEqual(DEFAULT_PUBLISHER_ALLOWLIST, JSON.parse(defaultAllowlist()));
 });
 
-test("the synced policy is read at the base commit, never the head", async () => {
-  const { policyReads } = await runGate();
+test("the standards repository comes from the base commit's source-control.yaml, never the head", async () => {
+  const { policyReads } = await runGate({ baseSyncedCopy: policyText() });
   assert.deepEqual(policyReads, [
     {
       owner: "melodic-software",
       repo: "medley",
-      path: ".github/standards/dependabot-policy/policy.json",
+      path: "docs/conventions/source-control.yaml",
       ref: BASE,
       mediaType: { format: "raw" },
     },
   ]);
 });
 
-test("with no synced copy at the base, the standards policy's fast track arms an own action", async () => {
+test("the standards policy's fast track arms an own action", async () => {
   const { armCalls, notices, policyReads, standardsReads } = await runGate({
     updates: [
       update("melodic-software/ci-workflows", "version-update:semver-patch"),
@@ -308,41 +326,65 @@ test("with no synced copy at the base, the standards policy's fast track arms an
   assert.equal(armCalls.length, 1);
 });
 
-test("a synced copy at the base wins over the standards policy", async () => {
+test("a leftover synced copy at the base is ignored in favor of the standards policy", async () => {
   const { standardsReads, notices } = await runGate({
     updates: [
       update("melodic-software/ci-workflows", "version-update:semver-patch"),
     ],
-    basePolicy: syncedPolicy({ fastTrack: { "github-actions": [], own: [] } }),
+    baseSyncedCopy: policyText(),
+    policy: policyText({ fastTrack: { "github-actions": [], own: [] } }),
   });
-  assert.equal(standardsReads.length, 0);
+  assert.equal(standardsReads.length, 1);
   assert.match(
     notices[0],
     /melodic-software\/ci-workflows is not an allowlisted publisher/u,
   );
 });
 
-test("with no synced copy and no readable standards policy, nothing arms", async () => {
-  assertSkipped(
-    await runGate({
-      standardsPolicy: { failure: "the standards policy could not be read" },
-    }),
-    /the standards policy could not be read/u,
-  );
+test("with no readable standards policy, nothing arms and an earlier arm is disarmed, a synced copy notwithstanding", async () => {
+  const result = await runGate({
+    autoMerge: { enabled_by: {} },
+    baseSyncedCopy: policyText(),
+    standardsPolicy: { failure: "the standards policy could not be read" },
+  });
+  assert.equal(result.armCalls.length, 0);
+  assert.match(result.notices[0], /the standards policy could not be read/u);
+  assert.equal(result.disarmCalls.length, 1);
 });
 
-test("with the synced policy, an own action's patch bump arms on the fast track", async () => {
+for (const [label, baseSourceControl] of [
+  ["no source-control.yaml", null],
+  ["no standards_repository", "convention: conventional\n"],
+  ["another standards repository", "standards_repository: other/standards\n"],
+]) {
+  test(`a base with ${label} reads no policy, arms nothing and disarms an earlier arm`, async () => {
+    const result = await runGate({
+      autoMerge: { enabled_by: {} },
+      baseSourceControl,
+      baseSyncedCopy: policyText(),
+    });
+    assert.equal(result.armCalls.length, 0);
+    assert.equal(result.standardsReads.length, 0);
+    assert.match(
+      result.notices[0],
+      /docs\/conventions\/source-control\.yaml names .*, not melodic-software\/standards, so no dependabot policy is read/u,
+    );
+    assert.equal(result.disarmCalls.length, 1);
+  });
+}
+
+test("with the standards policy, an own action's patch bump arms on the fast track", async () => {
   const { armCalls, notices } = await runGate({
     updates: [
       update("melodic-software/ci-workflows", "version-update:semver-patch"),
     ],
-    basePolicy: syncedPolicy(),
+    policy: policyText(),
   });
   assert.deepEqual(notices, []);
   assert.equal(armCalls.length, 1);
 });
 
-test("with the synced policy, a fast-tracked major still goes to a person", async () => {
+test("with the standards policy, a fast-tracked major still goes to a person", async () => {
   assertSkipped(
     await runGate({
       updates: [
@@ -355,7 +397,7 @@ test("with the synced policy, a fast-tracked major still goes to a person", asyn
           },
         ),
       ],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     /melodic-software\/ci-workflows is not a patch or minor update/u,
   );
@@ -383,21 +425,21 @@ const belowOne = (name) =>
     "u",
   );
 
-test("with the synced policy, an own action's minor below 1.0 arms", async () => {
+test("with the standards policy, an own action's minor below 1.0 arms", async () => {
   const { armCalls, notices } = await runGate({
     updates: [ownMinor()],
-    basePolicy: syncedPolicy(),
+    policy: policyText(),
   });
   assert.deepEqual(notices, []);
   assert.equal(armCalls.length, 1);
 });
 
-test("a synced policy without fastTrack.own exempts no allowlisted name below 1.0", async () => {
+test("a standards policy without fastTrack.own exempts no allowlisted name below 1.0", async () => {
   assertSkipped(
     await runGate({
       updates: [ownMinor()],
       publisherAllowlist: OWN_ALLOWLIST,
-      basePolicy: syncedPolicy({
+      policy: policyText({
         fastTrack: { "github-actions": ["anthropics/*"] },
       }),
     }),
@@ -405,17 +447,17 @@ test("a synced policy without fastTrack.own exempts no allowlisted name below 1.
   );
 });
 
-test("with the synced policy, a vendor action's minor below 1.0 is still skipped", async () => {
+test("with the standards policy, a vendor action's minor below 1.0 is still skipped", async () => {
   assertSkipped(
     await runGate({
       updates: [vendorMinorBelowOne],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     belowOne("actions/checkout"),
   );
 });
 
-test("with the synced policy, an own action's move to 1.0 still goes to a person", async () => {
+test("with the standards policy, an own action's move to 1.0 still goes to a person", async () => {
   assertSkipped(
     await runGate({
       updates: [
@@ -425,14 +467,14 @@ test("with the synced policy, an own action's move to 1.0 still goes to a person
           newVersion: "1.0.0",
         }),
       ],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     /psscriptanalyzer is not a patch or minor update/u,
   );
   assertSkipped(
     await runGate({
       updates: [ownMinor({ prevVersion: "0.74.0", newVersion: "1.0.0" })],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     belowOne(PSSA),
   );
@@ -442,13 +484,13 @@ test("a group with an own and a vendor minor below 1.0 is skipped for the vendor
   assertSkipped(
     await runGate({
       updates: [ownMinor(), vendorMinorBelowOne],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     belowOne("actions/checkout"),
   );
 });
 
-test("own globs come only from the synced policy, never the caller's inputs", async () => {
+test("own globs come only from the standards policy, never the caller's inputs", async () => {
   const caller = {
     publisherAllowlist: OWN_ALLOWLIST,
     packageAutoMerge: "true",
@@ -456,13 +498,17 @@ test("own globs come only from the synced policy, never the caller's inputs", as
     ownGlobs: ["melodic-software/*"],
   };
   const repository = "melodic-software/medley";
-  const unsynced = resolvePolicyInputs(caller, undefined, repository).inputs;
-  assert.deepEqual(unsynced.ownGlobs, []);
-  assert.deepEqual(
-    resolvePolicyInputs(caller, syncedPolicy({ fastTrack: {} }), repository)
-      .inputs.ownGlobs,
-    [],
+  assert.match(
+    resolvePolicyInputs(caller, undefined, repository).failure,
+    /is not a readable dependabot policy/u,
+    "no policy text resolves no inputs",
   );
+  const unsynced = resolvePolicyInputs(
+    caller,
+    policyText({ fastTrack: {} }),
+    repository,
+  ).inputs;
+  assert.deepEqual(unsynced.ownGlobs, []);
   assert.match(
     await gateFailure({
       pr: { user: { id: DEPENDABOT_ID } },
@@ -474,29 +520,29 @@ test("own globs come only from the synced policy, never the caller's inputs", as
   );
 });
 
-test("with the synced policy, a review-tier publisher is not armed", async () => {
+test("with the standards policy, a review-tier publisher is not armed", async () => {
   assertSkipped(
     await runGate({
       updates: [update("example/action", "version-update:semver-patch")],
-      basePolicy: syncedPolicy(),
+      policy: policyText(),
     }),
     /example\/action is not an allowlisted publisher/u,
   );
 });
 
-test("a synced policy with no fast track arms only its auto-tier publishers", async () => {
+test("a standards policy with no fast track arms only its auto-tier publishers", async () => {
   assertSkipped(
     await runGate({
       updates: [
         update("melodic-software/ci-workflows", "version-update:semver-patch"),
       ],
-      basePolicy: syncedPolicy({ fastTrack: {} }),
+      policy: policyText({ fastTrack: {} }),
     }),
     /melodic-software\/ci-workflows is not an allowlisted publisher/u,
   );
 });
 
-test("a caller's narrowed allowlist wins over the synced policy", async () => {
+test("a caller's narrowed allowlist wins over the standards policy", async () => {
   for (const name of [
     "melodic-software/ci-workflows",
     "anthropics/claude-code-action",
@@ -505,7 +551,7 @@ test("a caller's narrowed allowlist wins over the synced policy", async () => {
       await runGate({
         updates: [update(name, "version-update:semver-patch")],
         publisherAllowlist: NARROWED_ALLOWLIST,
-        basePolicy: syncedPolicy(),
+        policy: policyText(),
       }),
       new RegExp(
         `${name.replace("/", "\\/")} is not an allowlisted publisher`,
@@ -515,7 +561,7 @@ test("a caller's narrowed allowlist wins over the synced policy", async () => {
   }
 });
 
-for (const [label, basePolicy] of [
+for (const [label, policy] of [
   ["not JSON", "{"],
   ["without autoMerge.publishers", JSON.stringify({ fastTrack: {} })],
   [
@@ -524,35 +570,34 @@ for (const [label, basePolicy] of [
   ],
   [
     "with a non-list fast track",
-    syncedPolicy({ fastTrack: { own: "melodic-software/*" } }),
+    policyText({ fastTrack: { own: "melodic-software/*" } }),
   ],
 ]) {
-  test(`a synced policy ${label} arms nothing and disarms an earlier arm`, async () => {
-    const result = await runGate({ basePolicy, autoMerge: { enabled_by: {} } });
+  test(`a standards policy ${label} arms nothing and disarms an earlier arm`, async () => {
+    const result = await runGate({ policy, autoMerge: { enabled_by: {} } });
     assert.equal(result.armCalls.length, 0);
     assert.match(result.notices[0], /is not a readable dependabot policy/u);
     assert.equal(result.disarmCalls.length, 1);
   });
 }
 
-test("a synced policy the API cannot return arms nothing", async () => {
-  assertSkipped(
-    await runGate({
-      basePolicyError: Object.assign(new Error("Server Error"), {
-        status: 500,
-      }),
+test("a base source-control.yaml the API cannot return arms nothing", async () => {
+  const result = await runGate({
+    baseSourceControlError: Object.assign(new Error("Server Error"), {
+      status: 500,
     }),
-    /could not be read at the base: Server Error/u,
-  );
+  });
+  assertSkipped(result, /could not be read at the base: Server Error/u);
+  assert.equal(result.standardsReads.length, 0);
 });
 
-test("the synced policy's autoMerge.ecosystems leaves other ecosystems for a person", async () => {
+test("the standards policy's autoMerge.ecosystems leaves other ecosystems for a person", async () => {
   assertSkipped(
     await runGate({
       updates: [
         update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
       ],
-      basePolicy: syncedPolicy({ ecosystems: ["github-actions"] }),
+      policy: policyText({ ecosystems: ["github-actions"] }),
     }),
     /left-pad is a npm_and_yarn update, which the policy's autoMerge.ecosystems leaves out/u,
   );
@@ -560,12 +605,12 @@ test("the synced policy's autoMerge.ecosystems leaves other ecosystems for a per
     updates: [
       update("left-pad", "version-update:semver-patch", "npm_and_yarn"),
     ],
-    basePolicy: syncedPolicy({ ecosystems: ["npm"] }),
+    policy: policyText({ ecosystems: ["npm"] }),
   });
   assert.equal(armCalls.length, 1);
 });
 
-test("the synced policy's reviewOnly entries for this repository are never armed", async () => {
+test("the standards policy's reviewOnly entries for this repository are never armed", async () => {
   const entry = (repository) => ({
     repository,
     ecosystem: "npm",
@@ -577,7 +622,7 @@ test("the synced policy's reviewOnly entries for this repository are never armed
       updates: [
         update("tedious", "version-update:semver-patch", "npm_and_yarn"),
       ],
-      basePolicy: syncedPolicy({
+      policy: policyText({
         reviewOnly: [entry("melodic-software/medley")],
       }),
     }),
@@ -585,7 +630,7 @@ test("the synced policy's reviewOnly entries for this repository are never armed
   );
   const { armCalls } = await runGate({
     updates: [update("tedious", "version-update:semver-patch", "npm_and_yarn")],
-    basePolicy: syncedPolicy({ reviewOnly: [entry("melodic-software/other")] }),
+    policy: policyText({ reviewOnly: [entry("melodic-software/other")] }),
   });
   assert.equal(
     armCalls.length,
@@ -962,7 +1007,7 @@ for (const ecosystem of ["docker", "dotnet_sdk"]) {
         updates: [update("thing", "version-update:semver-patch", ecosystem)],
         // A policy that would arm the ecosystem leaves the gate's own check.
         standardsPolicy: {
-          text: syncedPolicy({
+          text: policyText({
             ecosystems: [
               "github-actions",
               "npm",
@@ -1169,10 +1214,7 @@ test("the standards read checks out the resolved commit and fails closed without
     fs.mkdirSync(path.join(standards, path.dirname(STANDARDS_POLICY_PATH)), {
       recursive: true,
     });
-    fs.writeFileSync(
-      path.join(standards, STANDARDS_POLICY_PATH),
-      syncedPolicy(),
-    );
+    fs.writeFileSync(path.join(standards, STANDARDS_POLICY_PATH), policyText());
     git("-c", "init.defaultBranch=main", "init", "-q");
     git("config", "uploadpack.allowAnySHA1InWant", "true");
     git("add", ".");
@@ -1192,11 +1234,69 @@ test("the standards read checks out the resolved commit and fails closed without
       STANDARDS_REF: "main",
       STANDARDS_URL: `file://${standards}`,
     };
-    assert.deepEqual(readStandardsPolicy(env), { text: syncedPolicy() });
+    assert.deepEqual(readStandardsPolicy(env), { text: policyText() });
     const missing = readStandardsPolicy({ ...env, STANDARDS_REF: "absent" });
     assert.equal(missing.text, undefined);
     assert.match(missing.failure, /could not be read/u);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable standards repository fails the event path closed, a synced copy at the base notwithstanding", async () => {
+  const os = require("node:os");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "gate-unreadable-"));
+  try {
+    fs.mkdirSync(path.join(root, "temp"));
+    for (const standardsEnv of [
+      // No repository at the URL.
+      { STANDARDS_URL: `file://${path.join(root, "absent")}` },
+      // A ref that is not a branch name.
+      { STANDARDS_REF: "bad..ref" },
+    ]) {
+      const result = await runGate({
+        autoMerge: { enabled_by: {} },
+        baseSyncedCopy: policyText(),
+        standardsEnv: {
+          PATH: process.env.PATH,
+          RUNNER_TEMP: path.join(root, "temp"),
+          STANDARDS_REF: "main",
+          STANDARDS_URL: `file://${path.join(root, "absent")}`,
+          ...standardsEnv,
+        },
+      });
+      assert.equal(result.armCalls.length, 0);
+      assert.match(
+        result.notices[0],
+        /the standards components\/dependabot-policy\/policy\.json could not be read/u,
+      );
+      assert.equal(result.disarmCalls.length, 1);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("standardsNamed accepts only the standards repository download-standards reads", () => {
+  const { standardsNamed } = require(path.join(actionDir, "gate.cjs"));
+  for (const named of [
+    NAMES_STANDARDS,
+    'standards_repository: "Melodic-Software/standards" # org layer\n',
+  ]) {
+    assert.deepEqual(standardsNamed(named), {}, named);
+  }
+  for (const [text, shown] of [
+    ["", "no standards_repository"],
+    ["convention: conventional\n", "no standards_repository"],
+    ["standards_repository: other/standards\n", "other/standards"],
+    [
+      "  standards_repository: melodic-software/standards\n",
+      "no standards_repository",
+    ],
+  ]) {
+    assert.equal(
+      standardsNamed(text).failure,
+      `docs/conventions/source-control.yaml names ${shown}, not melodic-software/standards, so no dependabot policy is read`,
+    );
   }
 });
