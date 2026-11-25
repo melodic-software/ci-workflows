@@ -333,6 +333,16 @@ function required(env, name, pattern, label) {
   return value;
 }
 
+// An absolute path, or `fallback` when the value is empty.
+function absoluteOr(value, fallback, label) {
+  const text = (value ?? "").trim();
+  if (text === "") return fallback;
+  if (!/^\/.+/u.test(text)) {
+    throw new LaneError(`${label} ${JSON.stringify(text)} is not valid`);
+  }
+  return text;
+}
+
 // The run's settings from the action's environment, each checked against a
 // closed pattern, so nothing unchecked reaches the CLI's argv or the log.
 function readConfig(env) {
@@ -463,6 +473,16 @@ function readConfig(env) {
     addDirs,
     jsonSchema,
     workDir: required(env, "LANE_WORK_DIR", /^\/.+/u, "work dir"),
+    // Where the leg's own files go; the work directory unless a caller
+    // running legs side by side gives each its own.
+    resultsDir: absoluteOr(env.LANE_RESULTS_DIR, (env.LANE_WORK_DIR ?? "").trim(), "results dir"),
+    // More paths bound read-only for the leg: the step's own file-command
+    // files when a caller hands the leg private ones.
+    readOnlyExtra: (env.LANE_READ_ONLY_PATHS ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .map((line) => absoluteOr(line, "", "read-only path")),
     runId: (env.GITHUB_RUN_ID ?? "").trim(),
   };
 }
@@ -939,6 +959,7 @@ function readOnlyPaths(config, baseEnv, files = []) {
       ? ""
       : path.join(path.dirname(runnerWorkspace), "_actions"),
     ...files,
+    ...(config.readOnlyExtra ?? []),
   ].filter((dir) => dir !== "" && fs.existsSync(dir));
 }
 
@@ -1161,7 +1182,7 @@ async function keepTelemetry(receiver, config, secretValues) {
     const capped = dropped > 0 ? OTEL_WARNINGS.capped : "";
     if (text === "")
       return { file: "", warning: capped || OTEL_WARNINGS.empty };
-    const file = path.join(config.workDir, OTEL_FILE);
+    const file = path.join(config.resultsDir || config.workDir, OTEL_FILE);
     // `wx`: a path the leg planted first is refused, never followed.
     fs.writeFileSync(file, text, { flag: "wx", mode: 0o600 });
     return { file, warning: capped };
@@ -1183,7 +1204,7 @@ async function runLeg(
 ) {
   const prompt = promptText(config);
   const { leg } = config;
-  const executionFile = path.join(config.workDir, "leg-1-execution.json");
+  const executionFile = path.join(config.resultsDir || config.workDir, "leg-1-execution.json");
   const snapshots = snapshotFiles(baseEnv);
   const modes = [];
   let record;
@@ -1198,7 +1219,10 @@ async function runLeg(
       baseEnv,
       snapshots.map(({ file }) => file),
     );
-    lockTrees(readOnly, modes);
+    // The caller's own files stay writable to the caller, which keeps
+    // writing them while this leg runs; bwrap still binds them read-only.
+    const extra = new Set(config.readOnlyExtra ?? []);
+    lockTrees(readOnly.filter((p) => !extra.has(p)), modes);
     if (telemetryOn) receiver = await openReceiver(startReceiver);
     const startedAt = now().toISOString();
     const waitCapMs = Number(config.watchdogMaxWaitMs);
@@ -1223,7 +1247,7 @@ async function runLeg(
       },
     );
     const endedAt = now().toISOString();
-    fs.writeFileSync(path.join(config.workDir, "leg-1.jsonl"), stdout);
+    fs.writeFileSync(path.join(config.resultsDir || config.workDir, "leg-1.jsonl"), stdout);
     fs.writeFileSync(
       executionFile,
       JSON.stringify(linesToMessages(stdout.toString("utf8"))),
@@ -1727,7 +1751,7 @@ async function run(env) {
   } finally {
     process.stdout.write(`::${token}::\n`);
   }
-  const logFile = path.join(config.workDir, "run-claude-cli-log.jsonl");
+  const logFile = path.join(config.resultsDir || config.workDir, "run-claude-cli-log.jsonl");
   const secrets = [config.leg.value];
   const logText = `${outcome.records.map((r) => JSON.stringify(r)).join("\n")}\n`;
   const clean = !holdsCredential(logText, secrets);
@@ -1740,7 +1764,7 @@ async function run(env) {
   const structuredClean =
     structuredText === null ||
     !holdsCredential(structuredText, secrets);
-  const structuredFile = path.join(config.workDir, "structured-output.json");
+  const structuredFile = path.join(config.resultsDir || config.workDir, "structured-output.json");
   const structuredWritten = structuredText !== null && structuredClean;
   if (structuredWritten) fs.writeFileSync(structuredFile, structuredText);
   writeOutputs(env.GITHUB_OUTPUT, {
@@ -1839,7 +1863,10 @@ module.exports = {
   judgeLeg,
   legEnv,
   linesToMessages,
+  lockTrees,
   readConfig,
+  readOnlyPaths,
+  restoreModes,
   resolveCliVersion,
   run,
   runLeg,

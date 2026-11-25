@@ -584,6 +584,10 @@ env:
   # The most chunks one leg reviews. A diff that needs more is reviewed
   # unsplit, as a partial review, with the count and this ceiling named.
   MAX_CHUNKS: "20"
+  # The later chunks reviewed at once, each its own CLI process on the job's
+  # runner, so a review of N chunks takes about 1 + (N - 1) / this many legs'
+  # time instead of N.
+  CHUNK_PARALLELISM: "8"
   # Each chunk's output caps when a diff is chunked (one review keeps 20000
   # summary characters and 25 comments). At MAX_CHUNKS chunks every chunk at
   # these caps still merges into a review under 100 KB: the extract step keeps
@@ -1748,13 +1752,14 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # A chunked diff's later chunks, in order, in one step on the
-      # compose step's prompts: chunk k runs only after chunk k-1 succeeded
-      # and handed nothing on, the first chunk being the step above. A
-      # handoff sends the next leg to review every chunk again. The step's
-      # limit is the compose step's loop-minutes, which grows with the
-      # chunk count, so a review of fewer chunks keeps a shorter one. The
-      # timing step dates the loop for the outcome step's timeout check.
+      # A chunked diff's later chunks, CHUNK_PARALLELISM at once, in one
+      # step on the compose step's prompts, once the first chunk (the step
+      # above) succeeded and handed nothing on. No chunk starts after one
+      # failed or handed off. A handoff sends the next leg to review every
+      # chunk again. The step's limit is the compose step's loop-minutes,
+      # which grows with the rounds of CHUNK_PARALLELISM chunks, so a review
+      # of fewer chunks keeps a shorter one. The timing step dates the loop
+      # for the outcome step's timeout check.
       - name: Time the later chunks
         id: time-chunks
         if: steps.credential.outputs.present == 'true' && fromJSON(steps.compose.outputs.chunks || '1') >= 2 && steps.claude.outcome == 'success' && steps.claude.outputs.handoff != 'true'
@@ -1779,6 +1784,7 @@ jobs:
             a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
+          parallelism: ${{ env.CHUNK_PARALLELISM }}
           api-key: ${{ secrets.CLAUDE_API_KEY }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -2924,13 +2930,14 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # A chunked diff's later chunks, in order, in one step on the
-      # compose step's prompts: chunk k runs only after chunk k-1 succeeded
-      # and handed nothing on, the first chunk being the step above. A
-      # handoff sends the next leg to review every chunk again. The step's
-      # limit is the compose step's loop-minutes, which grows with the
-      # chunk count, so a review of fewer chunks keeps a shorter one. The
-      # timing step dates the loop for the outcome step's timeout check.
+      # A chunked diff's later chunks, CHUNK_PARALLELISM at once, in one
+      # step on the compose step's prompts, once the first chunk (the step
+      # above) succeeded and handed nothing on. No chunk starts after one
+      # failed or handed off. A handoff sends the next leg to review every
+      # chunk again. The step's limit is the compose step's loop-minutes,
+      # which grows with the rounds of CHUNK_PARALLELISM chunks, so a review
+      # of fewer chunks keeps a shorter one. The timing step dates the loop
+      # for the outcome step's timeout check.
       - name: Time the later chunks
         id: time-chunks
         if: steps.credential.outputs.present == 'true' && fromJSON(steps.compose.outputs.chunks || '1') >= 2 && steps.claude.outcome == 'success' && steps.claude.outputs.handoff != 'true'
@@ -2955,6 +2962,7 @@ jobs:
             a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
+          parallelism: ${{ env.CHUNK_PARALLELISM }}
           subscription-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
@@ -4067,13 +4075,14 @@ jobs:
           fallback-ready: ${{ steps.credential.outputs.fallback-ready }}
           leg-timeout-minutes: ${{ inputs.lane == 'security' && '13' || '11' }}
 
-      # A chunked diff's later chunks, in order, in one step on the
-      # compose step's prompts: chunk k runs only after chunk k-1 succeeded
-      # and handed nothing on, the first chunk being the step above. A
-      # handoff sends the next leg to review every chunk again. The step's
-      # limit is the compose step's loop-minutes, which grows with the
-      # chunk count, so a review of fewer chunks keeps a shorter one. The
-      # timing step dates the loop for the outcome step's timeout check.
+      # A chunked diff's later chunks, CHUNK_PARALLELISM at once, in one
+      # step on the compose step's prompts, once the first chunk (the step
+      # above) succeeded and handed nothing on. No chunk starts after one
+      # failed or handed off. A handoff sends the next leg to review every
+      # chunk again. The step's limit is the compose step's loop-minutes,
+      # which grows with the rounds of CHUNK_PARALLELISM chunks, so a review
+      # of fewer chunks keeps a shorter one. The timing step dates the loop
+      # for the outcome step's timeout check.
       - name: Time the later chunks
         id: time-chunks
         if: steps.credential.outputs.present == 'true' && fromJSON(steps.compose.outputs.chunks || '1') >= 2 && steps.claude.outcome == 'success' && steps.claude.outputs.handoff != 'true'
@@ -4098,6 +4107,7 @@ jobs:
             a question or approve a prompt during this run.
           chunk-first: "2"
           chunk-last: ${{ steps.compose.outputs.chunks }}
+          parallelism: ${{ env.CHUNK_PARALLELISM }}
           fallback-token: ${{ secrets.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN }}
           model: ${{ steps.compose.outputs.model }}
           effort: ${{ steps.compose.outputs.effort }}
