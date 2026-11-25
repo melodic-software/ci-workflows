@@ -17,17 +17,17 @@ set -euo pipefail
 ORG_REPOSITORY=melodic-software/standards
 
 # The org layer is opt-in: the checkout's docs/conventions/source-control.yaml
-# names the standards repository, read as org-standards.sh reads it.
+# names the standards repository (download-standards/named.sh).
 config=docs/conventions/source-control.yaml
-named=""
+named_sh="$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/named.sh"
+source_control=""
 if [[ -f "$config" ]] && [[ ! -L "$config" ]]; then
-  named=$(sed -n 's/^standards_repository:[[:space:]]*//p' "$config" | head -n 1 |
-    sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' -e "s/^\"\(.*\)\"$/\1/" -e "s/^'\(.*\)'$/\1/")
+  source_control=$(<"$config")
 fi
-if [[ "${named,,}" != "$ORG_REPOSITORY" ]]; then
+named=$(bash "$named_sh" <<<"$source_control" 2>/dev/null) || {
   echo "No org layer: $config names ${named:-no standards_repository}, not $ORG_REPOSITORY; the review reads the repository's REVIEW.md alone."
   exit 0
-fi
+}
 if [[ -z "$STANDARDS_DIR" ]] || [[ ! -d "$STANDARDS_DIR" ]]; then
   echo "::warning::the $ORG_REPOSITORY checkout is missing; the review reads the repository's REVIEW.md alone"
   exit 0

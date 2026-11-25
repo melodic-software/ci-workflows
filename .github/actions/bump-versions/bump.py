@@ -38,10 +38,11 @@ from urllib.parse import quote, urlencode
 from xml.etree import ElementTree
 
 BRANCH_PREFIX = "version-bump/"
-DEPENDABOT_POLICY = ".github/standards/dependabot-policy/policy.json"
-# The same policy in melodic-software/standards, read when the synced copy is absent.
+# The org dependabot-policy in the standards repository the caller's source-control.yaml
+# names; a repository's synced copy is never read.
 STANDARDS_DEPENDABOT_POLICY = "components/dependabot-policy/policy.json"
-DOWNLOAD_STANDARDS = Path(__file__).resolve().parent.parent / "download-standards" / "checkout.sh"
+SOURCE_CONTROL = Path("docs/conventions/source-control.yaml")
+DOWNLOAD_STANDARDS = Path(__file__).resolve().parent.parent / "download-standards"
 COOLDOWN_CLASSES = ("own", "patch", "minor", "major")
 SIGNER_EMAIL = "noreply@github.com"
 VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
@@ -1193,23 +1194,31 @@ def changed_paths() -> list[str]:
 
 def standards_checkout() -> Path:
     """This job's checkout of melodic-software/standards at STANDARDS_REF (download-standards)."""
-    return Path(run(["bash", str(DOWNLOAD_STANDARDS)]).strip())
+    return Path(run(["bash", str(DOWNLOAD_STANDARDS / "checkout.sh")]).strip())
 
 
-def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
-    """cooldownDays from the synced standards dependabot-policy copy, else standards' own.
-
-    Only the default copy path falls back to standards; a path the caller named must exist.
-    """
-    if not path.exists() and str(path) == DEPENDABOT_POLICY:
+def standards_cooldown_days(policy_path: Path) -> dict[str, int]:
+    """cooldownDays from the standards dependabot-policy, read only from the standards
+    repository the repository's source-control.yaml names (download-standards/named.sh)."""
+    try:
+        source_control = SOURCE_CONTROL.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        source_control = ""
+    named = run_raw(["bash", str(DOWNLOAD_STANDARDS / "named.sh")], input_text=source_control)
+    if named.returncode != 0:
+        raise SystemExit(
+            f"{policy_path} sets no cooldownDays and {named.stderr.strip()}, so no dependabot"
+            " policy is read"
+        )
+    try:
         path = standards_checkout() / STANDARDS_DEPENDABOT_POLICY
-        print(f"{DEPENDABOT_POLICY} is absent; reading cooldownDays from {path}", file=sys.stderr)
+    except BumpError as exc:
+        raise SystemExit(f"the standards dependabot policy could not be read: {exc}") from None
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise SystemExit(
-            f"{policy_path} sets no cooldownDays and {path} is absent: the repository must"
-            " receive the standards dependabot-policy sync component or set cooldownDays"
+            f"{policy_path} sets no cooldownDays and the standards {path} is absent"
         ) from None
     except json.JSONDecodeError as exc:
         raise SystemExit(f"{path} is not valid JSON: {exc}") from None
@@ -1224,12 +1233,12 @@ def synced_cooldown_days(path: Path, policy_path: Path) -> dict[str, int]:
     return {c: days[c] for c in COOLDOWN_CLASSES}
 
 
-def load_policy(path: Path, dependabot_policy: Path) -> dict[str, Any]:
-    """The version-bump policy; its own cooldownDays wins over the synced org policy's."""
+def load_policy(path: Path) -> dict[str, Any]:
+    """The version-bump policy; its own cooldownDays wins over the standards org policy's."""
     policy: dict[str, Any] = yq_json(".", path)
     policy["_dir"] = path.resolve().parent
     if "cooldownDays" not in policy:
-        policy["cooldownDays"] = synced_cooldown_days(dependabot_policy, path)
+        policy["cooldownDays"] = standards_cooldown_days(path)
     return policy
 
 
@@ -1397,7 +1406,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     # clean tree: uncommitted work would be swept into the bump and then lost.
     if not args.dry_run and changed_paths():
         raise SystemExit("prepare needs a clean tree; commit or stash first")
-    policy = load_policy(Path(args.policy), Path(args.dependabot_policy))
+    policy = load_policy(Path(args.policy))
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     now = parse_date(args.now) if args.now else dt.datetime.now(dt.UTC)
@@ -1867,14 +1876,6 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("prepare")
     p.add_argument("--policy", required=True, help="policy file, relative to the root")
-    p.add_argument(
-        "--dependabot-policy",
-        default=DEPENDABOT_POLICY,
-        help=(
-            "synced org policy giving cooldownDays when the policy file sets none; at the"
-            " default path, standards' own policy when the copy is absent"
-        ),
-    )
     p.add_argument("--out", required=True)
     p.add_argument("--only", default="", help="comma-separated tool or group names")
     p.add_argument(

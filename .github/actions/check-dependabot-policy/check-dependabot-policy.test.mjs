@@ -4,15 +4,22 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { execFileSync, spawnSync } from "node:child_process";
+
 import {
-  auditRepository,
+  auditRepository as audit,
   ConfigurationError,
   parseArguments,
   parseUniqueJson,
 } from "./check-dependabot-policy.mjs";
 
 const POLICY_FIXTURE = new URL("./fixtures/policy.json", import.meta.url);
+// Where each test repository holds the standards policy the action would pass.
+const STANDARDS_POLICY = "standards-policy.json";
+// Where the standards sync used to place the policy; no reader takes it now.
 const SYNCED_POLICY = path.join(".github", "standards", "dependabot-policy", "policy.json");
+// The action passes the standards policy; so do the tests, unless they name their own.
+const auditRepository = (options) => audit({ policyPath: STANDARDS_POLICY, ...options });
 
 const temporaryRoots = [];
 
@@ -46,13 +53,12 @@ function withCooldown(lines) {
   return CONFORMANT.replace(NPM_COOLDOWN, `    cooldown:\n${lines}`);
 }
 
-async function repository({ config, dependabotYaml, syncedPolicy = true } = {}) {
+async function repository({ config, dependabotYaml, standardsPolicy = true } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "check-dependabot-policy-"));
   temporaryRoots.push(root);
   await mkdir(path.join(root, ".github"), { recursive: true });
-  if (syncedPolicy) {
-    await mkdir(path.dirname(path.join(root, SYNCED_POLICY)), { recursive: true });
-    await copyFile(POLICY_FIXTURE, path.join(root, SYNCED_POLICY));
+  if (standardsPolicy) {
+    await copyFile(POLICY_FIXTURE, path.join(root, STANDARDS_POLICY));
   }
   if (dependabotYaml !== undefined) {
     await writeFile(path.join(root, ".github", "dependabot.yml"), dependabotYaml);
@@ -78,7 +84,7 @@ test("command-line parsing preserves defaults and follows strict Node syntax", (
   assert.deepEqual(parseArguments(["--"]), {
     root: process.cwd(),
     configPath: ".github/dependabot-policy.json",
-    policyPath: ".github/standards/dependabot-policy/policy.json",
+    policyPath: undefined,
     dependabotPath: ".github/dependabot.yml",
     json: false,
   });
@@ -895,13 +901,99 @@ test("a cooldown waiver suppresses the cooldown class and fast-track rules", asy
   assert.deepEqual(await auditRepository({ root }), []);
 });
 
-test("a missing synced policy is a configuration error naming the path", async () => {
-  const root = await repository({ dependabotYaml: dependabot(CONFORMANT), syncedPolicy: false });
+test("a missing standards policy is a configuration error naming the path", async () => {
+  const root = await repository({ dependabotYaml: dependabot(CONFORMANT), standardsPolicy: false });
   await assert.rejects(
     auditRepository({ root }),
     (error) =>
       error instanceof ConfigurationError &&
-      error.message.includes(path.join(root, SYNCED_POLICY)) &&
-      error.message.includes("standards dependabot-policy sync component"),
+      error.message.includes(path.join(root, STANDARDS_POLICY)) &&
+      error.message.includes("components/dependabot-policy/policy.json from the standards repository"),
   );
+});
+
+test("with no policy path, a synced copy is never read and the check fails closed", async () => {
+  const root = await repository({ dependabotYaml: dependabot(CONFORMANT), standardsPolicy: false });
+  await mkdir(path.dirname(path.join(root, SYNCED_POLICY)), { recursive: true });
+  await copyFile(POLICY_FIXTURE, path.join(root, SYNCED_POLICY));
+  await assert.rejects(
+    audit({ root }),
+    (error) =>
+      error instanceof ConfigurationError && /^no dependabot policy given/u.test(error.message),
+  );
+});
+
+// policy.sh, the action's policy step, against a local stand-in for standards.
+const POLICY_SH = new URL("./policy.sh", import.meta.url).pathname;
+const NAMES_STANDARDS = "standards_repository: melodic-software/standards\n";
+
+async function standardsStandIn() {
+  const root = await mkdtemp(path.join(tmpdir(), "check-dependabot-policy-standards-"));
+  temporaryRoots.push(root);
+  const standards = path.join(root, "standards");
+  const policy = path.join(standards, "components", "dependabot-policy", "policy.json");
+  await mkdir(path.dirname(policy), { recursive: true });
+  await copyFile(POLICY_FIXTURE, policy);
+  const git = (...args) => execFileSync("git", ["-C", standards, ...args]);
+  git("-c", "init.defaultBranch=main", "init", "-q");
+  git("config", "uploadpack.allowAnySHA1InWant", "true");
+  git("add", ".");
+  git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "s");
+  await mkdir(path.join(root, "temp"));
+  return {
+    PATH: process.env.PATH,
+    RUNNER_TEMP: path.join(root, "temp"),
+    STANDARDS_REF: "main",
+    STANDARDS_URL: `file://${standards}`,
+  };
+}
+
+async function runPolicySh({ sourceControl = NAMES_STANDARDS, env }) {
+  const root = await repository({ standardsPolicy: false });
+  await mkdir(path.dirname(path.join(root, SYNCED_POLICY)), { recursive: true });
+  await copyFile(POLICY_FIXTURE, path.join(root, SYNCED_POLICY));
+  if (sourceControl !== null) {
+    await mkdir(path.join(root, "docs", "conventions"), { recursive: true });
+    await writeFile(path.join(root, "docs", "conventions", "source-control.yaml"), sourceControl);
+  }
+  return spawnSync("bash", [POLICY_SH], { encoding: "utf8", env: { ...env, ROOT: root } });
+}
+
+test("the action's policy is standards' own at the resolved commit, never the synced copy", async () => {
+  const env = await standardsStandIn();
+  const result = await runPolicySh({ env });
+  assert.equal(result.status, 0, result.stderr);
+  const policy = result.stdout.trim();
+  assert.match(policy, /\/ci-workflows-standards\/[0-9a-f]{40}\/components\/dependabot-policy\/policy\.json$/u);
+  assert.ok(policy.startsWith(env.RUNNER_TEMP));
+});
+
+for (const [label, sourceControl, shown] of [
+  ["no source-control.yaml", null, "no standards_repository"],
+  ["no standards_repository", "convention: conventional\n", "no standards_repository"],
+  ["another standards repository", "standards_repository: other/standards\n", "other/standards"],
+]) {
+  test(`with ${label}, the action's policy step fails closed (exit 2) and reads no copy`, async () => {
+    const env = await standardsStandIn();
+    const result = await runPolicySh({ sourceControl, env });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.equal(
+      result.stderr.trim(),
+      `::error::docs/conventions/source-control.yaml names ${shown}, not melodic-software/standards, so no dependabot policy is read`,
+    );
+  });
+}
+
+test("an unreadable standards repository fails the action's policy step closed (exit 2), a synced copy notwithstanding", async () => {
+  const env = await standardsStandIn();
+  for (const broken of [
+    { STANDARDS_REF: "absent" },
+    { STANDARDS_REF: "bad..ref" },
+  ]) {
+    const result = await runPolicySh({ env: { ...env, ...broken } });
+    assert.equal(result.status, 2, JSON.stringify(broken));
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /::error::download-standards: /u);
+  }
 });

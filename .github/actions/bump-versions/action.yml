@@ -12,20 +12,14 @@ inputs:
     description: Policy file, relative to the repository root (command prepare).
     required: false
     default: .github/version-bump/policy.yaml
-  dependabot-policy:
-    description: >-
-      The standards dependabot-policy policy.json the standards sync places in the repository,
-      relative to its root. Its cooldownDays apply when the policy file sets none (command
-      prepare); a policy file that sets cooldownDays keeps its own. When the default path is
-      absent, melodic-software/standards' components/dependabot-policy/policy.json at
-      `standards-ref` is read instead.
-    required: false
-    default: .github/standards/dependabot-policy/policy.json
   standards-ref:
     description: >-
-      Branch or full commit SHA of melodic-software/standards the dependabot policy falls back
-      to (see the download-standards action). Pass the run's resolved SHA so every job reads
-      one commit.
+      Branch or full commit SHA of melodic-software/standards whose
+      components/dependabot-policy/policy.json gives the cooldownDays when the policy file sets
+      none (command prepare; see the download-standards action). It is read only when the
+      repository's docs/conventions/source-control.yaml names melodic-software/standards as
+      its standards_repository; otherwise prepare fails. Pass the run's resolved SHA so every
+      job reads one commit.
     required: false
     default: main
   out:
@@ -85,7 +79,6 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         BUMP_COMMAND: ${{ inputs.command }}
         BUMP_POLICY: ${{ inputs.policy }}
-        BUMP_DEPENDABOT_POLICY: ${{ inputs.dependabot-policy }}
         STANDARDS_REF: ${{ inputs.standards-ref }}
         BUMP_OUT: ${{ inputs.out }}
         BUMP_ONLY: ${{ inputs.only }}
