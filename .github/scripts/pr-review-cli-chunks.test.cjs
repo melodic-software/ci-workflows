@@ -515,6 +515,32 @@ test("a failed chunk stops the loop, skips the rest and fails the step", async (
   );
 });
 
+test("chunk-classes names each chunk's own class, leaving a failed leg with no class empty", async () => {
+  const run = await loop(
+    2,
+    6,
+    {
+      3: { failed: true, laneClass: "max-turns" },
+      4: { failed: true },
+      5: { noStructured: true },
+    },
+    { parallelism: 5 },
+  );
+  assert.equal(run.ok, false);
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "success,failure,failure,failure,success",
+  );
+  assert.equal(run.outputs["chunk-classes"], ",max-turns,,other,");
+  const clean = await loop(2, 3);
+  assert.equal(clean.outputs["chunk-classes"], ",");
+  const stopped = await loop(2, 4, {
+    2: { failed: true, laneClass: "credit-stop", handoff: "true" },
+  });
+  assert.equal(stopped.outputs["chunk-classes"], "credit-stop,,");
+  assert.equal(stopped.outputs["chunk-outcomes"], "failure,skipped,skipped");
+});
+
 test("a handoff stops the loop and hands its reason on", async () => {
   const run = await loop(2, 6, {
     3: { failed: true, laneClass: "credit-stop", handoff: "true" },
