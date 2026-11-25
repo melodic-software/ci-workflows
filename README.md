@@ -733,15 +733,15 @@ consumer to audit it.
   `lib.sh` when the caller has no copy at the default path, and keep the
   caller's copy when it has one: `gitleaks` (`.gitleaks.toml`),
   `editorconfig-checker` (`.editorconfig-checker.json`), `shellcheck`
-  (`.shellcheckrc`), `actionlint` (`.github/actionlint.yaml`) and
-  `collect-settled-threads`
-  (`components/trusted-actors/trusted-actors.json`). `check-dependabot-policy`,
-  `bump-versions` and `automerge-dependabot`'s gate and queue read
-  `components/dependabot-policy/policy.json` only from standards, and only
-  when the repository's `docs/conventions/source-control.yaml` names
+  (`.shellcheckrc`) and `actionlint` (`.github/actionlint.yaml`).
+  `check-dependabot-policy`, `bump-versions` and `automerge-dependabot`'s gate
+  and queue read `components/dependabot-policy/policy.json`, and
+  `collect-settled-threads` reads
+  `components/trusted-actors/trusted-actors.json`, only from standards, and
+  only when the repository's `docs/conventions/source-control.yaml` names
   `melodic-software/standards` (`named.sh`, the rule `build-review-criteria`
   also applies); a synced copy is never read, and with no standards repository
-  named or its policy unreadable they fail closed. `lychee-offline`
+  named or the file unreadable they fail closed. `lychee-offline`
   (`lychee.toml`), `typos` (`_typos.toml`) and `markdownlint`
   (`.markdownlint-cli2.jsonc`) instead always read the standards file through
   this action's `checkout.sh` and merge the caller's own into it with the
@@ -1055,9 +1055,11 @@ consumer to audit it.
   listed account resolved or a listed person answered, text kept only through claude-code-plugins'
   `select-trusted-text`, each with whether its lines changed since it was
   settled, so the review does not re-raise a settled point. The trusted-actor
-  list is the base commit's synced copy, or standards' own at `standards-ref`
-  when the base has none; when neither can be read the step fails and writes
-  nothing (its `action.yml` describes what it does).
+  list is standards' own at `standards-ref`, read only when the base commit's
+  `docs/conventions/source-control.yaml` names `melodic-software/standards`;
+  a synced copy is never read. With no standards repository named or the list
+  unreadable, the step fails and writes nothing (its `action.yml` describes
+  what it does).
 - `.github/actions/collect-prior-findings` — `pr-review-cli.yml`'s
   prior-findings step, with no model: runs claude-code-plugins'
   `prior-findings.mjs` for the lane's own earlier findings and its rounds

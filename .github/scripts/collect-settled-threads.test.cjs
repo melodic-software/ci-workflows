@@ -16,9 +16,11 @@ const {
   judge,
   boundLaneFindings,
   laneFinding,
+  readStandardsList,
   resolutionHead,
   run,
   settledThreads,
+  STANDARDS_LIST_PATH,
   touches,
 } = require("../actions/collect-settled-threads/settled-threads.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
@@ -308,10 +310,17 @@ function repositories() {
   return { dir, work, resolved, head };
 }
 
-// The list comes from the base commit's synced copy, or, with none there,
-// from standards' own at the run's commit; either way the file is the same.
-for (const listSource of ["base", "standards"]) {
-  test(`run: writes only trusted text and a verdict per thread from a real git diff (list from the ${listSource})`, async () => {
+const SOURCE_CONTROL = "docs/conventions/source-control.yaml";
+const SYNCED_COPY = ".github/standards/trusted-actors/trusted-actors.json";
+const NAMES_STANDARDS = "standards_repository: melodic-software/standards\n";
+// A leftover synced copy that trusts nobody: read, it would settle nothing.
+const EMPTY_COPY = JSON.stringify({ version: 1, actors: [] });
+
+// The list is standards' own at the run's commit, read once the base commit's
+// source-control.yaml names melodic-software/standards. A leftover synced copy
+// at the base, which trusts nobody, is never read: the file is the same.
+for (const leftover of [false, true]) {
+  test(`run: writes only trusted text and a verdict per thread from a real git diff (${leftover ? "a leftover synced copy at the base is ignored in favor of standards" : "list from standards"})`, async () => {
     const { dir, work, resolved, head } = repositories();
     const source = path.join(dir, "source");
     // claude-code-plugins' lane-binding library, which the review plugin's
@@ -381,10 +390,11 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
         repos: {
           getContent: async (args) => {
             calls.push(["getContent", args.ref, args.path]);
-            if (listSource === "standards") {
-              throw Object.assign(new Error("Not Found"), { status: 404 });
+            if (args.path === SOURCE_CONTROL) return { data: NAMES_STANDARDS };
+            if (leftover && args.path === SYNCED_COPY) {
+              return { data: EMPTY_COPY };
             }
-            return { data: list };
+            throw Object.assign(new Error("Not Found"), { status: 404 });
           },
         },
       },
@@ -437,12 +447,8 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
       }
     });
     assert.deepEqual(calls, [
-      [
-        "getContent",
-        "f".repeat(40),
-        ".github/standards/trusted-actors/trusted-actors.json",
-      ],
-      ...(listSource === "standards" ? [["standards"]] : []),
+      ["getContent", "f".repeat(40), SOURCE_CONTROL],
+      ["standards"],
     ]);
     const file = fs.readFileSync(
       path.join(work, ".claude-lane", "settled-threads.md"),
@@ -481,37 +487,69 @@ writeFileSync(process.env.OUTPUT_PATH, JSON.stringify({ pr: {}, dropped: {}, ite
   });
 }
 
-// The early exit and the two closed failures: no thread that could be
-// settled (nothing else is read); a base read that fails other than 404; and
-// no list at the base with standards' unreadable. Either way a file the head
-// shipped at the output path is gone and no note is set.
+// The early exit and the closed failures: no thread that could be settled
+// (nothing else is read); a source-control.yaml read that fails other than
+// 404; a base naming no standards repository, or another one; and standards'
+// list unreadable. A valid synced copy sits at the base in each, and is never
+// read. Either way a file the head shipped at the output path is gone and no
+// note is set.
 const settled = [thread({ isResolved: true }, [comment(1, "t")])];
 const notFound = Object.assign(new Error("Not Found"), { status: 404 });
 const serverError = Object.assign(new Error("Server Error"), { status: 500 });
-for (const [name, nodes, baseError, expectedCalls, rejects] of [
+const VALID_COPY = JSON.stringify({
+  version: 1,
+  actors: [{ id: KYLE, login: "kyle-sexton", kind: "human" }],
+});
+const notNamed = (shown) =>
+  new RegExp(
+    `^Error: ${SOURCE_CONTROL} names ${shown}, not melodic-software/standards, so no trusted-actor list is read$`,
+    "u",
+  );
+for (const [name, nodes, sourceControl, expectedCalls, rejects] of [
   [
     "no resolved or answered thread reads nothing else",
     [thread({}, [comment(1, "t")])],
-    notFound,
+    NAMES_STANDARDS,
     [],
     undefined,
   ],
   [
-    "a base read that fails other than 404 fails closed",
+    "a source-control.yaml read that fails other than 404 fails closed",
     settled,
     serverError,
-    ["getContent"],
-    /could not be read at the base commit: Server Error/u,
+    [SOURCE_CONTROL],
+    /^Error: docs\/conventions\/source-control\.yaml could not be read at the base commit: Server Error$/u,
   ],
   [
-    "no list at the base and none readable in standards fails closed",
+    "a base with no source-control.yaml reads no list and fails closed",
     settled,
     notFound,
-    ["getContent", "standards"],
+    [SOURCE_CONTROL],
+    notNamed("no standards_repository"),
+  ],
+  [
+    "a base whose source-control.yaml has no standards_repository fails closed",
+    settled,
+    "convention: conventional\n",
+    [SOURCE_CONTROL],
+    notNamed("no standards_repository"),
+  ],
+  [
+    "a base naming another standards repository fails closed",
+    settled,
+    "standards_repository: other/standards\n",
+    [SOURCE_CONTROL],
+    notNamed("other/standards"),
+  ],
+  [
+    "standards' list unreadable fails closed",
+    settled,
+    NAMES_STANDARDS,
+    [SOURCE_CONTROL, "standards"],
     /standards unreadable/u,
   ],
 ]) {
-  test(`run: ${name}`, async () => {
+  test(`run: ${name}, a synced copy at the base notwithstanding`, async () => {
     const dir = makeTemporaryDirectory("settled-threads-none-");
     const output = path.join(dir, "settled-threads.md");
     fs.writeFileSync(output, "SHIPPED BY THE HEAD");
@@ -525,9 +563,12 @@ for (const [name, nodes, baseError, expectedCalls, rejects] of [
           }),
           rest: {
             repos: {
-              getContent: async () => {
-                calls.push("getContent");
-                return Promise.reject(baseError);
+              getContent: async ({ path: file }) => {
+                calls.push(file);
+                if (file === SYNCED_COPY) return { data: VALID_COPY };
+                if (file !== SOURCE_CONTROL) throw notFound;
+                if (sourceControl instanceof Error) throw sourceControl;
+                return { data: sourceControl };
               },
             },
           },
@@ -547,6 +588,100 @@ for (const [name, nodes, baseError, expectedCalls, rejects] of [
     assert.equal(fs.existsSync(output), false);
   });
 }
+
+// A local stand-in for melodic-software/standards holding the list, for the
+// real download-standards checkout.
+function standardsRepository(dir) {
+  const standards = path.join(dir, "standards");
+  const git = (...args) => execFileSync("git", ["-C", standards, ...args]);
+  fs.mkdirSync(path.join(standards, path.dirname(STANDARDS_LIST_PATH)), {
+    recursive: true,
+  });
+  fs.writeFileSync(path.join(standards, STANDARDS_LIST_PATH), VALID_COPY);
+  git("-c", "init.defaultBranch=main", "init", "-q");
+  git("config", "uploadpack.allowAnySHA1InWant", "true");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@example.invalid",
+    "commit",
+    "-qm",
+    "s",
+  );
+  return standards;
+}
+
+test("readStandardsList checks out the resolved standards commit and fails closed without it", () => {
+  const dir = makeTemporaryDirectory("settled-threads-standards-");
+  const standards = standardsRepository(dir);
+  fs.mkdirSync(path.join(dir, "temp"));
+  const env = {
+    PATH: process.env.PATH,
+    RUNNER_TEMP: path.join(dir, "temp"),
+    STANDARDS_REF: "main",
+    STANDARDS_URL: `file://${standards}`,
+  };
+  assert.equal(readStandardsList(env), VALID_COPY);
+  // A missing repository is the run test below: once main resolves, the job
+  // reuses that commit whatever the URL.
+  for (const unreadable of [
+    { STANDARDS_REF: "absent" },
+    { STANDARDS_REF: "bad..ref" },
+  ]) {
+    assert.throws(
+      () => readStandardsList({ ...env, ...unreadable }),
+      /^Error: the standards components\/trusted-actors\/trusted-actors\.json could not be read: /u,
+      JSON.stringify(unreadable),
+    );
+  }
+});
+
+test("run: an unreadable standards repository fails closed through the real download-standards, a synced copy at the base notwithstanding", async () => {
+  const dir = makeTemporaryDirectory("settled-threads-unreadable-");
+  fs.mkdirSync(path.join(dir, "temp"));
+  const output = path.join(dir, "settled-threads.md");
+  fs.writeFileSync(output, "SHIPPED BY THE HEAD");
+  const calls = [];
+  const outputs = {};
+  await withEnv(
+    {
+      RUNNER_TEMP: path.join(dir, "temp"),
+      OUTPUT_FILE: output,
+      STANDARDS_REF: "main",
+      STANDARDS_URL: `file://${path.join(dir, "absent")}`,
+    },
+    () =>
+      assert.rejects(
+        run({
+          github: {
+            graphql: async () => ({
+              repository: {
+                pullRequest: { reviewThreads: { nodes: settled } },
+              },
+            }),
+            rest: {
+              repos: {
+                getContent: async ({ path: file }) => {
+                  calls.push(file);
+                  if (file === SOURCE_CONTROL) return { data: NAMES_STANDARDS };
+                  if (file === SYNCED_COPY) return { data: VALID_COPY };
+                  throw notFound;
+                },
+              },
+            },
+          },
+          context: { repo: { owner: "o", repo: "r" } },
+          core: { info: () => {}, setOutput: (k, v) => (outputs[k] = v) },
+        }),
+        /^Error: the standards components\/trusted-actors\/trusted-actors\.json could not be read: /u,
+      ),
+  );
+  assert.deepEqual(calls, [SOURCE_CONTROL]);
+  assert.deepEqual(outputs, {});
+  assert.equal(fs.existsSync(output), false);
+});
 
 test("pr-review-cli.yml: every model leg writes the settled threads after the plugin clone, read-only, into the prompt", () => {
   const workflow = parseWorkflow(
