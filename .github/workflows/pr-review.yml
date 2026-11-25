@@ -318,6 +318,16 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      # The head may commit .claude-lane, symlinks included, and the steps
+      # below write their files there from outside any sandbox. Nothing has
+      # written there yet, so the head's copy is removed (rm takes a link
+      # itself, never its target) and every later write lands in a directory
+      # this job creates.
+      - name: Remove the head's .claude-lane
+        id: clear-lane
+        timeout-minutes: 1
+        run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
+
       # Decides whole-PR, incremental, or no review (see REVIEW CADENCE). The
       # last head this lane finished reviewing is read from the lane's marker
       # comment on the PR. Any failure here leaves `review` unset, which
