@@ -1,10 +1,10 @@
 name: Maintenance Check Links Online
 
 # Reusable workflow: runs lychee with the network on over the caller's
-# Markdown, with the caller's lychee.toml, or standards' canonical lychee.toml
-# when the caller has none at the default path (the offline lane's fallback,
-# via the download-standards action), and the .lycheeignore lychee picks up
-# from the working directory. The report goes to the job summary and any broken link
+# Markdown, with standards' canonical lychee.toml (via the download-standards
+# action) and, merged over it, the caller's lychee.toml when it has one at the
+# default path, as the offline lane does; a non-default `config` path runs
+# alone. lychee also picks up the .lycheeignore in the working directory. The report goes to the job summary and any broken link
 # fails the job red. Links the caller's lychee.toml accepts as transient (a
 # 429 or 5xx in `accept`, a timeout under `accept_timeouts`) do not fail it but
 # are listed in the summary, so a host that stays down is still noticed. It
@@ -51,9 +51,10 @@ on:
         default: link-check-online
       config:
         description: >-
-          Path to the lychee.toml ruleset in the caller repository. When the
-          default path is absent, melodic-software/standards' lychee.toml is
-          used instead.
+          Path to the caller's lychee.toml. On the default path,
+          melodic-software/standards' lychee.toml is read first and the
+          caller's file, when present, is merged over it (arrays add,
+          scalars replace). Any other path is read alone.
         type: string
         default: lychee.toml
       extra-args:
@@ -138,8 +139,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Only the default path falls back; a caller that names another path and
-      # lacks it is left to lychee's own config error.
+      # The default path reads standards' lychee.toml first and merges the
+      # caller's own over it, as lychee-offline does; any other path runs
+      # alone, and a caller that names one and lacks it is left to lychee's
+      # own config error.
       - name: Find the lychee config
         id: config
         if: steps.gate.outputs.run == 'true'
@@ -148,16 +151,20 @@ jobs:
         run: |
           set -euo pipefail
           CONFIG="${CONFIG:?the config input is empty}"
+          standards=false
           file=$CONFIG
-          if [[ ! -e $CONFIG && ! -L $CONFIG && $CONFIG == lychee.toml ]]; then
-            file=
-            echo "The repository has no lychee.toml; using standards' canonical one."
+          if [[ $CONFIG == lychee.toml ]]; then
+            standards=true
+            if [[ ! -e $CONFIG && ! -L $CONFIG ]]; then
+              file=
+              echo "The repository has no lychee.toml; using standards' canonical one alone."
+            fi
           fi
-          echo "file=$file" >>"$GITHUB_OUTPUT"
+          { echo "standards=$standards"; echo "file=$file"; } >>"$GITHUB_OUTPUT"
 
       - name: Check out the standards lychee config
         id: standards
-        if: steps.gate.outputs.run == 'true' && steps.config.outputs.file == ''
+        if: steps.gate.outputs.run == 'true' && steps.config.outputs.standards == 'true'
         uses: $/.github/actions/download-standards
 
       # Pacing: some hosts throttle lychee's default per-host burst from a
@@ -185,7 +192,8 @@ jobs:
           args: >-
             --no-progress
             --verbose
-            --config '${{ steps.config.outputs.file || format('{0}/lychee.toml', steps.standards.outputs.path) }}'
+            ${{ steps.config.outputs.standards == 'true' && format('--config ''{0}/lychee.toml''', steps.standards.outputs.path) || '' }}
+            ${{ steps.config.outputs.file != '' && format('--config ''{0}''', steps.config.outputs.file) || '' }}
             --host-concurrency 4
             --host-request-interval 250ms
             --max-retries 4

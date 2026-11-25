@@ -115,28 +115,41 @@ function runConfig(configInput, { withFile }) {
   return { status: result.status, output: fs.readFileSync(outputPath, "utf8") };
 }
 
-test("a caller with no lychee.toml at the default path gets standards' copy; a named path is never replaced", () => {
+test("the default path layers the caller's lychee.toml over standards'; a named path runs alone", () => {
   assert.equal(standards.uses, "$/.github/actions/download-standards");
   assert.equal(
     standards.if,
-    "steps.gate.outputs.run == 'true' && steps.config.outputs.file == ''",
+    "steps.gate.outputs.run == 'true' && steps.config.outputs.standards == 'true'",
   );
-  assert.equal(runConfig("lychee.toml", { withFile: false }).output, "file=\n");
+  // Default: standards alone.
+  assert.equal(
+    runConfig("lychee.toml", { withFile: false }).output,
+    "standards=true\nfile=\n",
+  );
+  // Extension or partial override: standards, then the caller's file.
   assert.equal(
     runConfig("lychee.toml", { withFile: true }).output,
-    "file=lychee.toml\n",
+    "standards=true\nfile=lychee.toml\n",
   );
+  // Complete override: the named file alone.
   assert.equal(
     runConfig("custom.toml", { withFile: false }).output,
-    "file=custom.toml\n",
+    "standards=false\nfile=custom.toml\n",
   );
   const empty = runConfig("", { withFile: false });
   assert.notEqual(empty.status, 0);
   assert.equal(empty.output, "");
-  assert.match(
-    lychee.with.args,
-    /--config '\$\{\{ steps\.config\.outputs\.file \|\| format\('\{0\}\/lychee\.toml', steps\.standards\.outputs\.path\) \}\}'/u,
+  // Standards' --config comes first so lychee merges the caller's over it.
+  const standardsArg = lychee.with.args.indexOf(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ steps.config.outputs.standards == 'true' && format('--config ''{0}/lychee.toml''', steps.standards.outputs.path) || '' }}",
   );
+  const callerArg = lychee.with.args.indexOf(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    "${{ steps.config.outputs.file != '' && format('--config ''{0}''', steps.config.outputs.file) || '' }}",
+  );
+  assert.notEqual(standardsArg, -1);
+  assert.ok(callerArg > standardsArg);
 });
 
 // Recorded from lychee 0.24.2 `--format json --verbose` against a local status
