@@ -2,16 +2,14 @@
 # pr-review-cli's criteria step: the review criteria in effect, per the
 # standards contract's "Review criteria: REVIEW.md" in claude-code-plugins
 # (docs/contracts/standards/README.md). The composition is that repository's
-# own org-standards.sh, run from the clone the plugin step made, so this lane
-# and the review skill reading its output come from the same commit. Runs in
-# the head checkout. Any miss writes no line, and the review reads the
+# own org-standards.sh, run from a claude-code-plugins clone the calling job
+# makes. Runs in the head checkout. Any miss writes no line, and the review reads the
 # repository's REVIEW.md as before.
 set -euo pipefail
 
 # Inherited workflow and step environment variables.
-: "${CRITERIA_FILE:=}"
 : "${GITHUB_OUTPUT:=}"
-: "${ORG_COPY:=}"
+: "${LANE_DIR:=}"
 : "${SOURCE:=}"
 : "${STANDARDS_DIR:=}"
 : "${STANDARDS_SHA:=}"
@@ -39,22 +37,34 @@ if [[ ! -f "$script" ]]; then
   echo "::warning::claude-code-plugins has no $script; the review reads the repository's REVIEW.md alone"
   exit 0
 fi
-if [[ -L .claude-lane ]] || [[ -L REVIEW.md ]] || { [[ -e REVIEW.md ]] && [[ ! -f REVIEW.md ]]; }; then
-  echo "::warning::the head's REVIEW.md or .claude-lane is not a regular path; the review reads the repository's REVIEW.md alone"
+if [[ -L REVIEW.md ]] || { [[ -e REVIEW.md ]] && [[ ! -f REVIEW.md ]]; }; then
+  echo "::warning::the head's REVIEW.md is not a regular file; the review reads the repository's REVIEW.md alone"
   exit 0
 fi
 
-mkdir -p "$(dirname "$CRITERIA_FILE")"
+# Every write goes into a directory this step creates. The head may commit
+# anything under LANE_DIR, symlinks included, so nothing is written to a path
+# it could have placed: mktemp -d makes a new directory with an unpredictable
+# name and fails rather than reuse one.
+if [[ -L "$LANE_DIR" ]] || { [[ -e "$LANE_DIR" ]] && [[ ! -d "$LANE_DIR" ]]; }; then
+  echo "::warning::$LANE_DIR is not a directory; the review reads the repository's REVIEW.md alone"
+  exit 0
+fi
+mkdir -p "$LANE_DIR"
+out=$(mktemp -d "$LANE_DIR/criteria.XXXXXXXX")
+criteria="$out/review-criteria.md"
+org="$out/org"
+
 status=0
-STANDARDS_DIR=$STANDARDS_DIR bash "$script" review --root "$PWD" >"$CRITERIA_FILE.tmp" || status=$?
+STANDARDS_DIR=$STANDARDS_DIR bash "$script" review --root "$PWD" >"$criteria" || status=$?
 case $status in
-  0) mv "$CRITERIA_FILE.tmp" "$CRITERIA_FILE" ;;
+  0) ;;
   3)
-    rm -f "$CRITERIA_FILE.tmp"
+    rm -f "$criteria"
     echo "Neither $ORG_REPOSITORY nor the repository has a REVIEW.md."
     ;;
   *)
-    rm -f "$CRITERIA_FILE.tmp"
+    rm -rf -- "$out"
     echo "::warning::org-standards.sh review exited $status; the review reads the repository's REVIEW.md alone"
     exit 0
     ;;
@@ -62,15 +72,15 @@ esac
 
 # The org parts the criteria cite, as claude-code-plugins' pr-review-main
 # lane copies them: the review has no shell to read the checkout itself.
-mkdir -p "$ORG_COPY"
+mkdir "$org"
 for part in REVIEW.md .claude/standards.yaml docs/standards standards; do
   if [[ -e "$STANDARDS_DIR/$part" ]]; then
-    mkdir -p "$(dirname "$ORG_COPY/$part")"
-    cp -R "$STANDARDS_DIR/$part" "$ORG_COPY/$part"
+    mkdir -p "$(dirname "$org/$part")"
+    cp -R "$STANDARDS_DIR/$part" "$org/$part"
   fi
 done
 
 if [[ "$status" -eq 0 ]]; then
-  echo "note=REVIEW CRITERIA: $CRITERIA_FILE holds the review criteria in effect: the organization's REVIEW.md with this repository's appended, or this repository's alone. Read it in place of REVIEW.md." >>"$GITHUB_OUTPUT"
+  echo "note=REVIEW CRITERIA: $criteria holds the review criteria in effect: the organization's REVIEW.md with this repository's appended, or this repository's alone. Read it in place of REVIEW.md." >>"$GITHUB_OUTPUT"
 fi
-echo "org-note=ORG STANDARDS: $ORG_COPY holds the organization's standards from $ORG_REPOSITORY@${STANDARDS_SHA:-main}." >>"$GITHUB_OUTPUT"
+echo "org-note=ORG STANDARDS: $org holds the organization's standards from $ORG_REPOSITORY@${STANDARDS_SHA:-main}." >>"$GITHUB_OUTPUT"

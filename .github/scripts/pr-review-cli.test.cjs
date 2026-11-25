@@ -2167,8 +2167,7 @@ test("every leg composes the review criteria from one standards commit and hands
         SOURCE: `\${{ runner.temp }}/claude-code-plugins`,
         STANDARDS_DIR: `\${{ steps.standards.outputs.path }}`,
         STANDARDS_SHA: `\${{ steps.standards.outputs.sha }}`,
-        CRITERIA_FILE: ".claude-lane/review-criteria.md",
-        ORG_COPY: ".claude-lane/org",
+        LANE_DIR: ".claude-lane",
       },
       leg.name,
     );
@@ -2254,8 +2253,7 @@ function composeCriteria({
         SOURCE: source,
         STANDARDS_DIR: standards ? org : "",
         STANDARDS_SHA: "c".repeat(40),
-        CRITERIA_FILE: ".claude-lane/review-criteria.md",
-        ORG_COPY: ".claude-lane/org",
+        LANE_DIR: ".claude-lane",
       },
     },
   );
@@ -2280,11 +2278,29 @@ function composeCriteria({
   const calls = fs.existsSync(path.join(dir, "calls"))
     ? fs.readFileSync(path.join(dir, "calls"), "utf8").split("\n").slice(0, 3)
     : null;
-  return { head, org, outputs, calls, read, stdout: result.stdout };
+  // The directory the step wrote into, from its ORG STANDARDS line.
+  const written = /^ORG STANDARDS: (\S+)\/org /u.exec(
+    outputs["org-note"] ?? "",
+  )?.[1];
+  const criteria = () =>
+    fs
+      .readdirSync(path.join(head, ".claude-lane"), { withFileTypes: true })
+      .filter((d) => d.name.startsWith("criteria."));
+  return {
+    dir,
+    head,
+    org,
+    outputs,
+    calls,
+    read,
+    written,
+    criteria,
+    stdout: result.stdout,
+  };
 }
 
 test("an opted-in head gets the composed criteria from claude-code-plugins' org-standards.sh, and a copy of the org standards", () => {
-  const { head, org, outputs, calls, read } = composeCriteria({
+  const { head, org, outputs, calls, read, written } = composeCriteria({
     config: 'standards_repository: "Melodic-Software/standards" # org layer\n',
   });
   assert.deepEqual(
@@ -2292,23 +2308,82 @@ test("an opted-in head gets the composed criteria from claude-code-plugins' org-
     [`review --root ${head}`, org, head],
     "org-standards.sh review over the head, the checkout as STANDARDS_DIR",
   );
-  assert.equal(read(".claude-lane/review-criteria.md"), "composed\n");
-  assert.equal(read(".claude-lane/review-criteria.md.tmp"), null);
-  assert.match(
+  assert.match(written, /^\.claude-lane\/criteria\.[A-Za-z0-9]{8}$/u);
+  assert.equal(read(`${written}/review-criteria.md`), "composed\n");
+  assert.equal(
     outputs.note,
-    /^REVIEW CRITERIA: \.claude-lane\/review-criteria\.md holds the review criteria in effect/u,
+    `REVIEW CRITERIA: ${written}/review-criteria.md holds the review criteria in effect: the organization's REVIEW.md with this repository's appended, or this repository's alone. Read it in place of REVIEW.md.`,
   );
   assert.equal(
     outputs["org-note"],
-    `ORG STANDARDS: .claude-lane/org holds the organization's standards from melodic-software/standards@${"c".repeat(40)}.`,
+    `ORG STANDARDS: ${written}/org holds the organization's standards from melodic-software/standards@${"c".repeat(40)}.`,
   );
-  assert.equal(read(".claude-lane/org/REVIEW.md"), "org criteria\n");
-  assert.equal(read(".claude-lane/org/standards/review/x.md"), "cited");
+  assert.equal(read(`${written}/org/REVIEW.md`), "org criteria\n");
+  assert.equal(read(`${written}/org/standards/review/x.md`), "cited");
   assert.equal(
-    read(".claude-lane/org/.claude/standards.yaml"),
+    read(`${written}/org/.claude/standards.yaml`),
     "standards_dir: standards\n",
   );
-  assert.equal(read(".claude-lane/org/other/y.md"), null);
+  assert.equal(read(`${written}/org/other/y.md`), null);
+});
+
+test("symlinks the head commits under .claude-lane are never written through", () => {
+  let outside;
+  const { dir, head, read, written, criteria } = composeCriteria({
+    config: "standards_repository: melodic-software/standards\n",
+    review: "<!-- review-base: replace -->\nplanted\n",
+    setup: (headDir) => {
+      outside = path.join(path.dirname(headDir), "outside");
+      fs.mkdirSync(path.join(outside, "dir"), { recursive: true });
+      fs.writeFileSync(path.join(outside, "file"), "untouched\n");
+      const lane = path.join(headDir, ".claude-lane");
+      fs.mkdirSync(lane);
+      for (const name of ["review-criteria.md", "review-criteria.md.tmp"]) {
+        fs.symlinkSync(path.join(outside, "file"), path.join(lane, name));
+      }
+      fs.symlinkSync(path.join(outside, "dir"), path.join(lane, "org"));
+    },
+  });
+  assert.ok(written, "the step still writes its own directory");
+  assert.equal(
+    fs.readFileSync(path.join(outside, "file"), "utf8"),
+    "untouched\n",
+  );
+  assert.deepEqual(fs.readdirSync(path.join(outside, "dir")), []);
+  const made = criteria();
+  assert.equal(made.length, 1);
+  assert.ok(made[0].isDirectory() && !made[0].isSymbolicLink());
+  assert.equal(read(`${written}/review-criteria.md`), "composed\n");
+  assert.ok(path.resolve(head, written).startsWith(`${head}${path.sep}`));
+  assert.ok(dir);
+});
+
+test("a symlinked or non-directory .claude-lane writes nothing", () => {
+  for (const [name, plant] of [
+    [
+      "symlink",
+      (headDir) =>
+        fs.symlinkSync(
+          path.dirname(headDir),
+          path.join(headDir, ".claude-lane"),
+        ),
+    ],
+    [
+      "file",
+      (headDir) => fs.writeFileSync(path.join(headDir, ".claude-lane"), "x"),
+    ],
+  ]) {
+    const { outputs, dir } = composeCriteria({
+      config: "standards_repository: melodic-software/standards\n",
+      setup: plant,
+    });
+    assert.deepEqual(outputs, {}, name);
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((f) => f.startsWith("criteria.")),
+      [],
+      name,
+    );
+  }
 });
 
 test("a head that does not name melodic-software/standards, or a missing piece, writes no criteria line", () => {
@@ -2343,21 +2418,22 @@ test("a head that does not name melodic-software/standards, or a missing piece, 
       },
     ],
   ]) {
-    const { outputs, read } = composeCriteria(options);
+    const { outputs, head } = composeCriteria(options);
     assert.deepEqual(outputs, {}, name);
-    assert.equal(read(".claude-lane/review-criteria.md"), null, name);
+    const lane = path.join(head, ".claude-lane");
+    assert.deepEqual(fs.existsSync(lane) ? fs.readdirSync(lane) : [], [], name);
   }
 });
 
 test("with no REVIEW.md on either side the review gets the org standards but no criteria line", () => {
-  const { outputs, read } = composeCriteria({
+  const { outputs, read, written } = composeCriteria({
     config: "standards_repository: melodic-software/standards\n",
     review: null,
     stubExit: 3,
   });
   assert.equal(outputs.note, undefined);
   assert.match(outputs["org-note"], /^ORG STANDARDS: /u);
-  assert.equal(read(".claude-lane/review-criteria.md"), null);
+  assert.equal(read(`${written}/review-criteria.md`), null);
 });
 
 test("the PR context drops AI attribution lines from the description, filtered before the cap, in every leg", () => {
