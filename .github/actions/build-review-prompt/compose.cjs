@@ -147,6 +147,8 @@ async function run({ github, context, core }) {
     env.CONTEXT_NOTE,
     env.SETTLED_NOTE,
     env.PRIOR_NOTE,
+    env.CRITERIA_NOTE,
+    env.ORG_NOTE,
     chunkNote,
     ...(distinct
       ? [
