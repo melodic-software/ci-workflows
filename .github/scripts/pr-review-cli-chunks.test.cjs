@@ -250,6 +250,10 @@ const runCompose = (compose, n, env) =>
     CHUNKS: String(n),
     CHUNK_FILES: Array(n).fill("1").join(","),
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
+    CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
     ...env,
   });
 
@@ -282,10 +286,13 @@ async function extractOne(job, review, env = {}) {
       SCOPE_BYTES: "20",
       CHUNKS: "1",
       ...Object.fromEntries(
-        [...LIMITS, "CHUNK_SUMMARY_CHARS", "CHUNK_COMMENTS"].map((name) => [
-          name,
-          workflow.env[name],
-        ]),
+        [
+          ...LIMITS,
+          "CHUNK_SUMMARY_CHARS",
+          "CHUNK_COMMENTS",
+          "CHUNK_SUMMARY_TOTAL",
+          "CHUNK_COMMENTS_TOTAL",
+        ].map((name) => [name, workflow.env[name]]),
       ),
       ...env,
     },
@@ -330,7 +337,7 @@ test("no leg assumes a fixed chunk count", () => {
     text,
     /(STRUCTURED|EXECUTION|LOG)_FILE_[0-9]|prompt-file-/u,
   );
-  assert.equal(workflow.env.MAX_CHUNKS, "20");
+  assert.equal(workflow.env.MAX_CHUNKS, "75");
 });
 
 const ACTION_DIR = path.join(__dirname, "..", "actions", "run-review-chunks");
@@ -585,7 +592,9 @@ const REVIEW = (files) => ({
 // The extract step over an N-chunk review: chunk 1 from the first review
 // step's files, chunks 2..N from the chunk loop's results directory,
 // `outcomes` the loop's chunk-outcomes.
-async function extractChunked(job, n, { outcomes, reviews } = {}) {
+// `logs` maps a chunk number to its log record; `env` overrides the step's
+// environment.
+async function extractChunked(job, n, { outcomes, reviews, logs, env } = {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-chunks-n-");
   const chunkDir = path.join(dir, "chunks");
   const results = path.join(dir, "results");
@@ -602,7 +611,7 @@ async function extractChunked(job, n, { outcomes, reviews } = {}) {
     );
     fs.writeFileSync(
       path.join(results, `chunk-${k}`, "log.jsonl"),
-      `${LOG_RECORD}\n`,
+      `${logs?.[k] ?? LOG_RECORD}\n`,
     );
   }
   const loopOutcomes =
@@ -618,6 +627,7 @@ async function extractChunked(job, n, { outcomes, reviews } = {}) {
     CHUNK_OUTCOMES: `success,${loopOutcomes}`,
     WHOLE_FILES: String(2 * n),
     SCOPE_BYTES: String(n * Number(workflow.env.READ_BUDGET)),
+    ...env,
   });
 }
 
@@ -768,11 +778,14 @@ const thirds = (comments) => ({
 });
 // 20 chunk reviews each at its comment and summary caps, comment i of chunk k
 // on the file fileOf(k, i).
-const cappedReviews = (fileOf) => {
-  const comments = Number(workflow.env.CHUNK_COMMENTS);
-  const chars = Number(workflow.env.CHUNK_SUMMARY_CHARS);
+const cappedReviews = (
+  fileOf,
+  n = 20,
+  comments = Number(workflow.env.CHUNK_COMMENTS),
+  chars = Number(workflow.env.CHUNK_SUMMARY_CHARS),
+) => {
   const reviews = {};
-  for (let k = 1; k <= 20; k++) {
+  for (let k = 1; k <= n; k++) {
     reviews[k] = chunkReview(
       Array.from({ length: comments }, (_, i) =>
         finding(
@@ -941,6 +954,115 @@ test("20 chunks every one at its caps merge into a review under 100 KB that list
       20 * comments,
     );
     assert.equal(review.findings, 20 * comments);
+  }
+});
+
+test("a chunked review with a missing or malformed cap value fails closed in compose and extract", async () => {
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    for (const [name, value] of [
+      ["CHUNK_SUMMARY_TOTAL", ""],
+      ["CHUNK_COMMENTS_TOTAL", "abc"],
+      ["CHUNK_SUMMARY_CHARS", "0"],
+    ]) {
+      await assert.rejects(
+        runCompose(compose, 21, {
+          LEG_MINUTES: "11",
+          CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+          CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+          CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+          CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
+          [name]: value,
+        }),
+        /chunk caps/u,
+        `${job.name}: ${name}=${JSON.stringify(value)}`,
+      );
+    }
+    for (const value of ["", "abc", "0"]) {
+      const bad = await extractChunked(job, 3, {
+        env: { CHUNK_COMMENTS_TOTAL: value },
+      });
+      assert.equal(
+        bad.verdict,
+        "the job could not read the chunk caps",
+        `${job.name}: ${JSON.stringify(value)}`,
+      );
+      assert.equal(bad["verdict-class"], "incomplete", job.name);
+      assert.equal(bad.review, undefined, job.name);
+    }
+    const outputs = await extractChunked(job, 3, {});
+    assert.equal(outputs.verdict, "complete", job.name);
+  }
+});
+
+test("a chunked review's wall time runs to the latest chunk end, not the last chunk's", async () => {
+  const record = (end) =>
+    JSON.stringify({ ...JSON.parse(LOG_RECORD), ended_at: end });
+  for (const job of LEGS) {
+    // Chunk 1 starts at 00:00 (LOG_RECORD); chunk 2 ends last, at 00:05.
+    const outputs = await extractChunked(job, 3, {
+      logs: {
+        2: record("2026-11-12T00:05:00.000Z"),
+        3: record("2026-11-12T00:02:00.000Z"),
+      },
+    });
+    assert.equal(outputs["wall-ms"], String(5 * 60 * 1000), job.name);
+  }
+});
+
+test("each chunk's prompt keeps the most severe findings and counts every CRITICAL when over its caps", async () => {
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    const outputs = await runCompose(compose, 75, {
+      LEG_MINUTES: "11",
+      CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+      CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+      CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+      CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
+    });
+    const prompt = fs.readFileSync(
+      path.join(outputs["prompt-dir"], "prompt-75.md"),
+      "utf8",
+    );
+    assert.match(prompt, /every CRITICAL first/u, job.name);
+    assert.match(
+      prompt,
+      /critical-findings line count every CRITICAL you did not post as a comment/u,
+      job.name,
+    );
+  }
+});
+
+test("at the chunk ceiling every chunk at its shrunk caps still merges into a review that lists every finding", async () => {
+  const n = Number(workflow.env.MAX_CHUNKS);
+  // 75 chunks: 30000 / 75 = 400 characters and 240 / 75 = 3 comments each.
+  assert.equal(n, 75);
+  for (const job of LEGS) {
+    const compose = job.steps.find((s) => s.id === "compose");
+    const outputs = await runCompose(compose, n, {
+      LEG_MINUTES: "11",
+      CHUNK_PARALLELISM: workflow.env.CHUNK_PARALLELISM,
+      CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+      CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+      CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+      CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
+    });
+    const schema = JSON.parse(fs.readFileSync(outputs["schema-file"], "utf8"));
+    assert.equal(schema.properties.summary.maxLength, 400, job.name);
+    assert.equal(schema.properties.comments.maxItems, 3, job.name);
+    const merged = await extractChunked(job, n, {
+      reviews: cappedReviews(
+        (k, i) => `src/module-${k}/file-${i}.ts`,
+        n,
+        3,
+        400,
+      ),
+    });
+    assert.equal(merged.verdict, "complete", job.name);
+    assert.ok(Buffer.byteLength(merged.review, "utf8") <= 100000);
+    const review = JSON.parse(merged.review);
+    assert.equal(review.comments.length + listedCount(review.summary), n * 3);
+    assert.equal(review.findings, n * 3);
   }
 });
 
@@ -1425,10 +1547,16 @@ test("each chunk's summary cap is the larger of the fixed cap and its share of o
       [13, 1538],
       [14, 1500],
       [20, 1500],
+      // Past 20 chunks the caps share CHUNK_SUMMARY_TOTAL (30000).
+      [21, 1428],
+      [60, 500],
+      [75, 400],
     ]) {
       const outputs = await runCompose(compose, n, {
         LEG_MINUTES: "11",
         CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+        CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+        CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
         CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
       });
       const schema = JSON.parse(

@@ -2116,17 +2116,18 @@ the file list and the file total, so a review that leaves them unread is still
 **Chunks.** Three limits in the workflow's `env`, each defined there once and
 read by every leg's shell and script steps, size a review: `READ_BUDGET`
 (300000 bytes), `MAX_CHUNK_FILES` (40 files) and the chunk ceiling
-`MAX_CHUNKS` (20). A diff in scope over the read budget, or with more than 40 files,
-is split at file boundaries, each file whole, into at most 20 chunks of at most
+`MAX_CHUNKS` (75, which is 3000 files at 40 a chunk, GitHub's own PR file cap). A diff in scope over the read budget, or with more than 40 files,
+is split at file boundaries, each file whole, into at most 75 chunks of at most
 300000 bytes and 40 files by claude-code-plugins'
 `.github/scripts/diff-chunking/diff_chunking.py split` (an older source's
 `pr-review-main/split-diff.py`), read from that repository's default-branch tip. Each leg reviews the first chunk in its review step
-and the rest, in order, in one step (`.github/actions/run-review-chunks`),
-which installs the CLI once and runs run-claude-cli's launcher per chunk with
-the same credential, tool rules and protections; a chunk runs only after the
-one before it succeeded and handed nothing on. That step's limit is 3 minutes
-plus the leg's per-chunk cap and a minute for each later chunk (12 or 14 a
-chunk for the code or security lane), so a review of one chunk keeps the
+and the rest in one step (`.github/actions/run-review-chunks`), `CHUNK_PARALLELISM`
+(8) at once, which installs the CLI once and runs run-claude-cli's launcher per
+chunk with the same credential, tool rules and protections; the later chunks
+start once the first succeeded and handed nothing on, and no chunk starts after
+one failed or handed off. That step's limit is 3 minutes plus, for each round of
+`CHUNK_PARALLELISM` later chunks, the leg's per-chunk cap and a minute (12 or 14 a
+round for the code or security lane), so a review of one chunk keeps the
 first step's 14 or 16 minutes and only a review that needs more chunks gets
 more. GitHub Actions takes a job's `timeout-minutes` only from contexts known
 before the job starts, never its own steps, so each leg's job limit is sized
@@ -2140,9 +2141,13 @@ against the read budget; when the rest alone is over either cap only the rest
 is split; in both the copies and renames count as read. Otherwise the whole
 diff is split, copies and renames included.
 Each chunk returns at most `CHUNK_COMMENTS` (12) comments and a summary
-of its share of one review's 20000 characters, never less than
-`CHUNK_SUMMARY_CHARS` (1500), both in the workflow's `env`; one review of
-the whole diff keeps 25 and 20000. A summary over its cap is never cut: the
+of its share of one review's 20000 characters, at least
+`CHUNK_SUMMARY_CHARS` (1500); past 20 chunks both caps shrink so all chunks
+together keep at most `CHUNK_SUMMARY_TOTAL` (30000) characters and
+`CHUNK_COMMENTS_TOTAL` (240) comments, never below 400 characters and 3
+comments a chunk, all in the workflow's `env`; one review of the whole diff
+keeps 25 and 20000. Over its comment cap a chunk posts its most severe findings
+first and lists the rest in its summary. A summary over its cap is never cut: the
 review is `incomplete`. The extract step merges the chunks:
 
 - A comment another chunk made at the same line with the same text

@@ -2531,6 +2531,8 @@ async function extract(files, env = {}, job = key) {
     READ_BUDGET: workflow.env.READ_BUDGET,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     ...env,
   };
@@ -2845,6 +2847,8 @@ async function composeOutputs(env, job = key) {
     RUNNER_TEMP: dir,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     LEG_MINUTES: "13",
     ...env,
@@ -4797,6 +4801,8 @@ test("a diff of many small added files, some identical, is chunked without its c
     READ_BUDGET: workflow.env.READ_BUDGET,
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
     MAX_CHUNK_FILES: workflow.env.MAX_CHUNK_FILES,
     SCOPE: "whole",
@@ -5353,7 +5359,12 @@ test("the compose step writes one prompt per chunk, each with its share of the c
   // Without a well-formed count, one review with the whole caps.
   for (const env of [
     {},
-    { CHUNKS: "21", CHUNK_FILES: Array(21).fill("1").join(",") },
+    {
+      CHUNKS: String(Number(workflow.env.MAX_CHUNKS) + 1),
+      CHUNK_FILES: Array(Number(workflow.env.MAX_CHUNKS) + 1)
+        .fill("1")
+        .join(","),
+    },
     { CHUNKS: "2", CHUNK_FILES: "1" },
     { CHUNKS: "2", CHUNK_FILES: "1,01" },
   ]) {
@@ -7583,11 +7594,14 @@ test("a diff still over the file cap past its renames is partial", async () => {
       EXCLUDED: cut.excluded ?? "",
     },
   );
+  // At the ceiling's file count the diff can also be over one review's bytes.
+  const bytes = Number(fullDiff.bytes);
   assert.deepEqual(JSON.parse(extracted.review).coverage, {
     read: 200 + edited,
     changed: 200 + edited,
     renames: 200,
     over_files: edited,
+    ...(bytes > Number(workflow.env.READ_BUDGET) ? { over_budget: bytes } : {}),
   });
 });
 

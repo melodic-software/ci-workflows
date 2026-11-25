@@ -583,17 +583,24 @@ env:
   READ_BUDGET: "300000"
   # The most chunks one leg reviews. A diff that needs more is reviewed
   # unsplit, as a partial review, with the count and this ceiling named.
-  MAX_CHUNKS: "20"
+  # CHUNK_SUMMARY_TOTAL / 400, the smallest chunk summary cap: 22.5 MB at
+  # READ_BUDGET, or 3000 files at MAX_CHUNK_FILES.
+  MAX_CHUNKS: "75"
   # The later chunks reviewed at once, each its own CLI process on the job's
   # runner, so a review of N chunks takes about 1 + (N - 1) / this many legs'
   # time instead of N.
   CHUNK_PARALLELISM: "8"
   # Each chunk's output caps when a diff is chunked (one review keeps 20000
-  # summary characters and 25 comments). At MAX_CHUNKS chunks every chunk at
-  # these caps still merges into a review under 100 KB: the extract step keeps
-  # 25 comments inline and lists the rest in the summary.
+  # summary characters and 25 comments): CHUNK_SUMMARY_CHARS and
+  # CHUNK_COMMENTS each, shrinking past 20 chunks so all chunks together keep
+  # at most CHUNK_SUMMARY_TOTAL characters and CHUNK_COMMENTS_TOTAL comments
+  # (never below 400 and 3). At MAX_CHUNKS chunks every chunk at its caps
+  # still merges into a review under 100 KB: the extract step keeps 25
+  # comments inline and lists the rest in the summary.
   CHUNK_SUMMARY_CHARS: "1500"
   CHUNK_COMMENTS: "12"
+  CHUNK_SUMMARY_TOTAL: "30000"
+  CHUNK_COMMENTS_TOTAL: "240"
   # The size a declared generated data file's diff section must exceed to
   # leave the review: one file's even share of READ_BUDGET over
   # MAX_CHUNK_FILES. A smaller change, such as one deleted record, still fits
