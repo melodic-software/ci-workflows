@@ -592,7 +592,9 @@ const REVIEW = (files) => ({
 // The extract step over an N-chunk review: chunk 1 from the first review
 // step's files, chunks 2..N from the chunk loop's results directory,
 // `outcomes` the loop's chunk-outcomes.
-async function extractChunked(job, n, { outcomes, reviews } = {}) {
+// `logs` maps a chunk number to its log record; `env` overrides the step's
+// environment.
+async function extractChunked(job, n, { outcomes, reviews, logs, env } = {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-chunks-n-");
   const chunkDir = path.join(dir, "chunks");
   const results = path.join(dir, "results");
@@ -609,7 +611,7 @@ async function extractChunked(job, n, { outcomes, reviews } = {}) {
     );
     fs.writeFileSync(
       path.join(results, `chunk-${k}`, "log.jsonl"),
-      `${LOG_RECORD}\n`,
+      `${logs?.[k] ?? LOG_RECORD}\n`,
     );
   }
   const loopOutcomes =
@@ -625,6 +627,7 @@ async function extractChunked(job, n, { outcomes, reviews } = {}) {
     CHUNK_OUTCOMES: `success,${loopOutcomes}`,
     WHOLE_FILES: String(2 * n),
     SCOPE_BYTES: String(n * Number(workflow.env.READ_BUDGET)),
+    ...env,
   });
 }
 
@@ -975,8 +978,35 @@ test("a chunked review with a missing or malformed cap value fails closed in com
         `${job.name}: ${name}=${JSON.stringify(value)}`,
       );
     }
+    for (const value of ["", "abc", "0"]) {
+      const bad = await extractChunked(job, 3, {
+        env: { CHUNK_COMMENTS_TOTAL: value },
+      });
+      assert.equal(
+        bad.verdict,
+        "the job could not read the chunk caps",
+        `${job.name}: ${JSON.stringify(value)}`,
+      );
+      assert.equal(bad["verdict-class"], "incomplete", job.name);
+      assert.equal(bad.review, undefined, job.name);
+    }
     const outputs = await extractChunked(job, 3, {});
     assert.equal(outputs.verdict, "complete", job.name);
+  }
+});
+
+test("a chunked review's wall time runs to the latest chunk end, not the last chunk's", async () => {
+  const record = (end) =>
+    JSON.stringify({ ...JSON.parse(LOG_RECORD), ended_at: end });
+  for (const job of LEGS) {
+    // Chunk 1 starts at 00:00 (LOG_RECORD); chunk 2 ends last, at 00:05.
+    const outputs = await extractChunked(job, 3, {
+      logs: {
+        2: record("2026-11-12T00:05:00.000Z"),
+        3: record("2026-11-12T00:02:00.000Z"),
+      },
+    });
+    assert.equal(outputs["wall-ms"], String(5 * 60 * 1000), job.name);
   }
 });
 

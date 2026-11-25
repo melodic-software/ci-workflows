@@ -80,8 +80,10 @@ async function run({ github, context, core }) {
     core.setFailed(`The chunk caps ${CAP_VALUES.join(", ")} must be whole numbers.`);
     return;
   }
-  // A chunk's summary keeps its share of one review's 20000
-  // characters, and never less than CHUNK_SUMMARY_CHARS.
+  // A chunk's summary keeps its share of one review's 20000 characters,
+  // at least CHUNK_SUMMARY_CHARS, until the chunks' totals pass
+  // CHUNK_SUMMARY_TOTAL and CHUNK_COMMENTS_TOTAL; then both caps shrink,
+  // never below 400 characters and 3 comments.
   const caps =
     chunks === 1
       ? { summary: 20000, comments: 25 }
