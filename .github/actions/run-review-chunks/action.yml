@@ -163,7 +163,7 @@ outputs:
     value: ${{ steps.loop.outputs.chunk-outcomes }}
   chunk-classes:
     description: >-
-      One lane class per chunk, in chunk-outcomes' order, comma-separated: the
+      A JSON array of one lane class per chunk, in chunk-outcomes' order: the
       leg's own run-claude-cli lane-class, `other` for a leg that exited 0
       with no well-formed result, and empty for a chunk that succeeded, was
       skipped, or failed with no class run-claude-cli named, such as its

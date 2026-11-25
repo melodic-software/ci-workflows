@@ -531,13 +531,29 @@ test("chunk-classes names each chunk's own class, leaving a failed leg with no c
     run.outputs["chunk-outcomes"],
     "success,failure,failure,failure,success",
   );
-  assert.equal(run.outputs["chunk-classes"], ",max-turns,,other,");
+  assert.deepEqual(JSON.parse(run.outputs["chunk-classes"]), [
+    "",
+    "max-turns",
+    "",
+    "other",
+    "",
+  ]);
   const clean = await loop(2, 3);
-  assert.equal(clean.outputs["chunk-classes"], ",");
+  assert.deepEqual(JSON.parse(clean.outputs["chunk-classes"]), ["", ""]);
+  const one = await loop(2, 2);
+  assert.equal(
+    one.outputs["chunk-classes"],
+    '[""]',
+    "one chunk's empty class is not an empty list",
+  );
   const stopped = await loop(2, 4, {
     2: { failed: true, laneClass: "credit-stop", handoff: "true" },
   });
-  assert.equal(stopped.outputs["chunk-classes"], "credit-stop,,");
+  assert.deepEqual(JSON.parse(stopped.outputs["chunk-classes"]), [
+    "credit-stop",
+    "",
+    "",
+  ]);
   assert.equal(stopped.outputs["chunk-outcomes"], "failure,skipped,skipped");
 });
 
