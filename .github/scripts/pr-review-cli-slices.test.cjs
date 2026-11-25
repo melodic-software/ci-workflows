@@ -477,10 +477,13 @@ async function extract(
     CHUNK_OUTCOMES: Array(filesRead.length).fill("success").join(","),
     EXCLUDED: cut.outputs.excluded,
     ...Object.fromEntries(
-      [...LIMITS, "CHUNK_SUMMARY_CHARS", "CHUNK_COMMENTS"].map((name) => [
-        name,
-        workflow.env[name],
-      ]),
+      [
+        ...LIMITS,
+        "CHUNK_SUMMARY_CHARS",
+        "CHUNK_COMMENTS",
+        "CHUNK_SUMMARY_TOTAL",
+        "CHUNK_COMMENTS_TOTAL",
+      ].map((name) => [name, workflow.env[name]]),
     ),
     READ_BUDGET: budget,
   };
@@ -766,6 +769,8 @@ async function compose(job, cut, chunkDir) {
     MAX_CHUNKS: workflow.env.MAX_CHUNKS,
     CHUNK_SUMMARY_CHARS: workflow.env.CHUNK_SUMMARY_CHARS,
     CHUNK_COMMENTS: workflow.env.CHUNK_COMMENTS,
+    CHUNK_SUMMARY_TOTAL: workflow.env.CHUNK_SUMMARY_TOTAL,
+    CHUNK_COMMENTS_TOTAL: workflow.env.CHUNK_COMMENTS_TOTAL,
   };
   const outputs = {};
   await runStep(job, "compose", values, {
