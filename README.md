@@ -2223,7 +2223,8 @@ porting to `actions/github-script`, which runs on the action's own bundled
 Node runtime and has no runner-image tooling dependency; the remaining
 gh-calling reusables were audited and ported the same way in
 [#209](https://github.com/melodic-software/ci-workflows/issues/209). See
-REVIEW.md's "Always check" criterion for the standing rule this established.
+standards' [`REVIEW.md`](https://github.com/melodic-software/standards/blob/main/REVIEW.md)
+"Always check" criterion for the standing rule this established.
 
 ## Policy ownership and action inputs
 

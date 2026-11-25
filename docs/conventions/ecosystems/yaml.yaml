@@ -5,7 +5,7 @@
 # a CI step, run from the repository root; every check runs and any failure
 # fails the command, as CI's run-everything-fail-at-end join does
 # (pr-run-checks.yml):
-# - actionlint, auto-discovering the workflows and .github/actionlint.yaml
+# - actionlint, auto-discovering the workflows, with standards' .github/actionlint.yaml
 #   (.github/workflows/pr-require-checks.yml; actionlint/action.yml)
 # - the shell and pwsh embedded in composite action.yml run blocks
 #   (pr-require-checks.yml)
@@ -23,7 +23,7 @@ build-cmd: null
 test-cmd: null
 check-cmd: |
   rc=0
-  actionlint || rc=1
+  actionlint -config-file "${STANDARDS_DIR:-$(git config --path --get ghq.root || printf '%s' "$HOME/ghq")/github.com/melodic-software/standards}/.github/actionlint.yaml" || rc=1
   bash .github/scripts/composite-run-shellcheck.sh || rc=1
   pwsh -NoProfile -File .github/scripts/Invoke-CompositeRunPssa.ps1 || rc=1
   check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml || rc=1

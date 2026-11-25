@@ -282,7 +282,7 @@ fi
 # (sources resolve only in the CI environment), SC2153/SC2154 (the block reads
 # variables injected by the step's `env:`), and SC2194/SC2050/SC2157/SC2043
 # (constant-expression artifacts of the `${{ }}` substitution above). `--norc`
-# is likewise actionlint's, and keeps the repo .shellcheckrc — whose optional
+# is likewise actionlint's, and keeps any .shellcheckrc — whose optional
 # checks are written for standalone scripts — from applying here.
 # Ref: https://github.com/rhysd/actionlint/blob/main/rule_shellcheck.go
 excluded_codes='SC1091,SC2194,SC2050,SC2153,SC2154,SC2157,SC2043'

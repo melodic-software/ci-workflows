@@ -134,7 +134,6 @@ jobs:
               **/*.sh
               **/*.bash
               **/.editorconfig
-              .shellcheckrc
             actionlint:
               .github/**
               fixtures/composite-action/**

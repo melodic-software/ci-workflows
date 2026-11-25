@@ -1,6 +1,7 @@
 # Markdown in this repository. Contract and schema:
 # https://github.com/melodic-software/claude-code-plugins/tree/main/docs/contracts/ecosystem-commands
-# markdownlint-cli2 with the root config, as CI's markdown composite runs it
+# markdownlint-cli2 with standards' config (STANDARDS_DIR names a standards
+# checkout, else the ghq root), as CI's markdown composite runs it
 # (.github/workflows/pr-run-checks.yml, called from
 # .github/workflows/pr-require-checks.yml; the command is
 # .github/actions/markdownlint/action.yml), then the heading-cite resolver
@@ -12,11 +13,11 @@ project-discovery: []
 build-cmd: null
 test-cmd: null
 check-cmd: >-
-  markdownlint-cli2 --config .markdownlint-cli2.jsonc <files> &&
+  markdownlint-cli2 --config "${STANDARDS_DIR:-$(git config --path --get ghq.root || printf '%s' "$HOME/ghq")/github.com/melodic-software/standards}/.markdownlint-cli2.jsonc" <files> &&
   GLOBS='fixtures/reference-integrity/*.md' bash .github/actions/check-markdown-references/check-heading-cites.sh
-fix-cmd: "markdownlint-cli2 --config .markdownlint-cli2.jsonc --fix <files>"
+fix-cmd: 'markdownlint-cli2 --config "${STANDARDS_DIR:-$(git config --path --get ghq.root || printf ''%s'' "$HOME/ghq")/github.com/melodic-software/standards}/.markdownlint-cli2.jsonc" --fix <files>'
 code-fix-cmd: null
-opt-in: ".markdownlint-cli2.jsonc at the repository root"
+opt-in: "a melodic-software/standards checkout (STANDARDS_DIR, else under the ghq root) for .markdownlint-cli2.jsonc"
 install-hint: "npm i -g markdownlint-cli2@0.23.3 (the version CI runs) on node 24.21.0"
 tool-pin:
   markdownlint-cli2: "0.23.3"
