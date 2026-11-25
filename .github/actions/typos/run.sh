@@ -11,12 +11,23 @@ FORMAT="${FORMAT:-}"
 REPORT_PATH="${REPORT_PATH:-}"
 ANNOTATIONS="${ANNOTATIONS:-true}"
 
-# The caller's own config wins while present. Only the default path falls
-# back to standards' copy; a caller that names another path and lacks it is
-# misconfigured (exit 2).
-# shellcheck source=../download-standards/lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
-CONFIG="$(standards_config "$CONFIG" _typos.toml _typos.toml)"
+# On the default path, standards' canonical _typos.toml is always the
+# --config, and typos discovers the caller's own root _typos.toml, when present,
+# and merges it in natively: its words, identifiers, ignore patterns and
+# excludes add to standards', and on a key both set, the --config file
+# (standards) wins. A caller that names another path runs that file as the
+# --config instead of standards', and lacking it is misconfigured (exit 2).
+if [[ $CONFIG == _typos.toml ]]; then
+  checkout="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/checkout.sh")" || exit 2
+  if [[ ! -f $checkout/_typos.toml ]]; then
+    echo "::error::melodic-software/standards at ${checkout##*/} has no _typos.toml" >&2
+    exit 2
+  fi
+  CONFIG="$checkout/_typos.toml"
+elif [[ ! -e $CONFIG && ! -L $CONFIG ]]; then
+  echo "::error::config file not found: $CONFIG" >&2
+  exit 2
+fi
 echo "typos: config $CONFIG"
 
 args=(--config "$CONFIG")

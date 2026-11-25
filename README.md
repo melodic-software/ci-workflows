@@ -130,9 +130,11 @@ consumer to audit it.
 ## Actions
 
 - `.github/actions/markdownlint` — markdownlint-cli2 over the repo's markdown.
-  A caller with no root `.markdownlint-cli2.jsonc` gets standards' at
-  `standards-ref` (see `download-standards`); the caller's own file wins while
-  present.
+  Standards' `.markdownlint-cli2.jsonc` at `standards-ref` (see
+  `download-standards`) is always the `--config` base, and markdownlint-cli2
+  reads a caller's own in-tree `.markdownlint-cli2.jsonc` over it: each rule
+  and top-level option the caller sets wins, and standards' others still apply.
+  A non-default `config` path replaces standards' as the base.
 - `.github/actions/shellcheck` — ShellCheck over the repo's shell scripts
   (installs a pinned, checksum-verified binary). Its default discovery remains
   tracked `*.sh`/`*.bash`; `extra-globs` adds tracked extensionless inputs as
@@ -223,9 +225,12 @@ consumer to audit it.
   reads in full.
 - `.github/actions/editorconfig-checker` — editorconfig-checker validation of tracked
   files against the repo's `.editorconfig`.
-- `.github/actions/typos` — `typos` spell-check over source. A caller with no
-  root `_typos.toml` gets standards' at `standards-ref` (see
-  `download-standards`); the caller's own file wins while present.
+- `.github/actions/typos` — `typos` spell-check over source. Standards'
+  `_typos.toml` at `standards-ref` (see `download-standards`) is always the
+  `--config`, and typos discovers a caller's own root `_typos.toml` and merges
+  it in: its words, identifiers, ignore patterns and excludes add to
+  standards', and on a key both set, standards' value wins. A non-default
+  `config` path replaces standards' as the `--config`.
 - `.github/actions/gitleaks` — gitleaks secret scan over a directory or local
   Git history against a caller-supplied config. Git mode requires a valid,
   non-shallow local worktree or repository (`fetch-depth: 0`) and always passes
@@ -724,14 +729,16 @@ consumer to audit it.
   synced from standards fall back to the standards file through this action's
   `lib.sh` when the caller has no copy at the default path, and keep the
   caller's copy when it has one: `gitleaks` (`.gitleaks.toml`),
-  `editorconfig-checker` (`.editorconfig-checker.json`), `lychee-offline`
-  (`lychee.toml`), `shellcheck` (`.shellcheckrc`), `actionlint`
-  (`.github/actionlint.yaml`), `typos` (`_typos.toml`), `markdownlint`
-  (`.markdownlint-cli2.jsonc`), `check-dependabot-policy` and `bump-versions`
+  `editorconfig-checker` (`.editorconfig-checker.json`), `shellcheck`
+  (`.shellcheckrc`), `actionlint` (`.github/actionlint.yaml`),
+  `check-dependabot-policy` and `bump-versions`
   (`components/dependabot-policy/policy.json`), `automerge-dependabot`'s gate
   (the same policy) and `collect-settled-threads`
-  (`components/trusted-actors/trusted-actors.json`). Each takes a
-  `standards-ref` input, default `main`.
+  (`components/trusted-actors/trusted-actors.json`). `lychee-offline`
+  (`lychee.toml`), `typos` (`_typos.toml`) and `markdownlint`
+  (`.markdownlint-cli2.jsonc`) instead always read the standards file through
+  this action's `checkout.sh` and merge the caller's own into it with the
+  tool's native layering. Each takes a `standards-ref` input, default `main`.
 - `.github/actions/check-workflow-naming` — runs the standards
   [`github-actions-conventions`][gh-actions-conventions] naming-lint over
   workflow file names, workflow `name:` values, job ids and composite action

@@ -13,9 +13,12 @@ mkdir -p -- "$caller" "$fake_bin"
 
 # The fake appends one line per invocation: its arguments, each ending in a
 # unit separator. It prints nothing, so the annotation pass's jq reads no input.
+# It also records the directory it ran in, where typos discovers the caller's
+# own _typos.toml.
 cat >"$fake_bin/typos" <<'FAKE'
 #!/usr/bin/env bash
 { printf '%s\x1f' "$@"; printf '\n'; } >>"$CAPTURE"
+pwd >"$CAPTURE.cwd"
 FAKE
 chmod +x "$fake_bin/typos"
 capture="$temporary_directory/args"
@@ -58,22 +61,34 @@ config_arguments() {
   done <"$capture"
 }
 
-# The caller's own _typos.toml wins when present.
-printf '[default]\n' >"$caller/_typos.toml"
-run _typos.toml
-[[ "$rc" -eq 0 ]] || fail "caller config: exit $rc ($out)"
-used="$(config_arguments)"
-[[ "$used" == _typos.toml ]] || fail "caller config: typos got --config $used"
-[[ ! -d "$RUNNER_TEMP/ci-workflows-standards/$standards_sha" ]] || fail "caller config: standards was fetched"
-
-# Without one, the default path falls back to standards' copy, in both the
-# annotation and the gate pass.
-rm -- "$caller/_typos.toml"
+# Default: a caller with no _typos.toml runs standards' copy alone, in both
+# the annotation and the gate pass.
 run _typos.toml true
-[[ "$rc" -eq 0 ]] || fail "standards config: exit $rc ($out)"
+[[ "$rc" -eq 0 ]] || fail "default: exit $rc ($out)"
 used="$(config_arguments)"
-[[ "$used" == "$standards_copy"$'\n'"$standards_copy" ]] || fail "standards config: typos got --config $used"
-[[ "$out" == *"config $standards_copy"* ]] || fail "standards config: the log does not name the config used"
+[[ "$used" == "$standards_copy"$'\n'"$standards_copy" ]] || fail "default: typos got --config $used"
+[[ "$out" == *"config $standards_copy"* ]] || fail "default: the log does not name the config used"
+
+# Extension: with the caller's own _typos.toml present, standards' copy is
+# still the --config, and typos runs in the caller's root without --isolated,
+# so it discovers the caller's file and merges it with standards'.
+printf '[files]\nextend-exclude = ["fixtures/"]\n' >"$caller/_typos.toml"
+run _typos.toml true
+[[ "$rc" -eq 0 ]] || fail "extension: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == "$standards_copy"$'\n'"$standards_copy" ]] || fail "extension: typos got --config $used"
+! grep -qF -- '--isolated' "$capture" || fail "extension: typos was told to ignore the caller's config"
+[[ "$(cat -- "$capture.cwd")" == "$(cd "$caller" && pwd)" ]] || fail "extension: typos did not run in the caller's root"
+rm -- "$caller/_typos.toml"
+
+# Complete override: a named non-default path is the only --config.
+mkdir -p -- "$caller/docs"
+printf '[default]\n' >"$caller/docs/custom.toml"
+run docs/custom.toml
+[[ "$rc" -eq 0 ]] || fail "complete override: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == docs/custom.toml ]] || fail "complete override: typos got --config $used"
+rm -r -- "$caller/docs"
 
 # A non-default path that does not exist fails without running typos.
 run docs/_typos.toml
