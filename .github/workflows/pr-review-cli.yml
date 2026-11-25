@@ -1607,8 +1607,7 @@ jobs:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
           STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
-          CRITERIA_FILE: .claude-lane/review-criteria.md
-          ORG_COPY: .claude-lane/org
+          LANE_DIR: .claude-lane
 
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
@@ -2769,8 +2768,7 @@ jobs:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
           STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
-          CRITERIA_FILE: .claude-lane/review-criteria.md
-          ORG_COPY: .claude-lane/org
+          LANE_DIR: .claude-lane
 
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
@@ -3901,8 +3899,7 @@ jobs:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
           STANDARDS_SHA: ${{ steps.standards.outputs.sha }}
-          CRITERIA_FILE: .claude-lane/review-criteria.md
-          ORG_COPY: .claude-lane/org
+          LANE_DIR: .claude-lane
 
       # The review levels from this repository, which the job does not check
       # out; a failed step leaves the directory empty and the compose step
