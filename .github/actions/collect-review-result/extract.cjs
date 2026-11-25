@@ -33,7 +33,8 @@ async function run({ core }) {
   const total = (field, valid) =>
     records.every((r) => valid(r[field])) ? String(records.reduce((sum, r) => sum + r[field], 0)) : "";
   const amount = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
-  const wall = Date.parse(records.at(-1).ended_at ?? "") - Date.parse(records[0].started_at ?? "");
+  // Later chunks run side by side, so the last to end need not be the last chunk.
+  const wall = Math.max(...records.map((r) => Date.parse(r.ended_at ?? ""))) - Date.parse(records[0].started_at ?? "");
   const turns = total("num_turns", Number.isSafeInteger);
   core.setOutput("turns", turns);
   core.setOutput("cost", total("total_cost_usd", amount));
@@ -61,7 +62,19 @@ async function run({ core }) {
   const caps =
     chunks === 1
       ? { summary: 20000, comments: 25 }
-      : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
+      : {
+          // Past CHUNK_SUMMARY_TOTAL / CHUNK_SUMMARY_CHARS chunks, each
+          // chunk's caps shrink so all chunks together stay within the
+          // totals, never below 400 characters and 3 comments.
+          summary: Math.max(
+            400,
+            Math.min(
+              Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)),
+              Math.floor(Number(env.CHUNK_SUMMARY_TOTAL) / chunks),
+            ),
+          ),
+          comments: Math.max(3, Math.min(Number(env.CHUNK_COMMENTS), Math.floor(Number(env.CHUNK_COMMENTS_TOTAL) / chunks))),
+        };
   // A comment body's length, the compose step's schema maxLength.
   const MAX_BODY = 3000;
   // Uncovered rules caps, matching the compose schema and codify's reader.

@@ -78,7 +78,19 @@ async function run({ github, context, core }) {
   const caps =
     chunks === 1
       ? { summary: 20000, comments: 25 }
-      : { summary: Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)), comments: Number(env.CHUNK_COMMENTS) };
+      : {
+          // Past CHUNK_SUMMARY_TOTAL / CHUNK_SUMMARY_CHARS chunks, each
+          // chunk's caps shrink so all chunks together stay within the
+          // totals, never below 400 characters and 3 comments.
+          summary: Math.max(
+            400,
+            Math.min(
+              Math.max(Number(env.CHUNK_SUMMARY_CHARS), Math.floor(20000 / chunks)),
+              Math.floor(Number(env.CHUNK_SUMMARY_TOTAL) / chunks),
+            ),
+          ),
+          comments: Math.max(3, Math.min(Number(env.CHUNK_COMMENTS), Math.floor(Number(env.CHUNK_COMMENTS_TOTAL) / chunks))),
+        };
   // The identical-change copies and verified renames in scope the
   // full-diff step listed, which the extract step counts as read
   // under this same condition: in one review, or in chunks the split
