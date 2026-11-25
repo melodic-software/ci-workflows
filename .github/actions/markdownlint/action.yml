@@ -1,7 +1,7 @@
 name: markdownlint
 description: >-
-  Lint Markdown with markdownlint-cli2 against the caller's config, or
-  standards' when the caller has none.
+  Lint Markdown with markdownlint-cli2 against standards' config, with the
+  caller's own merged over it.
 
 inputs:
   globs:
@@ -11,14 +11,18 @@ inputs:
     default: '**/*.md'
   config:
     description: >-
-      Path to the markdownlint-cli2 config file in the caller repo. When the
-      default path is absent, melodic-software/standards' own
-      .markdownlint-cli2.jsonc at `standards-ref` is used instead.
+      Path to the caller's markdownlint-cli2 config. On the default path,
+      melodic-software/standards' canonical .markdownlint-cli2.jsonc at
+      `standards-ref` is always the --config base, and markdownlint-cli2
+      reads the caller's in-tree .markdownlint-cli2.jsonc, when present, over
+      it natively: each rule and top-level option the caller sets replaces
+      standards', and the rest of standards' still applies. Any other path is
+      the base instead of standards' (in-tree configs still apply over it).
     default: .markdownlint-cli2.jsonc
   standards-ref:
     description: >-
-      Branch or full commit SHA of melodic-software/standards the config
-      falls back to (see the download-standards action). Pass the run's
+      Branch or full commit SHA of melodic-software/standards whose
+      .markdownlint-cli2.jsonc the default path reads (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   annotations:

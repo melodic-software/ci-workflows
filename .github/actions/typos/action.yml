@@ -1,7 +1,7 @@
 name: Typos
 description: >-
-  Spell-check source code with typos against the caller's config, or
-  standards' when the caller has none.
+  Spell-check source code with typos against standards' config, with the
+  caller's own merged in.
 
 inputs:
   paths:
@@ -11,14 +11,18 @@ inputs:
     default: '.'
   config:
     description: >-
-      Path to the typos config in the caller repo. When the default path is
-      absent, melodic-software/standards' own _typos.toml at `standards-ref`
-      is used instead.
+      Path to the caller's typos config. On the default path,
+      melodic-software/standards' canonical _typos.toml at `standards-ref` is
+      always the --config, and typos discovers the caller's root _typos.toml,
+      when present, and merges it in natively: its words, identifiers,
+      ignore patterns and excludes add to standards', and on a key both set,
+      standards' value wins. Any other path is the --config instead of
+      standards' (typos still discovers a root _typos.toml).
     default: _typos.toml
   standards-ref:
     description: >-
-      Branch or full commit SHA of melodic-software/standards the config
-      falls back to (see the download-standards action). Pass the run's
+      Branch or full commit SHA of melodic-software/standards whose
+      _typos.toml the default path reads (see the download-standards action). Pass the run's
       resolved SHA so every job reads one commit.
     default: main
   exclude:

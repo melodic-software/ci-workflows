@@ -11,10 +11,12 @@ caller="$temporary_directory/caller"
 fake_bin="$temporary_directory/bin"
 mkdir -p -- "$caller" "$fake_bin"
 
-# The fake records its arguments, one per line, and exits FAKE_STATUS.
+# The fake records its arguments, one per line, and the directory it ran in,
+# where markdownlint-cli2 reads the caller's in-tree config; it exits FAKE_STATUS.
 cat >"$fake_bin/npx" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$CAPTURE"
+pwd >"$CAPTURE.cwd"
 exit "${FAKE_STATUS:-0}"
 FAKE
 chmod +x "$fake_bin/npx"
@@ -47,27 +49,40 @@ run() {
     bash "$action_directory/run.sh" 2>&1)" || rc=$?
 }
 
-config_argument() {
-  grep -A1 -x -- '--config' "$capture" | tail -n 1
+# Every --config value, in order, space-separated.
+config_arguments() {
+  grep -A1 -x -- '--config' "$capture" | grep -v -x -e '--config' -e '--' | paste -sd ' ' -
 }
 
-# The caller's own config wins when present; globs pass through unexpanded.
-printf '{}\n' >"$caller/.markdownlint-cli2.jsonc"
+# Default: a caller with no config runs standards' copy alone; globs pass
+# through unexpanded.
 run .markdownlint-cli2.jsonc
-[[ "$rc" -eq 0 ]] || fail "caller config: exit $rc ($out)"
-used="$(config_argument)"
-[[ "$used" == .markdownlint-cli2.jsonc ]] || fail "caller config: markdownlint-cli2 got --config $used"
-grep -qx -F -- 'markdownlint-cli2@0.0.0' "$capture" || fail "caller config: the pinned version was not run"
-grep -qx -F -- '!fixtures/**' "$capture" || fail "caller config: a glob was expanded or dropped"
-[[ ! -d "$RUNNER_TEMP/ci-workflows-standards/$standards_sha" ]] || fail "caller config: standards was fetched"
+[[ "$rc" -eq 0 ]] || fail "default: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == "$standards_copy" ]] || fail "default: markdownlint-cli2 got --config $used"
+[[ "$out" == *"config $standards_copy"* ]] || fail "default: the log does not name the config used"
+grep -qx -F -- 'markdownlint-cli2@0.0.0' "$capture" || fail "default: the pinned version was not run"
+grep -qx -F -- '!fixtures/**' "$capture" || fail "default: a glob was expanded or dropped"
 
-# Without one, the default path falls back to standards' copy.
-rm -- "$caller/.markdownlint-cli2.jsonc"
+# Extension: with the caller's own config present, standards' copy is still
+# the only --config, and markdownlint-cli2 runs in the caller's root, where it
+# reads the caller's file over that base.
+printf '{ "config": { "MD013": true } }\n' >"$caller/.markdownlint-cli2.jsonc"
 run .markdownlint-cli2.jsonc
-[[ "$rc" -eq 0 ]] || fail "standards config: exit $rc ($out)"
-used="$(config_argument)"
-[[ "$used" == "$standards_copy" ]] || fail "standards config: markdownlint-cli2 got --config $used"
-[[ "$out" == *"config $standards_copy"* ]] || fail "standards config: the log does not name the config used"
+[[ "$rc" -eq 0 ]] || fail "extension: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == "$standards_copy" ]] || fail "extension: markdownlint-cli2 got --config $used"
+[[ "$(cat -- "$capture.cwd")" == "$(cd "$caller" && pwd)" ]] || fail "extension: markdownlint-cli2 did not run in the caller's root"
+rm -- "$caller/.markdownlint-cli2.jsonc"
+
+# Complete override: a named non-default path is the only --config.
+mkdir -p -- "$caller/docs"
+printf '{}\n' >"$caller/docs/custom.markdownlint-cli2.jsonc"
+run docs/custom.markdownlint-cli2.jsonc
+[[ "$rc" -eq 0 ]] || fail "complete override: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == docs/custom.markdownlint-cli2.jsonc ]] || fail "complete override: markdownlint-cli2 got --config $used"
+rm -r -- "$caller/docs"
 
 # Findings fail the step, and the matcher is removed either way.
 FAKE_STATUS=1 run .markdownlint-cli2.jsonc
