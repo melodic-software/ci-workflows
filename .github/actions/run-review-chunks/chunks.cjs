@@ -110,7 +110,7 @@ function readText(file) {
  * first leg and returns the function that undoes it, which runs after the
  * last. Resolves to the step's outputs and whether the step succeeded.
  */
-async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => () => {} }) {
+async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => () => {}, onStart = () => {} }) {
   const first = Number(env.CHUNK_FIRST);
   const last = Number(env.CHUNK_LAST);
   if (!COUNT.test(env.CHUNK_FIRST ?? "") || !COUNT.test(env.CHUNK_LAST ?? "") || first > last) {
@@ -200,8 +200,19 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
     progress();
   };
 
+  // A leg that throws stops new chunks like a failed one; every running leg
+  // still ends before the trees are unlocked, and the first error is thrown
+  // after that.
+  const errors = [];
   const worker = async () => {
-    while (!stopped && next < count) await runOne(next++);
+    while (!stopped && next < count) {
+      try {
+        await runOne(next++);
+      } catch (error) {
+        stopped = true;
+        errors.push(error);
+      }
+    }
   };
 
   // The step's other file-command files, put back exactly as they were
@@ -211,25 +222,50 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
     .map((name) => (env[name] ?? "").trim())
     .filter((file) => file !== "" && fs.existsSync(file))
     .map((file) => ({ file, content: fs.readFileSync(file) }));
+  // Unlock, put the file-command files back, then add the summaries of the
+  // legs that ended. Runs once: after the last leg, or from a signal handler
+  // the caller registers through onStart.
   let unlock = () => {};
-  try {
-    unlock = lock();
-    await Promise.all(Array.from({ length: Math.min(parallelism, count) }, worker));
-  } finally {
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
     unlock();
     for (const { file, content } of snapshots) {
       if (!fs.existsSync(file) || !fs.readFileSync(file).equals(content)) fs.writeFileSync(file, content);
     }
+    if (summaryFile) {
+      for (const l of legs) if (l?.summary) fs.appendFileSync(summaryFile, l.summary);
+    }
+  };
+  onStart(finish);
+  try {
+    unlock = lock();
+    await Promise.all(Array.from({ length: Math.min(parallelism, count) }, worker));
+  } finally {
+    finish();
   }
+  if (errors.length > 0) throw errors[0];
 
   const ran = legs.filter(Boolean);
   const outputs = outputsOf(legs);
   fs.truncateSync(outputFile, base);
   writeOutputs(outputFile, outputs);
-  if (summaryFile) {
-    for (const l of ran) if (l.summary) fs.appendFileSync(summaryFile, l.summary);
-  }
   return { ok: !ran.some((l) => l.failed), outputs };
+}
+
+// The console files of the legs still running, so a signal can print them.
+const running = new Set();
+
+// Writes each running leg's console output so far, once; for a step that is
+// being stopped.
+function flushRunning(write = (data) => process.stdout.write(data)) {
+  for (const file of running) {
+    try {
+      write(fs.readFileSync(file));
+    } catch {}
+  }
+  running.clear();
 }
 
 // One leg as a child process: its stdout and stderr go to one file, which is
@@ -237,6 +273,7 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
 function spawnLeg(lane, promptFile, legEnv, write = (data) => process.stdout.write(data)) {
   const consoleFile = path.join(legEnv.LANE_RESULTS_DIR, "console.txt");
   const out = fs.openSync(consoleFile, "w");
+  running.add(consoleFile);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [lane, "run"], {
       env: { ...legEnv, LANE_PROMPT_FILE: promptFile },
@@ -246,6 +283,7 @@ function spawnLeg(lane, promptFile, legEnv, write = (data) => process.stdout.wri
     const done = (status) => {
       if (ended) return;
       ended = true;
+      running.delete(consoleFile);
       fs.closeSync(out);
       write(fs.readFileSync(consoleFile));
       fs.rmSync(consoleFile, { force: true });
@@ -269,15 +307,20 @@ if (require.main === module) {
       unlock();
       throw error;
     }
+    return unlock;
+  };
+  // A step stopped by its timeout or a cancel still prints what every running
+  // leg wrote so far, unlocks, restores and adds the finished legs' summaries.
+  const onStart = (finish) => {
     for (const signal of ["SIGINT", "SIGTERM"]) {
       process.once(signal, () => {
-        unlock();
+        flushRunning();
+        finish();
         process.exit(1);
       });
     }
-    return unlock;
   };
-  runChunks(env, { runChunk: (promptFile, legEnv) => spawnLeg(lane, promptFile, legEnv), lock })
+  runChunks(env, { runChunk: (promptFile, legEnv) => spawnLeg(lane, promptFile, legEnv), lock, onStart })
     .then(({ ok }) => {
       if (!ok) process.exitCode = 1;
     })
@@ -287,4 +330,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { runChunks, spawnLeg };
+module.exports = { flushRunning, runChunks, spawnLeg };

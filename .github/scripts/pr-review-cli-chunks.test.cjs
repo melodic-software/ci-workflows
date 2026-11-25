@@ -334,7 +334,9 @@ test("no leg assumes a fixed chunk count", () => {
 });
 
 const ACTION_DIR = path.join(__dirname, "..", "actions", "run-review-chunks");
-const { runChunks, spawnLeg } = require(path.join(ACTION_DIR, "chunks.cjs"));
+const { flushRunning, runChunks, spawnLeg } = require(
+  path.join(ACTION_DIR, "chunks.cjs"),
+);
 
 // A stand-in for lane.cjs run: writes the leg's files to its results dir and
 // appends its outputs to its own GITHUB_OUTPUT the way writeOutputs does.
@@ -1147,6 +1149,97 @@ test("the loop runs CHUNK_PARALLELISM legs at once, each with its own files, and
   assert.equal(lines[0], "earlier=1");
   const keys = lines.slice(1).map((line) => line.split("=")[0]);
   assert.deepEqual(keys, [...new Set(keys)]);
+});
+
+test("a leg that throws stops new chunks, and the trees unlock only after every running leg ends", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-throw-");
+  fs.mkdirSync(path.join(dir, "results"));
+  const output = path.join(dir, "output");
+  fs.writeFileSync(output, "");
+  const fake = fakeLegs({ 3: { delay: 40 }, 4: { delay: 40 } });
+  const events = [];
+  let unlocked = false;
+  await assert.rejects(
+    runChunks(
+      {
+        CHUNK_FIRST: "2",
+        CHUNK_LAST: "9",
+        CHUNK_PARALLELISM: "3",
+        GITHUB_OUTPUT: output,
+        RESULTS_DIR: path.join(dir, "results"),
+        PROMPT_DIR: dir,
+      },
+      {
+        runChunk: async (promptFile, legEnv) => {
+          const k = Number(/prompt-([0-9]+)\.md$/u.exec(promptFile)[1]);
+          if (k === 2) throw new Error("disk full in chunk 2");
+          const status = await fake.runChunk(promptFile, legEnv);
+          events.push(`end ${k} unlocked=${unlocked}`);
+          return status;
+        },
+        lock: () => () => {
+          unlocked = true;
+          events.push("unlock");
+        },
+      },
+    ),
+    /disk full in chunk 2/u,
+  );
+  // Chunks 3 and 4 were running; they end before the unlock, and nothing past them starts.
+  assert.deepEqual(
+    fake.ran.toSorted((a, b) => a - b),
+    [3, 4],
+  );
+  assert.deepEqual(events, [
+    "end 3 unlocked=false",
+    "end 4 unlocked=false",
+    "unlock",
+  ]);
+});
+
+test("a stopped step prints what each running leg wrote and finishes once", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-signal-");
+  const stub = path.join(dir, "lane.cjs");
+  fs.writeFileSync(
+    stub,
+    'process.stdout.write("partial live log\\n"); setTimeout(() => {}, 1000);',
+  );
+  const written = [];
+  const leg = spawnLeg(
+    stub,
+    "/p/prompt-2.md",
+    { ...process.env, LANE_RESULTS_DIR: dir },
+    (d) => written.push(String(d)),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  flushRunning((d) => written.push(String(d)));
+  assert.equal(written.join(""), "partial live log\n");
+  flushRunning((d) => written.push(String(d)));
+  assert.equal(written.length, 1);
+  // onStart hands out the finish the signal handler calls; it unlocks once.
+  let unlocks = 0;
+  let finish;
+  fs.mkdirSync(path.join(dir, "results"));
+  const output = path.join(dir, "output");
+  fs.writeFileSync(output, "");
+  await runChunks(
+    {
+      CHUNK_FIRST: "2",
+      CHUNK_LAST: "2",
+      GITHUB_OUTPUT: output,
+      RESULTS_DIR: path.join(dir, "results"),
+      PROMPT_DIR: dir,
+    },
+    {
+      runChunk: fakeLegs().runChunk,
+      lock: () => () => unlocks++,
+      onStart: (f) => (finish = f),
+    },
+  );
+  finish();
+  assert.equal(unlocks, 1);
+  // The leg still ends normally and, already flushed, prints nothing again.
+  await leg;
 });
 
 test("the step's other file-command files are put back as they were once the legs end", async () => {
