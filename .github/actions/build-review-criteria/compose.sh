@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-review-cli's criteria step: the review criteria in effect, per the
+# The criteria step of pr-review-cli and pr-review: the review criteria in effect, per the
 # standards contract's "Review criteria: REVIEW.md" in claude-code-plugins
 # (docs/contracts/standards/README.md). The composition is that repository's
 # own org-standards.sh, run from a claude-code-plugins clone the calling job
