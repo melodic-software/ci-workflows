@@ -33,8 +33,11 @@ const {
   holdsCredential,
   install,
   legEnv,
+  lockTrees,
   readConfig,
+  readOnlyPaths,
   resolveCliVersion,
+  restoreModes,
   run,
   runLeg,
   summaryTable,
@@ -1779,6 +1782,30 @@ test("readConfig takes the fallback token under its fixed name, one credential o
       JSON.stringify(value),
     );
   }
+});
+
+test("a leg's files go to LANE_RESULTS_DIR, and LANE_READ_ONLY_PATHS are bound read-only but not chmod-locked", () => {
+  const base = readConfig(configEnv());
+  assert.equal(base.resultsDir, base.workDir);
+  assert.deepEqual(base.readOnlyExtra, []);
+  const dir = makeTemporaryDirectory("lane-extra-");
+  const extra = path.join(dir, "output");
+  fs.writeFileSync(extra, "");
+  const config = readConfig(
+    configEnv({ LANE_RESULTS_DIR: dir, LANE_READ_ONLY_PATHS: `${extra}\n\n` }),
+  );
+  assert.equal(config.resultsDir, dir);
+  assert.deepEqual(config.readOnlyExtra, [extra]);
+  assert.ok(readOnlyPaths(config, {}).includes(extra));
+  for (const bad of [{ LANE_RESULTS_DIR: "relative" }, { LANE_READ_ONLY_PATHS: "relative" }]) {
+    assert.throws(() => readConfig(configEnv(bad)), LaneError, JSON.stringify(bad));
+  }
+  // lockTrees and restoreModes put every mode back, whatever was locked first.
+  const modes = [];
+  lockTrees([dir], modes);
+  assert.equal(fs.statSync(extra).mode & 0o222, 0);
+  restoreModes(modes);
+  assert.notEqual(fs.statSync(extra).mode & 0o200, 0);
 });
 
 test("readConfig refuses bypass and bad values", async () => {

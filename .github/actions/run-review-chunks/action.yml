@@ -1,17 +1,17 @@
 name: Run Review Chunks
 description: >-
   Run chunks chunk-first..chunk-last of a chunked pull request review in one
-  step, in order, each as one run-claude-cli leg on
+  step, `parallelism` at once, each as one run-claude-cli leg on
   `<prompt-dir>/prompt-<k>.md` with the same credential and tool rules. It
   verifies the isolation contract and installs the CLI once, as
   run-claude-cli does, then runs that action's `lane.cjs run` per chunk, so
   every leg keeps run-claude-cli's protections: its own environment
   scrubbed, this step's file-command files and the CLI install bound
-  read-only while it runs. A chunk runs only after the one before it
-  succeeded and handed nothing on; the first failure or handoff stops the
-  loop and the later chunks are `skipped`. Each chunk's structured output,
-  log and execution file land in `<results-dir>/chunk-<k>/` (structured.json,
-  log.jsonl, execution.json). The step fails when a chunk failed.
+  read-only while it runs. No chunk starts after one failed or handed off;
+  running legs finish and the chunks not started are `skipped`. Each
+  chunk's structured output, log and execution file land in
+  `<results-dir>/chunk-<k>/` (structured.json, log.jsonl, execution.json).
+  The step fails when a chunk failed.
 
 inputs:
   lane:
@@ -29,6 +29,10 @@ inputs:
   chunk-last:
     description: The last chunk this step runs, a whole number no lower than chunk-first.
     required: true
+  parallelism:
+    description: How many chunks' legs run at once, a whole number.
+    required: false
+    default: "1"
   preamble:
     description: As run-claude-cli's, with its default.
     required: false
@@ -226,5 +230,6 @@ runs:
         PROMPT_DIR: ${{ inputs.prompt-dir }}
         CHUNK_FIRST: ${{ inputs.chunk-first }}
         CHUNK_LAST: ${{ inputs.chunk-last }}
+        CHUNK_PARALLELISM: ${{ inputs.parallelism }}
         RESULTS_DIR: ${{ steps.workdir.outputs.results }}
       run: node "$GITHUB_ACTION_PATH/chunks.cjs"

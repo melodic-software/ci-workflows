@@ -346,14 +346,16 @@ async function run({ github, context, core }) {
   }
   core.setOutput("prompt-dir", directory);
   core.setOutput("chunks", String(chunks));
-  // The chunk loop's step limit: one CLI install, then each later
-  // chunk's leg and a minute after it.
+  // The chunk loop's step limit: one CLI install, then each round of
+  // CHUNK_PARALLELISM later chunks' legs and a minute after it.
   if (chunks > 1) {
     if (!/^[1-9][0-9]?$/u.test(env.LEG_MINUTES ?? "")) {
       core.setFailed("The leg timeout must be a whole number of minutes.");
       return;
     }
-    core.setOutput("loop-minutes", String(3 + (chunks - 1) * (Number(env.LEG_MINUTES) + 1)));
+    const parallelism = /^[1-9][0-9]{0,2}$/u.test(env.CHUNK_PARALLELISM ?? "") ? Number(env.CHUNK_PARALLELISM) : 1;
+    const rounds = Math.ceil((chunks - 1) / parallelism);
+    core.setOutput("loop-minutes", String(3 + rounds * (Number(env.LEG_MINUTES) + 1)));
   }
   if (chunks > 1) core.setOutput("chunk-files", chunkFiles.join(","));
   // The extract step's read count: each chunk's earlier pieces of

@@ -334,20 +334,27 @@ test("no leg assumes a fixed chunk count", () => {
 });
 
 const ACTION_DIR = path.join(__dirname, "..", "actions", "run-review-chunks");
-const { runChunks } = require(path.join(ACTION_DIR, "chunks.cjs"));
+const { runChunks, spawnLeg } = require(path.join(ACTION_DIR, "chunks.cjs"));
 
-// A stand-in for lane.cjs run: writes the leg's files to the work dir and
-// appends its outputs to GITHUB_OUTPUT the way writeOutputs does. `legs`
-// maps a chunk number to how its leg ends.
-function fakeLegs(work, legs = {}) {
+// A stand-in for lane.cjs run: writes the leg's files to its results dir and
+// appends its outputs to its own GITHUB_OUTPUT the way writeOutputs does.
+// `legs` maps a chunk number to how its leg ends; `delay` (ms) to how long it
+// takes. `active` and `peak` count legs running at once.
+function fakeLegs(legs = {}) {
   const ran = [];
-  return {
-    ran,
-    runChunk: (promptFile) => {
-      const k = Number(/prompt-([0-9]+)\.md$/u.exec(promptFile)[1]);
-      ran.push(k);
-      const end = legs[k] ?? {};
+  const fake = { ran, active: 0, peak: 0, envs: [] };
+  fake.runChunk = async (promptFile, legEnv) => {
+    const k = Number(/prompt-([0-9]+)\.md$/u.exec(promptFile)[1]);
+    ran.push(k);
+    fake.envs.push(legEnv);
+    const end = legs[k] ?? {};
+    fake.active++;
+    fake.peak = Math.max(fake.peak, fake.active);
+    try {
+      if (end.delay)
+        await new Promise((resolve) => setTimeout(resolve, end.delay));
       if (end.killed) throw new Error(`step killed during chunk ${k}`);
+      const work = legEnv.LANE_RESULTS_DIR;
       const execution = path.join(work, "leg-1-execution.json");
       fs.writeFileSync(
         execution,
@@ -362,7 +369,7 @@ function fakeLegs(work, legs = {}) {
       const writes = !end.failed && !end.noStructured;
       if (writes) fs.writeFileSync(structured, `{"k":${k}}`);
       fs.appendFileSync(
-        process.env.FAKE_OUTPUT,
+        legEnv.GITHUB_OUTPUT,
         [
           `lane-class=${end.laneClass ?? ""}`,
           `handoff=${end.handoff ?? "false"}`,
@@ -375,46 +382,67 @@ function fakeLegs(work, legs = {}) {
           "",
         ].join("\n"),
       );
+      fs.appendFileSync(legEnv.GITHUB_STEP_SUMMARY, `chunk ${k}\n`);
       return end.failed ? 1 : 0;
-    },
+    } finally {
+      fake.active--;
+    }
   };
+  return fake;
 }
 
-function loop(first, last, legs) {
+async function loop(first, last, legs, { parallelism } = {}) {
   const dir = makeTemporaryDirectory("pr-review-cli-chunks-loop-");
-  const work = path.join(dir, "work");
   const results = path.join(dir, "results");
-  fs.mkdirSync(work);
   fs.mkdirSync(results);
   const output = path.join(dir, "output");
   fs.writeFileSync(output, "earlier=1\n");
-  const fake = fakeLegs(work, legs);
-  const saved = process.env.FAKE_OUTPUT;
-  process.env.FAKE_OUTPUT = output;
+  const summary = path.join(dir, "summary");
+  fs.writeFileSync(summary, "");
+  const fake = fakeLegs(legs);
+  let locks = 0;
+  let unlocks = 0;
   try {
-    const result = runChunks(
+    const result = await runChunks(
       {
         CHUNK_FIRST: String(first),
         CHUNK_LAST: String(last),
+        ...(parallelism ? { CHUNK_PARALLELISM: String(parallelism) } : {}),
         GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: summary,
         RESULTS_DIR: results,
         PROMPT_DIR: path.join(dir, "prompts"),
       },
-      { runChunk: fake.runChunk, now: () => 1_700_000_000_000 },
+      {
+        runChunk: fake.runChunk,
+        now: () => 1_700_000_000_000,
+        lock: () => {
+          locks++;
+          return () => unlocks++;
+        },
+      },
     );
-    return { ...result, ran: fake.ran, results, output };
+    return {
+      ...result,
+      ran: fake.ran,
+      peak: fake.peak,
+      envs: fake.envs,
+      results,
+      output,
+      summary,
+      locks,
+      unlocks,
+    };
   } catch (error) {
     error.output = output;
+    error.unlocks = unlocks;
     throw error;
-  } finally {
-    if (saved === undefined) delete process.env.FAKE_OUTPUT;
-    else process.env.FAKE_OUTPUT = saved;
   }
 }
 
-test("the chunk loop runs every later chunk in order and keeps each one's files apart", () => {
+test("the chunk loop runs every later chunk in order and keeps each one's files apart", async () => {
   for (const n of [4, 5, 12, 20]) {
-    const run = loop(2, n);
+    const run = await loop(2, n);
     assert.equal(run.ok, true, `${n} chunks`);
     assert.deepEqual(
       run.ran,
@@ -462,8 +490,8 @@ test("the chunk loop runs every later chunk in order and keeps each one's files 
   }
 });
 
-test("a failed chunk stops the loop, skips the rest and fails the step", () => {
-  const run = loop(2, 6, { 3: { failed: true, laneClass: "timeout" } });
+test("a failed chunk stops the loop, skips the rest and fails the step", async () => {
+  const run = await loop(2, 6, { 3: { failed: true, laneClass: "timeout" } });
   assert.equal(run.ok, false);
   assert.deepEqual(run.ran, [2, 3]);
   assert.equal(
@@ -478,8 +506,8 @@ test("a failed chunk stops the loop, skips the rest and fails the step", () => {
   );
 });
 
-test("a handoff stops the loop and hands its reason on", () => {
-  const run = loop(2, 6, {
+test("a handoff stops the loop and hands its reason on", async () => {
+  const run = await loop(2, 6, {
     3: { failed: true, laneClass: "credit-stop", handoff: "true" },
   });
   assert.deepEqual(run.ran, [2, 3]);
@@ -656,14 +684,23 @@ test("a 1-chunk review keeps today's step limits, and the loop's limit grows wit
       loopStep.with["leg-timeout-minutes"],
       first.with["leg-timeout-minutes"],
     );
-    // 3 minutes for the one install, then each later chunk's leg and a minute.
-    for (const [n, leg, expected] of [
-      ["2", "11", 15],
-      ["5", "11", 51],
-      ["20", "13", 269],
+    assert.match(
+      loopStep.with.parallelism,
+      /^\$\{\{ env\.CHUNK_PARALLELISM \}\}$/u,
+    );
+    // 3 minutes for the one install, then each round of parallel legs and
+    // a minute; with no parallelism, each later chunk's leg and a minute.
+    for (const [n, leg, parallelism, expected] of [
+      ["2", "11", "8", 15],
+      ["5", "11", "8", 15],
+      ["10", "11", "8", 27],
+      ["20", "13", "8", 45],
+      ["5", "11", "", 51],
+      ["20", "13", "", 269],
     ]) {
       const outputs = await runCompose(compose, Number(n), {
         LEG_MINUTES: leg,
+        CHUNK_PARALLELISM: parallelism,
       });
       assert.equal(outputs["loop-minutes"], String(expected), n);
       assert.equal(
@@ -683,7 +720,10 @@ test("each leg's job limit holds every step's limit at the chunk ceiling, inside
       ["code", 11],
       ["security", 13],
     ]) {
-      const atCeiling = 3 + (ceiling - 1) * (leg + 1);
+      const atCeiling =
+        3 +
+        Math.ceil((ceiling - 1) / Number(workflow.env.CHUNK_PARALLELISM)) *
+          (leg + 1);
       const total = job.steps.reduce(
         (sum, s) =>
           sum +
@@ -996,16 +1036,17 @@ test("the merge reads a comment's severity as publish-review does", () => {
   }
 });
 
-test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it finished", () => {
+test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it finished", async () => {
   let killed;
-  assert.throws(() => {
+  await assert.rejects(async () => {
     try {
-      loop(2, 6, { 4: { killed: true } });
+      await loop(2, 6, { 4: { killed: true } });
     } catch (error) {
       killed = error;
       throw error;
     }
   }, /step killed during chunk 4/u);
+  assert.equal(killed.unlocks, 1);
   const outputs = outputsOf(killed.output);
   assert.equal(outputs["chunk-outcomes"], "success,success");
   assert.equal(outputs["last-chunk"], "3");
@@ -1018,8 +1059,141 @@ test("a loop killed mid-chunk leaves the outputs and transcript of the chunks it
   );
 });
 
-test("a chunk that exits 0 with no structured result fails the loop before the next chunk", () => {
-  const run = loop(2, 6, { 3: { noStructured: true } });
+test("each leg's stdout and stderr reach the step's stdout whole, only after the leg ends", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-spawn-");
+  const stub = path.join(dir, "lane.cjs");
+  fs.writeFileSync(
+    stub,
+    [
+      'process.stdout.write("::stop-commands::t\\nmodel text ::error::x\\n");',
+      'process.stderr.write("to stderr\\n");',
+      'process.stdout.write("::t::\\nprompt=" + process.env.LANE_PROMPT_FILE + "\\n");',
+      "process.exitCode = 3;",
+    ].join("\n"),
+  );
+  const written = [];
+  const status = await spawnLeg(
+    stub,
+    "/p/prompt-2.md",
+    { ...process.env, LANE_RESULTS_DIR: dir },
+    (data) => written.push(String(data)),
+  );
+  assert.equal(status, 3);
+  assert.equal(written.length, 1);
+  const text = written[0];
+  assert.ok(
+    text.startsWith("::stop-commands::t\nmodel text ::error::x\n"),
+    text,
+  );
+  assert.ok(text.includes("to stderr\n"));
+  assert.ok(text.endsWith("::t::\nprompt=/p/prompt-2.md\n"), text);
+  assert.equal(fs.existsSync(path.join(dir, "console.txt")), false);
+});
+
+test("the loop runs CHUNK_PARALLELISM legs at once, each with its own files, and reports in chunk order", async () => {
+  // Later chunks finish first, so finishing order differs from chunk order.
+  const legs = Object.fromEntries(
+    Array.from({ length: 11 }, (_, i) => [i + 2, { delay: 40 - 3 * i }]),
+  );
+  const run = await loop(2, 12, legs, { parallelism: 4 });
+  assert.equal(run.ok, true);
+  assert.equal(run.peak, 4);
+  assert.equal(run.locks, 1);
+  assert.equal(run.unlocks, 1);
+  assert.deepEqual(
+    run.ran,
+    Array.from({ length: 11 }, (_, i) => i + 2),
+  );
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    Array(11).fill("success").join(","),
+  );
+  assert.equal(run.outputs["last-chunk"], "12");
+  // No two legs share a results directory or a file-command file, and every
+  // leg binds the step's own outputs read-only.
+  for (const name of [
+    "LANE_RESULTS_DIR",
+    "GITHUB_OUTPUT",
+    "GITHUB_STEP_SUMMARY",
+    "GITHUB_ENV",
+  ]) {
+    assert.equal(new Set(run.envs.map((e) => e[name])).size, 11, name);
+  }
+  for (const e of run.envs) {
+    assert.ok(e.LANE_READ_ONLY_PATHS.split("\n").includes(run.output));
+    assert.ok(e.GITHUB_OUTPUT !== run.output);
+  }
+  for (let k = 2; k <= 12; k++) {
+    const dir = path.join(run.results, `chunk-${k}`);
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(dir, "structured.json"), "utf8")),
+      { k },
+    );
+    assert.equal(fs.existsSync(path.join(dir, "file-commands")), false);
+  }
+  const messages = JSON.parse(
+    fs.readFileSync(run.outputs["transcript-file"], "utf8"),
+  );
+  assert.deepEqual(
+    messages.filter((m) => m.type === "result").map((m) => m.k),
+    run.ran,
+  );
+  // Each leg's summary reaches the step's summary; the step's outputs hold
+  // one set of keys after what came before.
+  const summary = fs.readFileSync(run.summary, "utf8");
+  for (let k = 2; k <= 12; k++)
+    assert.match(summary, new RegExp(`^chunk ${k}$`, "mu"));
+  const lines = fs.readFileSync(run.output, "utf8").split("\n").filter(Boolean);
+  assert.equal(lines[0], "earlier=1");
+  const keys = lines.slice(1).map((line) => line.split("=")[0]);
+  assert.deepEqual(keys, [...new Set(keys)]);
+});
+
+test("after a failure in parallel no new chunk starts, running ones finish, and the rest are skipped", async () => {
+  const run = await loop(
+    2,
+    10,
+    {
+      2: { failed: true, laneClass: "timeout", delay: 5 },
+      3: { delay: 30 },
+      4: { delay: 30 },
+    },
+    { parallelism: 3 },
+  );
+  assert.equal(run.ok, false);
+  assert.deepEqual(
+    run.ran.toSorted((a, b) => a - b),
+    [2, 3, 4],
+  );
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "failure,success,success,skipped,skipped,skipped,skipped,skipped,skipped",
+  );
+  assert.equal(run.outputs["lane-class"], "timeout");
+  assert.equal(run.outputs["last-chunk"], "2");
+});
+
+test("a handoff in parallel wins over a failure in another chunk", async () => {
+  const run = await loop(
+    2,
+    5,
+    {
+      2: { failed: true, laneClass: "timeout" },
+      3: { failed: true, laneClass: "credit-stop", handoff: "true", delay: 10 },
+    },
+    { parallelism: 2 },
+  );
+  assert.equal(run.outputs.handoff, "true");
+  assert.equal(run.outputs["handoff-reason"], "credit-stop");
+  assert.equal(run.outputs["last-chunk"], "3");
+  assert.equal(
+    run.outputs["chunk-outcomes"],
+    "failure,failure,skipped,skipped",
+  );
+});
+
+test("a chunk that exits 0 with no structured result fails the loop before the next chunk", async () => {
+  const run = await loop(2, 6, { 3: { noStructured: true } });
   assert.equal(run.ok, false);
   assert.deepEqual(run.ran, [2, 3]);
   assert.equal(

@@ -1,24 +1,41 @@
-// Run a chunked review's chunks first..last in order, each as one
-// run-claude-cli leg (`lane.cjs run`) on its own prompt, in one step.
+// Run a chunked review's chunks first..last, up to CHUNK_PARALLELISM at
+// once, each as one run-claude-cli leg (`lane.cjs run`) on its own prompt, in
+// one step.
 //
-// Every leg runs with the step's own environment, so lane.cjs binds this
-// step's file-command files and the CLI install under LANE_WORK_DIR
-// read-only for the leg, as it does for its own step. The work directory is
-// the same for every chunk (its `cli` tree is the one lane.cjs locks), so
-// each leg's files move to RESULTS_DIR/chunk-<k>/ before the next leg runs,
-// and the outputs lane.cjs appends to GITHUB_OUTPUT are read back and
-// removed, leaving only this script's outputs for the step.
+// Legs run side by side, so each gets what lane.cjs would otherwise share:
+// its own results directory (RESULTS_DIR/chunk-<k>/, LANE_RESULTS_DIR) for
+// its execution, log and structured files, and its own empty file-command
+// files, which lane.cjs snapshots, binds read-only and restores for that leg
+// alone. The step's real file-command files are bound read-only in every leg
+// too (LANE_READ_ONLY_PATHS) but left writable here, so this step writes its
+// outputs after each leg as before. Before the first leg starts this step
+// removes the write bits from the CLI install and the action checkouts, and
+// puts them back after the last leg ends, so a leg's own lock and restore
+// only ever see locked modes and no leg can unlock another's trees by ending
+// first.
 //
-// A chunk runs only after the chunk before it succeeded and handed nothing
-// on: the first failure or handoff stops the loop, and every later chunk is `skipped`. The step fails when a
-// chunk failed.
+// A leg's console output (its live log and workflow commands, which lane.cjs
+// wraps in its own ::stop-commands:: block) goes to a file and is replayed
+// whole when the leg ends, so no leg's text lands inside another's block.
+//
+// No chunk starts after one failed or handed off; legs already running
+// finish, and every chunk not started is `skipped`. The step fails when a
+// chunk failed. Outputs name the first chunk that handed off, else the first
+// that failed, else the last chunk.
 "use strict";
 
-const { spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const COUNT = /^[1-9][0-9]{0,5}$/u;
+const FILE_COMMANDS = [
+  "GITHUB_ENV",
+  "GITHUB_PATH",
+  "GITHUB_OUTPUT",
+  "GITHUB_STATE",
+  "GITHUB_STEP_SUMMARY",
+];
 
 // The `key=value` lines lane.cjs's writeOutputs appends.
 function parseOutputs(text) {
@@ -35,7 +52,7 @@ function move(from, to) {
   if (!from) return "";
   try {
     if (!fs.lstatSync(from).isFile()) return "";
-    fs.renameSync(from, to);
+    if (from !== to) fs.renameSync(from, to);
     return to;
   } catch {
     return "";
@@ -57,77 +74,6 @@ function transcript(files, target) {
   return target;
 }
 
-/**
- * Runs chunks env.CHUNK_FIRST..env.CHUNK_LAST. `runChunk(promptFile)` runs one
- * leg and returns its exit status; it appends its outputs to
- * env.GITHUB_OUTPUT as lane.cjs does. After every chunk the step's outputs
- * so far replace the last ones written, so a step its timeout kills still
- * names the chunks it finished and keeps their transcript. Returns the step's
- * outputs and whether the step succeeded.
- */
-function runChunks(env, { runChunk, now = () => Date.now() }) {
-  const first = Number(env.CHUNK_FIRST);
-  const last = Number(env.CHUNK_LAST);
-  if (!COUNT.test(env.CHUNK_FIRST ?? "") || !COUNT.test(env.CHUNK_LAST ?? "") || first > last) {
-    throw new Error("CHUNK_FIRST and CHUNK_LAST must be whole numbers, first <= last");
-  }
-  const outputFile = env.GITHUB_OUTPUT;
-  const base = fs.statSync(outputFile).size;
-  const results = env.RESULTS_DIR;
-  const outcomes = [];
-  const executions = [];
-  let stop = {};
-  let failed = false;
-  for (let k = first; k <= last; k++) {
-    if (failed || stop.handoff === "true") {
-      outcomes.push("skipped");
-      continue;
-    }
-    const dir = path.join(results, `chunk-${k}`);
-    fs.mkdirSync(dir);
-    const before = fs.statSync(outputFile).size;
-    const startedAt = String(Math.floor(now() / 1000));
-    const status = runChunk(path.join(env.PROMPT_DIR, `prompt-${k}.md`));
-    const appended = fs.readFileSync(outputFile).subarray(before).toString("utf8");
-    fs.truncateSync(outputFile, before);
-    const leg = parseOutputs(appended);
-    const execution = move(leg["execution-file"], path.join(dir, "execution.json"));
-    if (execution) executions.push(execution);
-    const log = move(leg["log-file"], path.join(dir, "log.jsonl"));
-    const structured = move(leg["structured-output-file"], path.join(dir, "structured.json"));
-    // A leg that exits 0 with no well-formed result fails here, so no later
-    // chunk runs for a review that is already incomplete.
-    failed = status !== 0 || !resultObject(structured);
-    outcomes.push(failed ? "failure" : "success");
-    stop = {
-      "lane-class": leg["lane-class"] || (failed ? "other" : ""),
-      handoff: leg.handoff ?? "",
-      "handoff-reason": leg["handoff-reason"] ?? "",
-      credential: leg.credential ?? "",
-      "execution-file": execution,
-      "execution-file-clean": execution ? (leg["execution-file-clean"] ?? "") : "",
-      "log-file": log,
-      "started-at": startedAt,
-      "last-chunk": String(k),
-    };
-    fs.truncateSync(outputFile, base);
-    writeOutputs(outputFile, outputsOf(stop, outcomes, results, executions));
-  }
-  const outputs = outputsOf(stop, outcomes, results, executions);
-  fs.truncateSync(outputFile, base);
-  writeOutputs(outputFile, outputs);
-  return { ok: !failed, outputs };
-}
-
-function outputsOf(stop, outcomes, results, executions) {
-  return {
-    ...stop,
-    "chunk-outcomes": outcomes.join(","),
-    "results-dir": results,
-    "transcript-file": transcript(executions, path.join(results, "transcript.json")),
-  };
-}
-
 // Whether `file` holds one JSON object, the structured result lane.cjs writes.
 function resultObject(file) {
   if (!file) return false;
@@ -147,17 +93,179 @@ function writeOutputs(file, outputs) {
   fs.appendFileSync(file, `${lines.join("\n")}\n`);
 }
 
+function readText(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Runs chunks env.CHUNK_FIRST..env.CHUNK_LAST, env.CHUNK_PARALLELISM at once
+ * (1 when unset). `runChunk(promptFile, legEnv)` runs one leg on `legEnv`
+ * (the step's environment with this leg's own file-command files and
+ * LANE_RESULTS_DIR) and resolves to its exit status; the leg appends its
+ * outputs to legEnv.GITHUB_OUTPUT as lane.cjs does. `lock()` runs before the
+ * first leg and returns the function that undoes it, which runs after the
+ * last. Resolves to the step's outputs and whether the step succeeded.
+ */
+async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => () => {} }) {
+  const first = Number(env.CHUNK_FIRST);
+  const last = Number(env.CHUNK_LAST);
+  if (!COUNT.test(env.CHUNK_FIRST ?? "") || !COUNT.test(env.CHUNK_LAST ?? "") || first > last) {
+    throw new Error("CHUNK_FIRST and CHUNK_LAST must be whole numbers, first <= last");
+  }
+  const parallelism = env.CHUNK_PARALLELISM ? Number(env.CHUNK_PARALLELISM) : 1;
+  if (!COUNT.test(String(parallelism))) {
+    throw new Error("CHUNK_PARALLELISM must be a whole number");
+  }
+  const outputFile = env.GITHUB_OUTPUT;
+  const base = fs.statSync(outputFile).size;
+  const summaryFile = env.GITHUB_STEP_SUMMARY;
+  const results = env.RESULTS_DIR;
+  const count = last - first + 1;
+  const legs = Array.from({ length: count }, () => null);
+  let stopped = false;
+  let next = 0;
+  // The step's outputs for `list`, one entry per chunk from first, null for
+  // a chunk that did not run.
+  const outputsOf = (list) => {
+    const ran = list.filter(Boolean);
+    const stopLeg =
+      ran.find((l) => l.stop.handoff === "true") ?? ran.find((l) => l.failed) ?? ran.at(-1);
+    return {
+      ...(stopLeg?.stop ?? {}),
+      "chunk-outcomes": list
+        .map((l) => (l === null ? "skipped" : l.failed ? "failure" : "success"))
+        .join(","),
+      "results-dir": results,
+      "transcript-file": transcript(
+        ran.map((l) => l.execution).filter(Boolean),
+        path.join(results, "transcript.json"),
+      ),
+    };
+  };
+  // After every leg the outputs of the chunks finished in a row from the
+  // first replace the last ones written, so a step its timeout kills still
+  // names the chunks it finished and keeps their transcript.
+  const progress = () => {
+    const done = legs.indexOf(null);
+    fs.truncateSync(outputFile, base);
+    writeOutputs(outputFile, outputsOf(done === -1 ? legs : legs.slice(0, done)));
+  };
+
+  const runOne = async (i) => {
+    const k = first + i;
+    const dir = path.join(results, `chunk-${k}`);
+    const files = path.join(dir, "file-commands");
+    fs.mkdirSync(files, { recursive: true });
+    const legEnv = { ...env, LANE_RESULTS_DIR: dir };
+    for (const name of FILE_COMMANDS) {
+      legEnv[name] = path.join(files, name.toLowerCase());
+      fs.writeFileSync(legEnv[name], "");
+    }
+    legEnv.LANE_READ_ONLY_PATHS = FILE_COMMANDS.map((name) => env[name] ?? "")
+      .filter((file) => file !== "" && fs.existsSync(file))
+      .join("\n");
+    const startedAt = String(Math.floor(now() / 1000));
+    const status = await runChunk(path.join(env.PROMPT_DIR, `prompt-${k}.md`), legEnv);
+    const leg = parseOutputs(readText(legEnv.GITHUB_OUTPUT));
+    const summary = readText(legEnv.GITHUB_STEP_SUMMARY);
+    fs.rmSync(files, { recursive: true, force: true });
+    const execution = move(leg["execution-file"], path.join(dir, "execution.json"));
+    const log = move(leg["log-file"], path.join(dir, "log.jsonl"));
+    const structured = move(leg["structured-output-file"], path.join(dir, "structured.json"));
+    // A leg that exits 0 with no well-formed result fails here, so no later
+    // chunk starts for a review that is already incomplete.
+    const failed = status !== 0 || !resultObject(structured);
+    if (failed || leg.handoff === "true") stopped = true;
+    legs[i] = {
+      k,
+      failed,
+      execution,
+      summary,
+      stop: {
+        "lane-class": leg["lane-class"] || (failed ? "other" : ""),
+        handoff: leg.handoff ?? "",
+        "handoff-reason": leg["handoff-reason"] ?? "",
+        credential: leg.credential ?? "",
+        "execution-file": execution,
+        "execution-file-clean": execution ? (leg["execution-file-clean"] ?? "") : "",
+        "log-file": log,
+        "started-at": startedAt,
+        "last-chunk": String(k),
+      },
+    };
+    progress();
+  };
+
+  const worker = async () => {
+    while (!stopped && next < count) await runOne(next++);
+  };
+
+  const unlock = lock();
+  try {
+    await Promise.all(Array.from({ length: Math.min(parallelism, count) }, worker));
+  } finally {
+    unlock();
+  }
+
+  const ran = legs.filter(Boolean);
+  const outputs = outputsOf(legs);
+  fs.truncateSync(outputFile, base);
+  writeOutputs(outputFile, outputs);
+  if (summaryFile) {
+    for (const l of ran) if (l.summary) fs.appendFileSync(summaryFile, l.summary);
+  }
+  return { ok: !ran.some((l) => l.failed), outputs };
+}
+
+// One leg as a child process: its stdout and stderr go to one file, which is
+// written to this step's stdout whole once the leg ends.
+function spawnLeg(lane, promptFile, legEnv, write = (data) => process.stdout.write(data)) {
+  const consoleFile = path.join(legEnv.LANE_RESULTS_DIR, "console.txt");
+  const out = fs.openSync(consoleFile, "w");
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [lane, "run"], {
+      env: { ...legEnv, LANE_PROMPT_FILE: promptFile },
+      stdio: ["ignore", out, out],
+    });
+    const done = (status) => {
+      fs.closeSync(out);
+      write(fs.readFileSync(consoleFile));
+      fs.rmSync(consoleFile, { force: true });
+      resolve(status ?? 1);
+    };
+    child.on("error", () => done(1));
+    child.on("close", (status) => done(status));
+  });
+}
+
 if (require.main === module) {
   const env = process.env;
   const lane = path.join(__dirname, "..", "run-claude-cli", "lane.cjs");
-  const { ok } = runChunks(env, {
-    runChunk: (promptFile) =>
-      spawnSync(process.execPath, [lane, "run"], {
-        env: { ...env, LANE_PROMPT_FILE: promptFile },
-        stdio: "inherit",
-      }).status ?? 1,
-  });
-  if (!ok) process.exitCode = 1;
+  const { lockTrees, readOnlyPaths, restoreModes } = require(lane);
+  const lock = () => {
+    const modes = [];
+    lockTrees(readOnlyPaths({ workDir: env.LANE_WORK_DIR }, env), modes);
+    const unlock = () => restoreModes(modes.splice(0));
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.once(signal, () => {
+        unlock();
+        process.exit(1);
+      });
+    }
+    return unlock;
+  };
+  runChunks(env, { runChunk: (promptFile, legEnv) => spawnLeg(lane, promptFile, legEnv), lock })
+    .then(({ ok }) => {
+      if (!ok) process.exitCode = 1;
+    })
+    .catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
 }
 
-module.exports = { runChunks };
+module.exports = { runChunks, spawnLeg };
