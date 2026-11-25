@@ -1,4 +1,4 @@
-name: Compose Review Criteria
+name: Build Review Criteria
 description: >-
   pr-review-cli's criteria step, with no model: when the checkout opts in to
   melodic-software/standards as its org layer, writes the review criteria in
@@ -18,7 +18,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Compose the review criteria
+    - name: Build the review criteria
       id: compose
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/compose.sh"
