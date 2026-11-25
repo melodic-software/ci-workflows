@@ -1022,7 +1022,7 @@ consumer to audit it.
 - `.github/actions/generate-review-chunks` — `pr-review-cli.yml`'s diff-split
   step, with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
-- `.github/actions/compose-review-criteria` — the criteria step of `pr-review-cli.yml` and `pr-review.yml`,
+- `.github/actions/build-review-criteria` — the criteria step of `pr-review-cli.yml` and `pr-review.yml`,
   with no model: for a head whose `docs/conventions/source-control.yaml`
   names `melodic-software/standards`, runs claude-code-plugins'
   `org-standards.sh review` over the standards checkout `download-standards`

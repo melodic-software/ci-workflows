@@ -2151,7 +2151,7 @@ test("every leg composes the review criteria from one standards commit and hands
     const criteria = step(leg, "criteria");
     assert.equal(
       criteria.uses,
-      "$/.github/actions/compose-review-criteria",
+      "$/.github/actions/build-review-criteria",
       leg.name,
     );
     assert.equal(criteria["continue-on-error"], true, leg.name);
@@ -2194,7 +2194,7 @@ test("every leg composes the review criteria from one standards commit and hands
   assert.match(source, /env\.CRITERIA_NOTE,\n\s*env\.ORG_NOTE,/u);
 });
 
-// compose-review-criteria's compose.sh, run in a fake head checkout with a
+// build-review-criteria's compose.sh, run in a fake head checkout with a
 // stub org-standards.sh in the claude-code-plugins clone: the stub records
 // how it was called and answers with `exit`.
 function composeCriteria({
@@ -2240,7 +2240,7 @@ function composeCriteria({
         __dirname,
         "..",
         "actions",
-        "compose-review-criteria",
+        "build-review-criteria",
         "compose.sh",
       ),
     ],

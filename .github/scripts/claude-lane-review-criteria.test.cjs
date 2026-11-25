@@ -1,7 +1,7 @@
 "use strict";
 
 // The hosted code-review lane hands the review the criteria in effect the way
-// pr-review-cli.yml does: compose-review-criteria runs claude-code-plugins'
+// pr-review-cli.yml does: build-review-criteria runs claude-code-plugins'
 // org-standards.sh over one standards checkout, and both review attempts'
 // prompts carry its REVIEW CRITERIA and ORG STANDARDS lines.
 // pr-review-cli.test.cjs exercises compose.sh itself.
@@ -40,7 +40,7 @@ test("the hosted lane clones claude-code-plugins' default-branch tip into the ru
   ]);
   assert.match(
     fs.readFileSync(
-      path.join(root, "actions", "compose-review-criteria", "compose.sh"),
+      path.join(root, "actions", "build-review-criteria", "compose.sh"),
       "utf8",
     ),
     /script="\$SOURCE\/plugins\/review\/scripts\/org-standards\.sh"/u,
@@ -53,7 +53,7 @@ test("the hosted lane composes the criteria from one standards checkout before t
   assert.equal(standards.uses, "$/.github/actions/download-standards");
   assert.equal(standards["continue-on-error"], true);
   const criteria = step("criteria");
-  assert.equal(criteria.uses, "$/.github/actions/compose-review-criteria");
+  assert.equal(criteria.uses, "$/.github/actions/build-review-criteria");
   assert.equal(criteria["continue-on-error"], true);
   assert.match(criteria.if, /steps\.plugin-source\.outcome == 'success'/u);
   assert.match(criteria.if, /steps\.standards\.outputs\.path != ''/u);

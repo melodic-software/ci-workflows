@@ -1597,12 +1597,12 @@ jobs:
       # composed by that repository's org-standards.sh from the clone above,
       # for a checkout whose source-control.yaml names melodic-software/standards.
       # Any failure writes no line and the review reads the head's REVIEW.md.
-      - name: Compose the review criteria
+      - name: Build the review criteria
         id: criteria
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/compose-review-criteria
+        uses: $/.github/actions/build-review-criteria
         env:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
@@ -2759,12 +2759,12 @@ jobs:
       # composed by that repository's org-standards.sh from the clone above,
       # for a checkout whose source-control.yaml names melodic-software/standards.
       # Any failure writes no line and the review reads the head's REVIEW.md.
-      - name: Compose the review criteria
+      - name: Build the review criteria
         id: criteria
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/compose-review-criteria
+        uses: $/.github/actions/build-review-criteria
         env:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
@@ -3891,12 +3891,12 @@ jobs:
       # composed by that repository's org-standards.sh from the clone above,
       # for a checkout whose source-control.yaml names melodic-software/standards.
       # Any failure writes no line and the review reads the head's REVIEW.md.
-      - name: Compose the review criteria
+      - name: Build the review criteria
         id: criteria
         if: steps.scope.outputs.review != 'false' && steps.plugin.outcome == 'success' && steps.standards.outputs.path != ''
         continue-on-error: true
         timeout-minutes: 1
-        uses: $/.github/actions/compose-review-criteria
+        uses: $/.github/actions/build-review-criteria
         env:
           SOURCE: ${{ runner.temp }}/claude-code-plugins
           STANDARDS_DIR: ${{ steps.standards.outputs.path }}
