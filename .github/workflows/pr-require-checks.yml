@@ -494,7 +494,7 @@ jobs:
       - name: Guard managed files
         uses: $/.github/actions/check-managed-files
         with:
-          standards-ref: c4d865bb123f476cf1cb36d8f8a1ffb588204f00
+          standards-ref: 9436624acdf99957e72b405214746eb32b781b1c
 
   shellcheck:
     name: Shellcheck
