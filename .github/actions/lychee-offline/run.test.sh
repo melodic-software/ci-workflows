@@ -42,25 +42,37 @@ run() {
     EXCLUDE="${3:-}" GLOBS='**/*.md' bash "$1" 2>&1)" || rc=$?
 }
 
-config_argument() {
-  grep -A1 -x -- '--config' "$capture" | tail -n 1
+# Every --config value, in order, space-separated.
+config_arguments() {
+  grep -A1 -x -- '--config' "$capture" | grep -v -x -e '--config' -e '--' | paste -sd ' ' -
 }
 
-# The caller's own lychee.toml wins when present.
-printf 'include_fragments = "full"\n' >"$caller/lychee.toml"
+# Default: a caller with no lychee.toml runs standards' canonical copy alone.
 run "$action_directory/run.sh" lychee.toml
-[[ "$rc" -eq 0 ]] || fail "caller config: exit $rc ($out)"
-used="$(config_argument)"
-[[ "$used" == lychee.toml ]] || fail "caller config: lychee got --config $used"
+[[ "$rc" -eq 0 ]] || fail "default: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == "$standards_copy" ]] || fail "default: lychee got --config $used"
+[[ "$out" == *"config $standards_copy"* ]] || fail "default: the log does not name the config used"
 
-# Without one, the default path falls back to standards' canonical copy.
-rm -- "$caller/lychee.toml"
+# Extension or partial override: the caller's lychee.toml is layered after
+# standards', so lychee merges it over standards instead of replacing it.
+printf 'hidden = false\n' >"$caller/lychee.toml"
 rm -f -- "$capture"
 run "$action_directory/run.sh" lychee.toml
-[[ "$rc" -eq 0 ]] || fail "standards config: exit $rc ($out)"
-used="$(config_argument)"
-[[ "$used" == "$standards_copy" ]] || fail "standards config: lychee got --config $used"
-[[ "$out" == *"config $standards_copy"* ]] || fail "standards config: the log does not name the config used"
+[[ "$rc" -eq 0 ]] || fail "layered: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == "$standards_copy lychee.toml" ]] || fail "layered: lychee got --config $used"
+rm -- "$caller/lychee.toml"
+
+# Complete override: a named non-default path runs alone, without standards.
+mkdir -p -- "$caller/docs"
+printf 'include_fragments = "none"\n' >"$caller/docs/lychee.toml"
+rm -f -- "$capture"
+run "$action_directory/run.sh" docs/lychee.toml
+[[ "$rc" -eq 0 ]] || fail "complete override: exit $rc ($out)"
+used="$(config_arguments)"
+[[ "$used" == docs/lychee.toml ]] || fail "complete override: lychee got --config $used"
+rm -r -- "$caller/docs"
 
 # A non-default path that does not exist fails without running lychee.
 rm -f -- "$capture"

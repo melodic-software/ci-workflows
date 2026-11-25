@@ -7,18 +7,36 @@ CONFIG="${CONFIG:?}"
 EXCLUDE="${EXCLUDE:-}"
 GLOBS="${GLOBS:?}"
 
-# A caller with no lychee.toml of its own gets standards' canonical ruleset,
-# so a repository without a synced copy runs the same rules with no copy to
-# drift. Only the default path falls back; a caller that names another path
-# and lacks it is misconfigured.
-# shellcheck source=../download-standards/lib.sh
-source "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/lib.sh"
-CONFIG="$(standards_config "$CONFIG" lychee.toml lychee.toml)"
-echo "lychee-offline: config $CONFIG"
+# On the default path, standards' canonical lychee.toml is always the first
+# --config, and the caller's own lychee.toml, when present, the second: lychee
+# 0.24.0 and later merge repeated --config files, later ones winning, so the
+# caller's file extends or partly overrides standards without copying it. A
+# caller that names another path runs that file alone, a complete override,
+# and lacking it is misconfigured.
+if [[ $CONFIG == lychee.toml ]]; then
+  checkout="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/../download-standards/checkout.sh")" || exit 2
+  if [[ ! -f $checkout/lychee.toml ]]; then
+    echo "::error::melodic-software/standards at ${checkout##*/} has no lychee.toml" >&2
+    exit 2
+  fi
+  configs=("$checkout/lychee.toml")
+  if [[ -e $CONFIG || -L $CONFIG ]]; then
+    configs+=("$CONFIG")
+  fi
+elif [[ -e $CONFIG || -L $CONFIG ]]; then
+  configs=("$CONFIG")
+else
+  echo "::error::config file not found: $CONFIG" >&2
+  exit 2
+fi
+echo "lychee-offline: config ${configs[*]}"
 
 # Anchor checks come from the ruleset's include_fragments (lychee's CLI
 # default is off); the config is intentionally not overridden here.
-args=(--offline --no-progress --config "$CONFIG")
+args=(--offline --no-progress)
+for c in "${configs[@]}"; do
+  args+=(--config "$c")
+done
 # $EXCLUDE entries are REGEXES; without set -f bash would pathname-expand
 # an entry containing a metacharacter before lychee sees it.
 set -f

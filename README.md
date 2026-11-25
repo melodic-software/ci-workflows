@@ -680,9 +680,11 @@ consumer to audit it.
   the reference wiring.
 - `.github/actions/lychee-offline` — lychee `--offline` link/anchor
   reference-integrity over the repo's docs (deterministic; no network for the
-  check itself). A caller with no root `lychee.toml` gets standards' canonical
-  one at `standards-ref` (see `download-standards`), so a repository outside
-  the standards sync needs no copy of its own.
+  check itself). Standards' canonical `lychee.toml` at `standards-ref` (see
+  `download-standards`) is always read first, and a caller's own root
+  `lychee.toml` is merged over it, so the caller's file holds only its
+  additions and changes. A non-default `config` path is read alone, a complete
+  override. The contract is standards' `components/lychee/README.md`.
 - `.github/actions/check-markdown-references` — resolves `file.md` "Anchor" prose
   citations against each cited file's headings and bold lead-ins (dependency-free
   awk); pairs with `lychee-offline`, which covers link/fragment targets.
@@ -1358,8 +1360,8 @@ GitHub continues the normal weekly patching of each hosted image generation.
   workflow only guarantees a floor and does not police tier assignment.
 - `.github/workflows/maintenance-check-links-online.yml` — the weekly online
   link check: lychee with the network on over the caller's Markdown, reading
-  its `lychee.toml` (a caller with none at the default path gets standards'
-  canonical one, as in the offline lane) and `.lycheeignore`. The report goes to the job summary and a broken link fails
+  standards' canonical `lychee.toml` with the caller's own merged over it (as
+  in the offline lane) and `.lycheeignore`. The report goes to the job summary and a broken link fails
   the job red. The 429 and 5xx responses the config accepts are listed in the
   summary without failing the job, and so are timeouts when the config sets
   `accept_timeouts` (otherwise a timeout fails it). It opens no issue and posts
