@@ -15,6 +15,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { createRetry, ReadError } = require("./retry.cjs");
+const { FILE_LIST_CAP, pullFiles: listPullFiles } = require("./pull-files.cjs");
 const verifySyncCommits = require("./sync-commits.cjs");
 
 const { dependabotMode } = verifySyncCommits;
@@ -23,8 +24,6 @@ const QUEUE_REF =
   /^(?:refs\/heads\/)?gh-readonly-queue\/.+\/pr-([0-9]+)-[0-9a-f]{40}$/u;
 // A stack deeper than this is treated as a walk that never reaches the base.
 const MAX_GROUP_PULLS = 50;
-// pulls/{n}/files lists at most 3000 files, so a list that long may be cut.
-const FILE_LIST_CAP = 3000;
 
 // The rules of the action's "Select the guard mode" step, applied to a pull
 // request read with pulls.get. A parity test holds the two copies together.
@@ -96,30 +95,14 @@ async function groupPulls(args, number, target) {
   }
 }
 
-// A retry restarts the listing from page 1, so no page is kept from a failed
-// pass.
-async function pullFiles({ github, owner, repo, withRetry }, number) {
-  const files = await withRetry(
-    () =>
-      github.paginate(github.rest.pulls.listFiles, {
-        owner,
-        repo,
-        pull_number: number,
-        per_page: 100,
-      }),
-    `could not list the files of pull request #${number}`,
-  );
-  if (files.length >= FILE_LIST_CAP) {
+async function pullFiles(args, number) {
+  const { count, paths } = await listPullFiles(args, number);
+  if (count >= FILE_LIST_CAP) {
     throw new GroupError(
-      `pull request #${number} lists ${files.length} files, the API cap, so the list may be incomplete`,
+      `pull request #${number} lists ${count} files, the API cap, so the list may be incomplete`,
     );
   }
-  // Both paths of a rename, as run.sh's --no-renames diff lists them.
-  return files.flatMap((file) =>
-    file.previous_filename
-      ? [file.filename, file.previous_filename]
-      : [file.filename],
-  );
+  return paths;
 }
 
 function groupDiff({ workspace, baseSha, headSha }) {

@@ -29,8 +29,9 @@ inputs:
     default: ${{ github.event.pull_request.head.sha || github.sha }}
   github-token:
     description: >-
-      Token that lists the PR's commits in sync and Dependabot modes, and reads
-      each queued pull request in a merge_group run. The job needs
+      Token that lists the PR's commits in sync and Dependabot modes, the PR's
+      files in hand-edit mode, and reads each queued pull request in a
+      merge_group run. The job needs
       `pull-requests: read`. When it is the job token, each of those calls
       leaves a `github-token` reading in $RUNNER_TEMP/api-budget for the
       job's own report-api-budget step at its end.
@@ -121,13 +122,43 @@ runs:
             headSha: process.env.HEAD_SHA,
           });
 
+    # A pull request run reads its changed paths from the pulls API, so the
+    # hand-edit check clones nothing: the full-history clone was most of the
+    # job's time on a large repository, and the callers run on every pull
+    # request. Only for the diff the event names; a caller passing its own
+    # repository, base-ref or head-ref is diffed in a clone, as is a list at
+    # the API cap or one the API will not return (paths-file stays empty).
+    - name: List the pull request's changed files
+      id: files
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit' && github.event_name == 'pull_request' && inputs.repository == github.repository && inputs.base-ref == github.event.pull_request.base.sha && inputs.head-ref == github.event.pull_request.head.sha
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        BUDGET_TOKEN: ${{ inputs.github-token == github.token && 'github-token' || '' }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          require(`${process.env.ACTION_PATH}/../report-api-budget/api-budget.cjs`).watch(github, process.env.BUDGET_TOKEN);
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { writePullPaths } = require(`${process.env.ACTION_PATH}/pull-files.cjs`);
+          const file = await writePullPaths({
+            github,
+            core,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pullNumber: context.payload.pull_request.number,
+            dir: fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "managed-files-guard-")),
+          });
+          core.setOutput("paths-file", file);
+
     # Before the merge-group step, which diffs in the workspace, and before
     # the standards checkout, since checking out the workspace root deletes
     # or cleans everything under it. A caller's own checkout of the same
     # repository is reused, and clean: false keeps its untracked files. A
     # merge group's skip is known only after this step, so it does not gate it.
     - name: Check out the repository under check
-      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'
+      if: (steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip' && steps.files.outputs.paths-file == ''
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: ${{ inputs.repository }}
@@ -236,6 +267,7 @@ runs:
         BASE_REF: ${{ inputs.base-ref }}
         HEAD_REF: ${{ inputs.head-ref }}
         STANDARDS_ROOT: ${{ github.workspace }}/.managed-files-guard-standards
+        CHANGED_PATHS_FILE: ${{ steps.files.outputs.paths-file }}
       run: bash "$GITHUB_ACTION_PATH/run.sh"
 
     - name: Verify sync PR content against standards
