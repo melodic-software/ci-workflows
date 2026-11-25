@@ -61,8 +61,7 @@ test("the hosted lane composes the criteria from one standards checkout before t
     SOURCE: `\${{ runner.temp }}/claude-code-plugins`,
     STANDARDS_DIR: `\${{ steps.standards.outputs.path }}`,
     STANDARDS_SHA: `\${{ steps.standards.outputs.sha }}`,
-    CRITERIA_FILE: ".claude-lane/review-criteria.md",
-    ORG_COPY: ".claude-lane/org",
+    LANE_DIR: ".claude-lane",
   });
   assert.ok(
     ids.indexOf("plugin-source") < ids.indexOf("criteria") &&
