@@ -94,18 +94,25 @@ The action is a trust boundary only when the PR cannot change it:
   from a workflow file that CODEOWNERS protects. With `uses: ./...`, as in
   ci-workflows' own dogfood job, the PR edits the code that grades it.
 - Grant the job `pull-requests: read` (sync and Dependabot modes list the PR's
-  commits; a merge group reads each queued pull request and its files) and
+  commits; a hand-edit check lists the PR's files; a merge group reads each
+  queued pull request and its files) and
   `contents: read`.
 - To guard a merge queue, run the job on `merge_group` as well as
   `pull_request`.
-- No checkout step is needed: the action checks out `repository` at
-  `head-ref` with `fetch-depth: 0` and `persist-credentials: false`, so the
-  base and head commits are both present (in a merge group,
-  `merge_group.base_sha` and `head_sha`), and it skips that checkout when
-  the guard skips. A caller that still runs its own `actions/checkout` keeps
-  working, at any fetch depth: the action fetches the full history into the
-  same checkout and leaves untracked files in place. A caller that uses the
-  action by local path (`uses: ./...`) needs its own checkout to load it.
+- No checkout step is needed. In a `pull_request` run that keeps the default
+  `repository`, `base-ref` and `head-ref`, the hand-edit check reads the pull
+  request's changed files from `pulls.listFiles` (one call per 100 files) and
+  clones nothing, so a pull request that touches no managed file costs a
+  standards checkout and the manifest lookup. Every other run, and a pull
+  request whose list reaches the 3000-file API cap or cannot be read, checks
+  out `repository` at `head-ref` with `fetch-depth: 0` and
+  `persist-credentials: false`, so the base and head commits are both present
+  (in a merge group, `merge_group.base_sha` and `head_sha`); the guard skips
+  that checkout when it skips. A caller that still runs its own
+  `actions/checkout` keeps working, at any fetch depth: the action fetches the
+  full history into the same checkout and leaves untracked files in place. A
+  caller that uses the action by local path (`uses: ./...`) needs its own
+  checkout to load it.
 
 ```yaml
 jobs:

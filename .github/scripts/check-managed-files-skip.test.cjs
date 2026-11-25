@@ -191,6 +191,10 @@ test("verification steps run only in sync mode and no step skips it", () => {
     "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit'",
   );
   assert.equal(
+    gate("List the pull request's changed files"),
+    "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) == 'hand-edit' && github.event_name == 'pull_request' && inputs.repository == github.repository && inputs.base-ref == github.event.pull_request.base.sha && inputs.head-ref == github.event.pull_request.head.sha",
+  );
+  assert.equal(
     gate("Map the merge group to its pull requests"),
     "steps.mode.outputs.mode == 'merge-group'",
   );
@@ -232,7 +236,7 @@ test("the action checks out the repository under check, in full, before the merg
     [
       [
         "Check out the repository under check",
-        "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip'",
+        "(steps.dependabot.outputs.mode || steps.mode.outputs.mode) != 'skip' && steps.files.outputs.paths-file == ''",
         {
           repository: `\${{ inputs.repository }}`,
           ref: `\${{ inputs.head-ref }}`,
@@ -252,5 +256,22 @@ test("the action checks out the repository under check, in full, before the merg
         },
       ],
     ],
+  );
+});
+
+// A pull request run hands run.sh the API file list and clones nothing; with
+// no list (another event, caller-set refs, the API cap, a failed read) the
+// consumer checkout runs and run.sh diffs it.
+test("the hand-edit check reads the API file list when there is one and the clone otherwise", () => {
+  const { steps } = parseWorkflow(action).runs;
+  const at = (name) => steps.findIndex((s) => s.name === name);
+  const list = at("List the pull request's changed files");
+  assert.ok(list >= 0, "file-list step not found");
+  assert.equal(steps[list].id, "files");
+  assert.ok(list < at("Check out the repository under check"));
+  const reject = steps[at("Reject hand-edits of managed files")];
+  assert.equal(
+    reject.env.CHANGED_PATHS_FILE,
+    `\${{ steps.files.outputs.paths-file }}`,
   );
 });
