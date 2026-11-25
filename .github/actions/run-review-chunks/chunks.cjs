@@ -204,11 +204,22 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
     while (!stopped && next < count) await runOne(next++);
   };
 
-  const unlock = lock();
+  // The step's other file-command files, put back exactly as they were
+  // once the legs end, as lane.cjs does for its own step; this step
+  // rewrites GITHUB_OUTPUT and appends to GITHUB_STEP_SUMMARY itself below.
+  const snapshots = FILE_COMMANDS.filter((name) => name !== "GITHUB_OUTPUT")
+    .map((name) => (env[name] ?? "").trim())
+    .filter((file) => file !== "" && fs.existsSync(file))
+    .map((file) => ({ file, content: fs.readFileSync(file) }));
+  let unlock = () => {};
   try {
+    unlock = lock();
     await Promise.all(Array.from({ length: Math.min(parallelism, count) }, worker));
   } finally {
     unlock();
+    for (const { file, content } of snapshots) {
+      if (!fs.existsSync(file) || !fs.readFileSync(file).equals(content)) fs.writeFileSync(file, content);
+    }
   }
 
   const ran = legs.filter(Boolean);
@@ -231,7 +242,10 @@ function spawnLeg(lane, promptFile, legEnv, write = (data) => process.stdout.wri
       env: { ...legEnv, LANE_PROMPT_FILE: promptFile },
       stdio: ["ignore", out, out],
     });
+    let ended = false;
     const done = (status) => {
+      if (ended) return;
+      ended = true;
       fs.closeSync(out);
       write(fs.readFileSync(consoleFile));
       fs.rmSync(consoleFile, { force: true });
@@ -248,8 +262,13 @@ if (require.main === module) {
   const { lockTrees, readOnlyPaths, restoreModes } = require(lane);
   const lock = () => {
     const modes = [];
-    lockTrees(readOnlyPaths({ workDir: env.LANE_WORK_DIR }, env), modes);
     const unlock = () => restoreModes(modes.splice(0));
+    try {
+      lockTrees(readOnlyPaths({ workDir: env.LANE_WORK_DIR }, env), modes);
+    } catch (error) {
+      unlock();
+      throw error;
+    }
     for (const signal of ["SIGINT", "SIGTERM"]) {
       process.once(signal, () => {
         unlock();

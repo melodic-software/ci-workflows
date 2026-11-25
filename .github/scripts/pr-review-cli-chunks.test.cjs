@@ -1149,6 +1149,57 @@ test("the loop runs CHUNK_PARALLELISM legs at once, each with its own files, and
   assert.deepEqual(keys, [...new Set(keys)]);
 });
 
+test("the step's other file-command files are put back as they were once the legs end", async () => {
+  const dir = makeTemporaryDirectory("pr-review-cli-chunks-restore-");
+  const real = Object.fromEntries(
+    [
+      "GITHUB_ENV",
+      "GITHUB_PATH",
+      "GITHUB_STATE",
+      "GITHUB_STEP_SUMMARY",
+      "GITHUB_OUTPUT",
+    ].map((name) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, `${name}=before\n`);
+      return [name, file];
+    }),
+  );
+  fs.mkdirSync(path.join(dir, "results"));
+  const fake = fakeLegs();
+  const run = await runChunks(
+    {
+      CHUNK_FIRST: "2",
+      CHUNK_LAST: "3",
+      CHUNK_PARALLELISM: "2",
+      ...real,
+      RESULTS_DIR: path.join(dir, "results"),
+      PROMPT_DIR: dir,
+    },
+    {
+      runChunk: async (promptFile, legEnv) => {
+        // A leg that reached the step's own files despite the binds.
+        fs.appendFileSync(real.GITHUB_ENV, "NODE_OPTIONS=--require=/x\n");
+        fs.appendFileSync(real.GITHUB_PATH, "/evil\n");
+        return fake.runChunk(promptFile, legEnv);
+      },
+    },
+  );
+  assert.equal(run.ok, true);
+  assert.equal(fs.readFileSync(real.GITHUB_ENV, "utf8"), "GITHUB_ENV=before\n");
+  assert.equal(
+    fs.readFileSync(real.GITHUB_PATH, "utf8"),
+    "GITHUB_PATH=before\n",
+  );
+  assert.equal(
+    fs.readFileSync(real.GITHUB_STATE, "utf8"),
+    "GITHUB_STATE=before\n",
+  );
+  assert.match(
+    fs.readFileSync(real.GITHUB_STEP_SUMMARY, "utf8"),
+    /^GITHUB_STEP_SUMMARY=before\nchunk 2\nchunk 3\n$/u,
+  );
+});
+
 test("after a failure in parallel no new chunk starts, running ones finish, and the rest are skipped", async () => {
   const run = await loop(
     2,
