@@ -636,7 +636,7 @@ async function writeMarker(
 const WHY = {
   auth: "the Claude credential was rejected; the owner replaces the secret",
   "credential-stop":
-    "the leg's log or structured output looked like it carried a credential, so it was withheld",
+    "run-claude-cli's credential scan withheld the leg's log or structured output; inspect the run before re-running",
   "rate-limit": "usage limit or credit stop reached; re-run after it resets",
   overloaded: "the Claude service was overloaded (5xx); re-run later",
   "max-turns": "the review used every turn before finishing",

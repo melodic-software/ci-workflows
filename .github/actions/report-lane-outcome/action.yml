@@ -467,7 +467,11 @@ runs:
                     `(${lane} exited with: ${outcome}, max-turns); ` +
                     "the work is too big for one run, split it. " +
                     `${before}Last SDK result: ${reviewDetail}`
-                : `${lane} exited with: ${outcome}, ${failureClass} ` +
+                : failureClass === "credential-stop"
+                  ? `${lane} output withheld: the credential scan matched its log or structured output; ` +
+                      `inspect the run (${lane} exited with: ${outcome}, credential-stop). ` +
+                      `${before}Last SDK result: ${reviewDetail}`
+                  : `${lane} exited with: ${outcome}, ${failureClass} ` +
                     `(infrastructure error, not a ${signal} signal — e.g. usage limit, ` +
                     "OIDC failure, SDK crash, or is_error result). " +
                     `${before}Last SDK result: ${reviewDetail}`,

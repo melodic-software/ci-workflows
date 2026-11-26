@@ -525,6 +525,25 @@ test("a run that used every turn reads as a sizing stop, not an infrastructure e
   assert.doesNotMatch(errors[0], /infrastructure error/u);
 });
 
+test("a credential stop reads as withheld output to inspect, not an infrastructure error", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude security review",
+    knownFailureClass: "credential-stop",
+  });
+  assert.equal(outputs.failure_class, "credential-stop");
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /^Claude security review output withheld: the credential scan matched its log or structured output; inspect the run \(Claude security review exited with: failure, credential-stop\)\. /u,
+  );
+  assert.doesNotMatch(errors[0], /infrastructure error/u);
+});
+
 test("an infrastructure error no longer lists max-turns among its examples", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 3 },

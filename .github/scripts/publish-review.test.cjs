@@ -396,6 +396,11 @@ test("comments mode fails with a named class when no review happened", async () 
       log.failed[0],
       new RegExp(`failure-class=${failureClass}:`, "u"),
     );
+    assert.equal(
+      /an unclassified failure/u.test(log.failed[0]),
+      failureClass === "other",
+      failureClass,
+    );
     assert.deepEqual(
       log.notices.filter((n) => n.startsWith("claude-lane-review-complete")),
       [],
