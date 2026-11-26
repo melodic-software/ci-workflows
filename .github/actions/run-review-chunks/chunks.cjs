@@ -184,8 +184,7 @@ async function runChunks(env, { runChunk, now = () => Date.now(), lock = () => (
     legs[i] = {
       k,
       failed,
-      // Empty on a failed leg run-claude-cli did not classify, such as its
-      // credential scan stop on a leg that otherwise ended clean.
+      // Empty on a failed leg run-claude-cli did not classify.
       laneClass: status !== 0 ? (leg["lane-class"] ?? "") : failed ? "other" : "",
       execution,
       summary,

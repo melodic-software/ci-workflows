@@ -166,10 +166,10 @@ outputs:
       A JSON array of one lane class per chunk, in chunk-outcomes' order: the
       leg's own run-claude-cli lane-class, `other` for a leg that exited 0
       with no well-formed result, and empty for a chunk that succeeded, was
-      skipped, or failed with no class run-claude-cli named, such as its
-      credential scan stop on a leg that otherwise ended clean. A leg that
-      failed with a class keeps it even when the scan also withheld its
-      files. Empty when the loop did not finish.
+      skipped, or failed before run-claude-cli named a class. A credential scan stop on a leg that otherwise ended
+      clean is `credential-stop`; a leg that failed with a class keeps it
+      even when the scan also withheld its files. Empty when the loop did
+      not finish.
     value: ${{ steps.loop.outputs.chunk-classes }}
   started-at:
     description: Unix epoch seconds the last chunk that ran started.

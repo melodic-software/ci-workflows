@@ -555,6 +555,17 @@ test("chunk-classes names each chunk's own class, leaving a failed leg with no c
     "",
   ]);
   assert.equal(stopped.outputs["chunk-outcomes"], "failure,skipped,skipped");
+  const scanned = await loop(
+    2,
+    4,
+    { 3: { failed: true, laneClass: "credential-stop" } },
+    { parallelism: 3 },
+  );
+  assert.deepEqual(JSON.parse(scanned.outputs["chunk-classes"]), [
+    "",
+    "credential-stop",
+    "",
+  ]);
 });
 
 test("a handoff stops the loop and hands its reason on", async () => {

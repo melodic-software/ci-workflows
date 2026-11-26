@@ -855,7 +855,8 @@ consumer to audit it.
   on a successful leg with `json-schema-file`, a `structured-output-file`
   holding the result's `structured_output`; the action writes each of the
   last two only after a credential scan, and a hit on the structured output
-  fails the step. Read the structured output from that file, never from
+  fails the step, with `lane-class` `credential-stop` when the leg otherwise
+  ended clean. Read the structured output from that file, never from
   `execution-file`. The action scans `execution-file` the same way but keeps
   it, since callers parse it, and reports the scan as
   `execution-file-clean`: `true` only when the file read and held no

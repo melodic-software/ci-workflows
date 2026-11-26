@@ -260,7 +260,10 @@ outputs:
       step's error line, the job summary's Error cell and the log record add
       `api_error_status`, and the API error body's `error_type`,
       `error_code` (error.details.error_code) and `request_id` when the
-      CLI's own text carries them. Otherwise it is
+      CLI's own text carries them. `credential-stop` means a leg that
+      otherwise ended clean had its log or structured output withheld
+      because the credential scan matched; a leg that already failed keeps
+      its class. Otherwise it is
       report-lane-outcome's class: a failed install or integrity check
       reports `install-failed`, and any other failure before the leg ran, or a leg whose stdout passes
       256 MiB, reports `other`. Report this class; do not reclassify execution-file, which
