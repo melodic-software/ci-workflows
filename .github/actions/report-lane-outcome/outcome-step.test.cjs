@@ -525,6 +525,25 @@ test("a run that used every turn reads as a sizing stop, not an infrastructure e
   assert.doesNotMatch(errors[0], /infrastructure error/u);
 });
 
+test("a credential stop reads as withheld output to inspect, not an infrastructure error", async () => {
+  const file = writeExecutionFile([
+    { type: "result", subtype: "success", is_error: false, num_turns: 3 },
+  ]);
+  const { outputs, errors } = await runOutcome({
+    outcome: "failure",
+    executionFile: file,
+    lane: "Claude security review",
+    knownFailureClass: "credential-stop",
+  });
+  assert.equal(outputs.failure_class, "credential-stop");
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /^Claude security review output withheld: the credential scan matched its log or structured output; inspect the run \(Claude security review exited with: failure, credential-stop\)\. /u,
+  );
+  assert.doesNotMatch(errors[0], /infrastructure error/u);
+});
+
 test("an infrastructure error no longer lists max-turns among its examples", async () => {
   const file = writeExecutionFile([
     { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 3 },
@@ -984,6 +1003,7 @@ test("the step outcome and class map to the record's outcome", async () => {
     [{ outcome: "success", executionFile: succeeded, requireCompletion: "true" }, ["failure", "incomplete"]],
     [{ outcome: "cancelled", executionFile: "" }, ["cancellation", "no-execution"]],
     [{ outcome: "skipped", executionFile: "", knownFailureClass: "sandbox-unavailable" }, ["skip", "sandbox-unavailable"]],
+    [{ outcome: "failure", executionFile: succeeded, knownFailureClass: "credential-stop" }, ["failure", "credential-stop"]],
     [{ outcome: "failure", executionFile: "", startedAt: startedLongAgo, timeoutMinutes: "11" }, ["timeout", "timeout"]],
     [{ outcome: "failure", executionFile: "" }, ["failure", "no-execution"]],
   ]) {
@@ -1532,7 +1552,7 @@ test("the schema accepts a record with every run-context field and rejects value
 
 test("every class the classifier, run-claude-cli and the review lanes produce is in the closed enum", () => {
   for (const known of [
-    "auth", "credit-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
+    "auth", "credit-stop", "credential-stop", "rate-limit", "overloaded", "max-turns", "timeout", "install-failed",
     "no-execution", "sandbox-unavailable", "skipped-validation", "incomplete", "review-unposted", "shell-failed", "no-credential", "no-outcome", "other",
   ]) {
     assert.ok(schema.properties.class.enum.includes(known), known);

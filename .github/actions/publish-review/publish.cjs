@@ -22,6 +22,7 @@ const UNCOVERED_BLOCK_CLOSE = /^\s*<\/details>\s*$/u;
 const UNCOVERED_RULE_LINE = /^\s*(?:[-*+]\s+)?Uncovered rule:\s*(.*\S)\s*$/u;
 const CLASSES = new Set([
   "auth",
+  "credential-stop",
   "rate-limit",
   "overloaded",
   "max-turns",
@@ -634,6 +635,8 @@ async function writeMarker(
 
 const WHY = {
   auth: "the Claude credential was rejected; the owner replaces the secret",
+  "credential-stop":
+    "run-claude-cli's credential scan withheld the leg's log or structured output; inspect the run before re-running",
   "rate-limit": "usage limit or credit stop reached; re-run after it resets",
   overloaded: "the Claude service was overloaded (5xx); re-run later",
   "max-turns": "the review used every turn before finishing",

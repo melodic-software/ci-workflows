@@ -597,6 +597,7 @@ const RECORD_MAX_LENGTH = 1024;
 const FAILURE_CLASSES = [
   "auth",
   "credit-stop",
+  "credential-stop",
   "rate-limit",
   "overloaded",
   "max-turns",

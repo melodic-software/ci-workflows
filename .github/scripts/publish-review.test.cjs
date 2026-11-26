@@ -383,6 +383,7 @@ test("comments mode fails with a named class when no review happened", async () 
     [{ KEY_FAILED: "" }, "no-outcome"],
     [{ KEY_FAILED: "", KEY_CLASS: "install-failed" }, "install-failed"],
     [{ KEY_FAILED: "true", KEY_CLASS: "max-turns" }, "max-turns"],
+    [{ KEY_FAILED: "true", KEY_CLASS: "credential-stop" }, "credential-stop"],
     [{ KEY_FAILED: "true", KEY_CLASS: "made-up" }, "other"],
     [{ KEY_VERDICT: "the leg wrote no structured output" }, "incomplete"],
     [{ KEY_REVIEW: "{}" }, "incomplete"],
@@ -394,6 +395,11 @@ test("comments mode fails with a named class when no review happened", async () 
     assert.match(
       log.failed[0],
       new RegExp(`failure-class=${failureClass}:`, "u"),
+    );
+    assert.equal(
+      /an unclassified failure/u.test(log.failed[0]),
+      failureClass === "other",
+      failureClass,
     );
     assert.deepEqual(
       log.notices.filter((n) => n.startsWith("claude-lane-review-complete")),
