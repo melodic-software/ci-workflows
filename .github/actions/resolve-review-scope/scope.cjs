@@ -195,9 +195,12 @@ async function run({ github, context, core }) {
   // parent is the commit before it, whose second parent the base branch
   // holds, and whose tree is the conflict-free automatic merge of its
   // parents. Such a head brings in only base branch code and adds nothing
-  // of its own. Any failure answers false, so the review runs.
+  // of its own. A merge whose base side changed a file of the pull request
+  // answers false too, so baseMoved still sends it to a whole review. Any
+  // failure answers false, so the review runs.
   const MERGE_HOPS = 5;
-  const onlyMergesBase = async (last) => {
+  const onlyMergesBase = async (last, prFiles) => {
+    const prNames = new Set(prFiles.flatMap(names));
     try {
       let sha = head;
       for (let hop = 0; hop < MERGE_HOPS && sha !== last; hop += 1) {
@@ -213,6 +216,8 @@ async function run({ github, context, core }) {
         // Exits non-zero on a conflict, which throws.
         const merged = git(["merge-tree", "--write-tree", `--merge-base=${base}`, ours, theirs]).trim();
         if (merged !== git(["rev-parse", `${sha}^{tree}`]).trim()) return false;
+        const brought = git(["diff", "--name-only", "--no-renames", "-z", base, theirs]).split("\0");
+        if (brought.some((name) => prNames.has(name))) return false;
         sha = ours;
       }
       return sha === last;
@@ -228,11 +233,11 @@ async function run({ github, context, core }) {
     if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
     if (last === head) return { files: [], patches: new Map() };
     const since = await compare(`${last}...${head}`);
-    if (since.status === "ahead" && (await onlyMergesBase(last))) {
+    if (since.status === "ahead" && (await onlyMergesBase(last, prFiles))) {
       return {
         files: [],
         patches: new Map(),
-        carried: `it only merges ${env.BASE_REF} into the reviewed head ${last}, and each merge's remerge diff is empty`,
+        carried: `it only merges ${env.BASE_REF} into the reviewed head ${last}, each merge's remerge diff is empty, and no merged-in change touches a file of this pull request`,
       };
     }
     if (since.status !== "ahead") {

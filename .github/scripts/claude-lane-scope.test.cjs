@@ -1088,7 +1088,7 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     assert.equal(outputs["last-summary"], "Earlier summary.");
   });
 
-  test("pr-review-cli: a head that only merges main with an empty remerge diff carries the review; any other merge is reviewed", async () => {
+  test("pr-review-cli: a head that only merges main with an empty remerge diff, touching no file of the pull request, carries the review; any other merge is reviewed", async () => {
     // A real repository, cloned the way the review job checks out: the
     // reviewed head of a layer branch, then heads that merge into it.
     // scope.cjs runs git in the job's working directory, the checkout.
@@ -1124,9 +1124,8 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     git("checkout", "-q", "-b", "layer");
     write("a.js", "1 layer\n2\n3\n4\n5\n6\n");
     const reviewed = commit("reviewed");
-    // main changes the pull request's own file away from its lines, and another.
+    // main changes only a file the pull request does not change.
     git("checkout", "-q", "main");
-    write("a.js", "1\n2\n3\n4\n5\n6 main\n");
     write("base.txt", "base moved\n");
     commit("main moves");
     const merge = (name, from, { evil, resolve } = {}) => {
@@ -1147,12 +1146,18 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     };
     const heads = { clean: merge("clean", reviewed) };
     heads.evil = merge("evil", reviewed, {
-      evil: () => write("a.js", "1 layer\n2\n3 unreviewed\n4\n5\n6 main\n"),
+      evil: () => write("a.js", "1 layer\n2\n3 unreviewed\n4\n5\n6\n"),
     });
     git("checkout", "-q", "main");
     write("base.txt", "base moved twice\n");
     commit("main moves again");
     heads.twice = merge("twice", heads.clean);
+    // main changes the pull request's own file away from its lines: a clean
+    // merge, but one the base-overlap check still sends to a whole review.
+    git("checkout", "-q", "main");
+    write("a.js", "1\n2\n3\n4\n5\n6 main\n");
+    commit("main edits the layer's file");
+    heads.overlap = merge("overlap", heads.twice);
     git("checkout", "-q", "main");
     write("a.js", "1 main\n2\n3\n4\n5\n6 main\n");
     commit("main edits the layer's line");
@@ -1227,7 +1232,7 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     for (const [name, sha] of Object.entries(heads)) {
       assert.equal(
         git("show", "--remerge-diff", "--format=", sha) === "",
-        ["clean", "twice", "other"].includes(name),
+        ["clean", "twice", "overlap", "other"].includes(name),
         name,
       );
     }
@@ -1238,11 +1243,11 @@ test("the restack check's git commands see mode and type changes in a blob-less 
       assert.equal(outputs.since, reviewed, name);
       assert.equal(
         outputs["skip-reason"],
-        `it only merges main into the reviewed head ${reviewed}, and each merge's remerge diff is empty`,
+        `it only merges main into the reviewed head ${reviewed}, each merge's remerge diff is empty, and no merged-in change touches a file of this pull request`,
         name,
       );
     }
-    for (const name of ["evil", "conflict", "other"]) {
+    for (const name of ["evil", "overlap", "conflict", "other"]) {
       const { outputs, messages } = await decide(name);
       assert.equal(outputs.review, "true", name);
       assert.equal(outputs.scope, "whole", name);

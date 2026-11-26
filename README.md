@@ -1890,8 +1890,10 @@ rebase or restack onto the same base branch that leaves the pull request's
 files, their statuses, and every one of those paths' mode, type and content
 as reviewed. In `pr-review-cli.yml`, neither is a push whose every commit since
 the review merges a commit the base branch holds and is that merge's
-conflict-free automatic result (an empty `git show --remerge-diff`), checked
-before the limits above, up to 5 merges; any failure to check reviews. The
+conflict-free automatic result (an empty `git show --remerge-diff`) and whose
+base side changes no file of the pull request, up to 5 merges, even past the
+300-file limit; a merge whose base side changes a file of the pull request
+still gets a whole review, and any failure to check reviews. The
 marker comment's second line records the base branch and
 merge base each review used and, from `pr-review-cli.yml`, its caller workflow.
 That lane reads only a marker naming its own caller, so another caller's or the
