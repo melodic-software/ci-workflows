@@ -189,12 +189,52 @@ async function run({ github, context, core }) {
     }
   };
 
+  // Whether every commit from the reviewed head to this one merges a base
+  // branch commit with an empty remerge diff (claude-code-plugins
+  // pull-request monitor.md B2): each is a two-parent merge whose first
+  // parent is the commit before it, whose second parent the base branch
+  // holds, and whose tree is the conflict-free automatic merge of its
+  // parents. Such a head brings in only base branch code and adds nothing
+  // of its own. Any failure answers false, so the review runs.
+  const MERGE_HOPS = 5;
+  const onlyMergesBase = async (last) => {
+    try {
+      let sha = head;
+      for (let hop = 0; hop < MERGE_HOPS && sha !== last; hop += 1) {
+        // The checkout holds the head and each hop fetches the next. cat-file
+        // reads the commit object, so a shallow clone's graft does not hide
+        // its parents.
+        const parents = [...git(["cat-file", "commit", sha]).matchAll(/^parent ([0-9a-f]{40})$/gmu)].map((m) => m[1]);
+        if (parents.length !== 2) return false;
+        const [ours, theirs] = parents;
+        if (!["ahead", "identical"].includes((await compare(`${theirs}...${env.BASE_REF}`)).status)) return false;
+        const base = (await compare(`${ours}...${theirs}`)).merge_base_commit.sha;
+        git(["fetch", "--quiet", "--no-tags", "--depth=1", "--filter=blob:none", "origin", base, ours, theirs]);
+        // Exits non-zero on a conflict, which throws.
+        const merged = git(["merge-tree", "--write-tree", `--merge-base=${base}`, ours, theirs]).trim();
+        if (merged !== git(["rev-parse", `${sha}^{tree}`]).trim()) return false;
+        sha = ours;
+      }
+      return sha === last;
+    } catch (error) {
+      core.info(`Could not test ${head} as a merge of ${env.BASE_REF}: ${error.message}`);
+      return false;
+    }
+  };
+
   // Returns { files, patches } for an incremental review, or { full: reason }.
   const sinceLastReview = async (prFiles, recorded, now) => {
     const last = recorded.sha;
     if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
     if (last === head) return { files: [], patches: new Map() };
     const since = await compare(`${last}...${head}`);
+    if (since.status === "ahead" && (await onlyMergesBase(last))) {
+      return {
+        files: [],
+        patches: new Map(),
+        carried: `it only merges ${env.BASE_REF} into the reviewed head ${last}, and each merge's remerge diff is empty`,
+      };
+    }
     if (since.status !== "ahead") {
       if (!(await sameChange(prFiles, recorded))) {
         return { full: `the last reviewed head ${last} is not an ancestor of ${head}` };
@@ -326,6 +366,7 @@ async function run({ github, context, core }) {
     let now = "";
     let dataOnly = false;
     let dataLeft = 0;
+    let carried = "";
     if (incremental) {
       now = (await compare(`${env.BASE_REF}...${head}`)).merge_base_commit.sha;
       core.setOutput("merge-base", now);
@@ -340,6 +381,7 @@ async function run({ github, context, core }) {
         // list, the count and the diff, as in the full-diff step;
         // DATA_LIST names them.
         scope = result.files;
+        carried = result.carried ?? "";
         const left = result.left ?? [];
         dataOnly = left.length > 0 && scope.length === 0;
         dataLeft = left.length;
@@ -359,9 +401,10 @@ async function run({ github, context, core }) {
       core.setOutput("since", last);
       core.setOutput(
         "skip-reason",
-        dataOnly
+        carried ||
+        (dataOnly
           ? `every file changed since the review of ${last} is a generated data file the base branch declares`
-          : `no file of this pull request changed since the review of ${last}`,
+          : `no file of this pull request changed since the review of ${last}`),
       );
     } else if (current && docsOnly.length > 0 && scope.length > 0 && scope.every(isDocs)) {
       core.setOutput("review", "false");

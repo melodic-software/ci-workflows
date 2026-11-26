@@ -1088,6 +1088,206 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     assert.equal(outputs["last-summary"], "Earlier summary.");
   });
 
+  test("pr-review-cli: a head that only merges main with an empty remerge diff carries the review; any other merge is reviewed", async () => {
+    // A real repository, cloned the way the review job checks out: the
+    // reviewed head of a layer branch, then heads that merge into it.
+    // scope.cjs runs git in the job's working directory, the checkout.
+    const inDirectory = async (directory, action) => {
+      const saved = process.cwd();
+      process.chdir(directory);
+      try {
+        return await action();
+      } finally {
+        process.chdir(saved);
+      }
+    };
+    const root = makeTemporaryDirectory("merge-carry-");
+    const origin = path.join(root, "origin");
+    const git = (...args) =>
+      execFileSync("git", ["-C", origin, ...args], { encoding: "utf8" }).trim();
+    fs.mkdirSync(origin);
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    git("config", "uploadpack.allowFilter", "true");
+    git("config", "uploadpack.allowAnySHA1InWant", "true");
+    const write = (name, text) =>
+      fs.writeFileSync(path.join(origin, name), text);
+    const commit = (message) => {
+      git("add", "-A");
+      git("commit", "-q", "-m", message);
+      return git("rev-parse", "HEAD");
+    };
+    write("a.js", "1\n2\n3\n4\n5\n6\n");
+    write("base.txt", "base\n");
+    commit("base");
+    git("checkout", "-q", "-b", "layer");
+    write("a.js", "1 layer\n2\n3\n4\n5\n6\n");
+    const reviewed = commit("reviewed");
+    // main changes the pull request's own file away from its lines, and another.
+    git("checkout", "-q", "main");
+    write("a.js", "1\n2\n3\n4\n5\n6 main\n");
+    write("base.txt", "base moved\n");
+    commit("main moves");
+    const merge = (name, from, { evil, resolve } = {}) => {
+      git("checkout", "-q", "-B", name, from);
+      try {
+        git("merge", "-q", "--no-edit", "--no-ff", "main");
+      } catch {
+        resolve();
+        git("add", "-A");
+        git("commit", "-q", "--no-edit");
+      }
+      if (evil) {
+        evil();
+        git("add", "-A");
+        git("commit", "-q", "--amend", "--no-edit");
+      }
+      return git("rev-parse", "HEAD");
+    };
+    const heads = { clean: merge("clean", reviewed) };
+    heads.evil = merge("evil", reviewed, {
+      evil: () => write("a.js", "1 layer\n2\n3 unreviewed\n4\n5\n6 main\n"),
+    });
+    git("checkout", "-q", "main");
+    write("base.txt", "base moved twice\n");
+    commit("main moves again");
+    heads.twice = merge("twice", heads.clean);
+    git("checkout", "-q", "main");
+    write("a.js", "1 main\n2\n3\n4\n5\n6 main\n");
+    commit("main edits the layer's line");
+    heads.conflict = merge("conflict", heads.twice, {
+      resolve: () => write("a.js", "1 layer and main\n2\n3\n4\n5\n6 main\n"),
+    });
+    git("checkout", "-q", "-b", "side", reviewed);
+    write("side.js", "side\n");
+    commit("not on main");
+    git("checkout", "-q", "-B", "other", heads.clean);
+    git("merge", "-q", "--no-edit", "--no-ff", "side");
+    heads.other = git("rev-parse", "HEAD");
+
+    // The compares the scope step asks for, answered from the repository:
+    // 300 changed files since the review, as on claude-code-plugins#19102's
+    // base merge, so only the carry can skip the review.
+    const commits = git("rev-list", "--all").split("\n");
+    const compares = {};
+    for (const a of commits) {
+      compares[`${a}...main`] = {
+        status:
+          git("rev-parse", "main") === a
+            ? "identical"
+            : (() => {
+                try {
+                  git("merge-base", "--is-ancestor", a, "main");
+                  return "ahead";
+                } catch {
+                  return "diverged";
+                }
+              })(),
+      };
+      for (const b of commits) {
+        compares[`${a}...${b}`] = {
+          merge_base_commit: { sha: git("merge-base", a, b) },
+        };
+      }
+    }
+    const decide = async (name) => {
+      const sha = heads[name];
+      const work = path.join(root, `work-${name}`);
+      execFileSync("git", [
+        "clone",
+        "-q",
+        "--depth=1",
+        "--filter=blob:none",
+        "--branch",
+        name,
+        `file://${origin}`,
+        work,
+      ]);
+      return inDirectory(work, () =>
+        runScope(cliLane, {
+          env: { ...cliEnv(), HEAD_SHA: sha },
+          liveHead: sha,
+          prFiles: [file("a.js")],
+          compares: {
+            ...compares,
+            [`${reviewed}...${sha}`]: {
+              status: "ahead",
+              files: Array.from({ length: 300 }, (_, i) => file(`f${i}`)),
+            },
+            [`main...${sha}`]: {
+              merge_base_commit: { sha: git("merge-base", "main", sha) },
+            },
+          },
+          comments: [cliMarker(reviewed, OWN)],
+        }),
+      );
+    };
+    // The monitor's B2 test agrees: empty for the carried heads only.
+    for (const [name, sha] of Object.entries(heads)) {
+      assert.equal(
+        git("show", "--remerge-diff", "--format=", sha) === "",
+        ["clean", "twice", "other"].includes(name),
+        name,
+      );
+    }
+    for (const name of ["clean", "twice"]) {
+      const { outputs, messages } = await decide(name);
+      assert.equal(outputs.review, "false", `${name}: ${messages.join("\n")}`);
+      assert.equal(outputs.skip, "no-change", name);
+      assert.equal(outputs.since, reviewed, name);
+      assert.equal(
+        outputs["skip-reason"],
+        `it only merges main into the reviewed head ${reviewed}, and each merge's remerge diff is empty`,
+        name,
+      );
+    }
+    for (const name of ["evil", "conflict", "other"]) {
+      const { outputs, messages } = await decide(name);
+      assert.equal(outputs.review, "true", name);
+      assert.equal(outputs.scope, "whole", name);
+      assert.ok(
+        messages.some((message) => /300 or more files changed/u.test(message)),
+        name,
+      );
+      // Only the conflict stops git: merge-tree exits non-zero on it.
+      assert.equal(
+        messages.some((message) => /^Could not test /u.test(message)),
+        name === "conflict",
+        `${name}: ${messages.join("\n")}`,
+      );
+    }
+    // Outside any repository git cannot answer, so the head is reviewed.
+    const failed = await inDirectory(makeTemporaryDirectory("no-repo-"), () =>
+      runScope(cliLane, {
+        env: { ...cliEnv(), HEAD_SHA: heads.clean },
+        liveHead: heads.clean,
+        prFiles: [file("a.js")],
+        compares: {
+          [`${reviewed}...${heads.clean}`]: {
+            status: "ahead",
+            files: [file("a.js")],
+          },
+          [`main...${heads.clean}`]: {
+            merge_base_commit: { sha: git("merge-base", "main", heads.clean) },
+          },
+          [`main...${reviewed}`]: {
+            merge_base_commit: { sha: git("merge-base", "main", reviewed) },
+          },
+          [`${git("merge-base", "main", reviewed)}...${git("merge-base", "main", heads.clean)}`]:
+            { files: [file("a.js")] },
+        },
+        comments: [cliMarker(reviewed, OWN)],
+      }),
+    );
+    assert.equal(failed.outputs.review, "true");
+    assert.ok(
+      failed.messages.some((message) =>
+        /Could not test .* as a merge of main/u.test(message),
+      ),
+    );
+  });
+
   for (const lane of [codeLane, securityLane]) {
     test(`${lane.file}: a marker naming a caller records no review of this lane`, async () => {
       const marker = cliMarker(HEAD, OWN);

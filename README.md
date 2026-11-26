@@ -1888,7 +1888,11 @@ API returns no patch for a changed text file (too large to show). A push that
 changes no file of the pull request is not reviewed again, and neither is a
 rebase or restack onto the same base branch that leaves the pull request's
 files, their statuses, and every one of those paths' mode, type and content
-as reviewed. The marker comment's second line records the base branch and
+as reviewed. In `pr-review-cli.yml`, neither is a push whose every commit since
+the review merges a commit the base branch holds and is that merge's
+conflict-free automatic result (an empty `git show --remerge-diff`), checked
+before the limits above, up to 5 merges; any failure to check reviews. The
+marker comment's second line records the base branch and
 merge base each review used and, from `pr-review-cli.yml`, its caller workflow.
 That lane reads only a marker naming its own caller, so another caller's or the
 legacy `pr-review.yml`'s record never narrows or skips its review, and
