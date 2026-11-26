@@ -328,7 +328,7 @@ async function run({ github, context, core }) {
   };
 
   const incremental = env.INCREMENTAL === "true";
-  let pulled = false;
+  let pullAttempted = false;
   try {
     const prFiles = await github.paginate(github.rest.pulls.listFiles, {
       owner,
@@ -339,7 +339,7 @@ async function run({ github, context, core }) {
     // The file list is the live pull request's; a skip trusts it only
     // while the live head, read after it, is still the head this run was
     // started for.
-    pulled = true;
+    pullAttempted = true;
     const { head: live, changedFiles, recorded } = await readPull();
     const current = live === head;
     if (!current) core.info(`The pull request's head moved to ${live}; this run skips nothing.`);
@@ -415,7 +415,7 @@ async function run({ github, context, core }) {
   } catch (error) {
     core.warning(`Scoping failed, reviewing the whole pull request: ${error.message}`);
     // The marker still names the one comment the review updates.
-    if (!pulled) await readPull().catch((read) => core.info(`Could not read the lane's marker comment: ${read.message}`));
+    if (!pullAttempted) await readPull().catch((read) => core.info(`Could not read the lane's marker comment: ${read.message}`));
     core.setOutput("review", "true");
     core.setOutput("scope", "whole");
   }
