@@ -1,0 +1,45 @@
+{
+  "headers": {
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4902",
+    "x-ratelimit-reset": "1795672130",
+    "x-ratelimit-resource": "graphql",
+    "x-ratelimit-used": "98"
+  },
+  "body": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "headRefOid": "16fa001c0642879bbd1568faf2380adecf757de4",
+          "changedFiles": 4,
+          "comments": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpHPAAAAAawha5s="
+            },
+            "nodes": [
+              {
+                "databaseId": 7182802075,
+                "author": {
+                  "__typename": "Bot",
+                  "login": "chatgpt-codex-connector"
+                },
+                "body": "<!-- codex-pull-request-review-summary -->"
+              },
+              {
+                "databaseId": 7182838683,
+                "author": { "__typename": "Bot", "login": "github-actions" },
+                "body": "<!-- claude-lane-reviewed-head lane=claude-review sha=16fa001c0642879bbd1568faf2380adecf757de4 -->\n<!-- claude-lane-reviewed-base ref=main merge-base=cf8bfc1336ab77a27068981bcb12015c982e0fcd caller=.github/workflows/pr-review-hosted.yml -->\n**claude-review** reviewed `16fa001c0642879bbd1568faf2380adecf757de4`: read 4 of 4 changed file(s); 1 finding(s), 1 as inline comments.\n\n## Code review: PR #19249"
+              },
+              {
+                "databaseId": 7181992131,
+                "author": { "__typename": "User", "login": "kyle-sexton" },
+                "body": "<!-- pr-hold reason=eval -->\n"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
