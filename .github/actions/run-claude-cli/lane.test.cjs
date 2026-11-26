@@ -2308,6 +2308,27 @@ test("a structured output holding the credential or a key shape is not written a
   }
 });
 
+test("a clean leg whose log the scan withholds ends credential-stop", async () => {
+  const dir = path.join(root, "run-clean-log-leak");
+  const env = runEnv(dir);
+  env.FAKE_KEY = legFile(dir, "key.jsonl", [
+    { type: "system", subtype: "init" },
+    result({
+      modelUsage: {
+        "sk-ant-api03-abcdefghijkl": { inputTokens: 1, outputTokens: 1 },
+      },
+    }),
+  ]);
+  env.FAKE_KEY_EXIT = "0";
+  await assert.rejects(
+    () => run(env),
+    /the execution log held a credential and was not written/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "credential-stop");
+  assert.equal(outputs["log-file"], "");
+});
+
 test("a failed leg whose log the scan withholds keeps its own class", async () => {
   const dir = path.join(root, "run-log-leak");
   const env = runEnv(dir);
