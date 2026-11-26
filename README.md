@@ -1891,7 +1891,8 @@ files, their statuses, and every one of those paths' mode, type and content
 as reviewed. In `pr-review-cli.yml`, neither is a push whose every commit since
 the review merges a commit the base branch holds and is that merge's
 conflict-free automatic result (an empty `git show --remerge-diff`) and whose
-base side changes no file of the pull request, up to 5 merges, even past the
+base side changes no file of the pull request, on the base branch the review
+recorded and a file list under the API's 3000 cap, up to 5 merges, even past the
 300-file limit; a merge whose base side changes a file of the pull request
 still gets a whole review, and any failure to check reviews. The
 marker comment's second line records the base branch and

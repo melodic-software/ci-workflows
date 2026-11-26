@@ -1196,9 +1196,10 @@ test("the restack check's git commands see mode and type changes in a blob-less 
         };
       }
     }
-    const decide = async (name) => {
+    const decide = async (name, marker = cliMarker(reviewed, OWN)) => {
       const sha = heads[name];
-      const work = path.join(root, `work-${name}`);
+      const work = makeTemporaryDirectory(`work-${name}-`);
+      fs.rmSync(work, { recursive: true });
       execFileSync("git", [
         "clone",
         "-q",
@@ -1224,7 +1225,7 @@ test("the restack check's git commands see mode and type changes in a blob-less 
               merge_base_commit: { sha: git("merge-base", "main", sha) },
             },
           },
-          comments: [cliMarker(reviewed, OWN)],
+          comments: [marker],
         }),
       );
     };
@@ -1262,6 +1263,13 @@ test("the restack check's git commands see mode and type changes in a blob-less 
         `${name}: ${messages.join("\n")}`,
       );
     }
+    // A review recorded against another base branch carries nothing: the
+    // pull request may have been retargeted to a branch holding unreviewed code.
+    const retargeted = cliMarker(reviewed, OWN);
+    retargeted.body = retargeted.body.replace(" ref=main ", " ref=release ");
+    const moved = await decide("clean", retargeted);
+    assert.equal(moved.outputs.review, "true");
+    assert.equal(moved.outputs.scope, "whole");
     // Outside any repository git cannot answer, so the head is reviewed.
     const failed = await inDirectory(makeTemporaryDirectory("no-repo-"), () =>
       runScope(cliLane, {

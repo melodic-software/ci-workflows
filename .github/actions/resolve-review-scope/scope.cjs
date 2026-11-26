@@ -197,17 +197,22 @@ async function run({ github, context, core }) {
   // parents. Such a head brings in only base branch code and adds nothing
   // of its own. A merge whose base side changed a file of the pull request
   // answers false too, so baseMoved still sends it to a whole review. Any
-  // failure answers false, so the review runs.
+  // failure answers false, so the review runs. So does a base branch other
+  // than the one the review recorded, or a file list at the API's 3000 cap.
   const MERGE_HOPS = 5;
-  const onlyMergesBase = async (last, prFiles) => {
+  const LIST_CAP = 3000;
+  const onlyMergesBase = async (recorded, prFiles) => {
+    const last = recorded.sha;
+    if (recorded.ref !== env.BASE_REF || prFiles.length >= LIST_CAP) return false;
     const prNames = new Set(prFiles.flatMap(names));
     try {
       let sha = head;
       for (let hop = 0; hop < MERGE_HOPS && sha !== last; hop += 1) {
         // The checkout holds the head and each hop fetches the next. cat-file
         // reads the commit object, so a shallow clone's graft does not hide
-        // its parents.
-        const parents = [...git(["cat-file", "commit", sha]).matchAll(/^parent ([0-9a-f]{40})$/gmu)].map((m) => m[1]);
+        // its parents; only the header, before the first blank line, counts.
+        const header = git(["cat-file", "commit", sha]).split("\n\n")[0];
+        const parents = [...header.matchAll(/^parent ([0-9a-f]{40})$/gmu)].map((m) => m[1]);
         if (parents.length !== 2) return false;
         const [ours, theirs] = parents;
         if (!["ahead", "identical"].includes((await compare(`${theirs}...${env.BASE_REF}`)).status)) return false;
@@ -233,7 +238,7 @@ async function run({ github, context, core }) {
     if (!/^[0-9a-f]{40}$/u.test(last)) return { full: "no earlier review is recorded" };
     if (last === head) return { files: [], patches: new Map() };
     const since = await compare(`${last}...${head}`);
-    if (since.status === "ahead" && (await onlyMergesBase(last, prFiles))) {
+    if (since.status === "ahead" && (await onlyMergesBase(recorded, prFiles))) {
       return {
         files: [],
         patches: new Map(),
