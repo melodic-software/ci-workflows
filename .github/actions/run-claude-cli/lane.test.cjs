@@ -2298,6 +2298,7 @@ test("a structured output holding the credential or a key shape is not written a
       /the structured output held a credential and was not written/u,
     );
     const outputs = readOutputs(env.GITHUB_OUTPUT);
+    assert.equal(outputs["lane-class"], "credential-stop");
     assert.equal(outputs["structured-output-file"], "");
     assert.equal(
       fs.existsSync(path.join(env.LANE_WORK_DIR, "structured-output.json")),
@@ -2305,6 +2306,46 @@ test("a structured output holding the credential or a key shape is not written a
     );
     assert.notEqual(outputs["log-file"], "");
   }
+});
+
+test("a clean leg whose log the scan withholds ends credential-stop", async () => {
+  const dir = path.join(root, "run-clean-log-leak");
+  const env = runEnv(dir);
+  env.FAKE_KEY = legFile(dir, "key.jsonl", [
+    { type: "system", subtype: "init" },
+    result({
+      modelUsage: {
+        "sk-ant-api03-abcdefghijkl": { inputTokens: 1, outputTokens: 1 },
+      },
+    }),
+  ]);
+  env.FAKE_KEY_EXIT = "0";
+  await assert.rejects(
+    () => run(env),
+    /the execution log held a credential and was not written/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "credential-stop");
+  assert.equal(outputs["log-file"], "");
+});
+
+test("a failed leg whose log the scan withholds keeps its own class", async () => {
+  const dir = path.join(root, "run-log-leak");
+  const env = runEnv(dir);
+  const leak = CREDIT_STOP.map((m) =>
+    m.type === "result"
+      ? { ...m, result: "Credit balance is too low sk-ant-api03-abcdefghijkl" }
+      : m,
+  );
+  env.FAKE_KEY = legFile(dir, "key.jsonl", leak);
+  env.FAKE_KEY_EXIT = "1";
+  await assert.rejects(
+    () => run(env),
+    /the execution log held a credential and was not written/u,
+  );
+  const outputs = readOutputs(env.GITHUB_OUTPUT);
+  assert.equal(outputs["lane-class"], "credit-stop");
+  assert.equal(outputs["log-file"], "");
 });
 
 test("run refuses both credentials before any leg starts", async () => {

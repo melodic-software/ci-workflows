@@ -79,7 +79,8 @@
 //     the job log, inside ::stop-commands::; the job summary shows only
 //     closed tokens.
 //   - The log file is written only after a scan finds no credential in it.
-//     It alone keeps a CLI-authored error line. The execution file is
+//     It alone keeps a CLI-authored error line. A leg that ended clean whose
+//     log or structured output the scan withholds ends `credential-stop`. The execution file is
 //     scanned the same way and kept either way, since callers parse it;
 //     execution-file-clean reports the scan.
 //   - Telemetry is off unless the otel-receiver input is `true`. Then the leg
@@ -1767,8 +1768,15 @@ async function run(env) {
   const structuredFile = path.join(config.resultsDir || config.workDir, "structured-output.json");
   const structuredWritten = structuredText !== null && structuredClean;
   if (structuredWritten) fs.writeFileSync(structuredFile, structuredText);
+  // A leg that ended clean but tripped the scan gets its own class, so a
+  // caller can tell a withheld result from any other failure. A leg that
+  // already failed keeps its class.
+  const laneClass =
+    outcome.outputs["lane-class"] ||
+    (clean && structuredClean ? "" : "credential-stop");
   writeOutputs(env.GITHUB_OUTPUT, {
     ...outcome.outputs,
+    "lane-class": laneClass,
     "execution-file-clean": String(
       fileClean(outcome.outputs["execution-file"], secrets),
     ),
@@ -1813,7 +1821,6 @@ async function run(env) {
       "the structured output held a credential and was not written",
     );
   }
-  const laneClass = outcome.outputs["lane-class"];
   if (laneClass !== "") {
     const facts = errorTokens(outcome.records[0]);
     throw new LaneError(
