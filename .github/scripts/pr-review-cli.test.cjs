@@ -16,6 +16,7 @@ const test = require("node:test");
 
 const { cliArgs, readConfig } = require("../actions/run-claude-cli/lane.cjs");
 const { evaluate } = require("./actions-expression.cjs");
+const { pullRequestPage } = require("./scope-graphql-fake.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -3880,21 +3881,24 @@ async function incrementalReview(
   const github = {
     hook: { after: () => {}, error: () => {}, wrap: () => {} },
     paginate: async (fn) => fn(),
+    graphql: async (_query, { cursor }) =>
+      pullRequestPage(
+        {
+          head,
+          changedFiles: prFiles.length,
+          comments: [
+            {
+              id: 41,
+              user: { login: "github-actions[bot]" },
+              body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${last} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=${fixture.base} caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
+            },
+          ],
+        },
+        cursor,
+      ),
     rest: {
-      issues: {
-        listComments: () => [
-          {
-            id: 41,
-            user: { login: "github-actions[bot]" },
-            body: `<!-- claude-lane-reviewed-head lane=claude-review sha=${last} -->\n<!-- claude-lane-reviewed-base ref=main merge-base=${fixture.base} caller=.github/workflows/review.yml -->\n**claude-review** reviewed it.`,
-          },
-        ],
-      },
       pulls: {
         listFiles: () => prFiles,
-        get: async () => ({
-          data: { head: { sha: head }, changed_files: prFiles.length },
-        }),
       },
       repos: {
         compareCommitsWithBasehead: async ({ basehead }) => {
@@ -5228,13 +5232,14 @@ test("an incremental review leaves a file the push deleted out of its file count
   const github = {
     hook: { after: () => {}, error: () => {}, wrap: () => {} },
     paginate: async (fn) => fn(),
+    graphql: async (_query, { cursor }) =>
+      pullRequestPage(
+        { head: HEAD, changedFiles: 2, comments: [marker] },
+        cursor,
+      ),
     rest: {
-      issues: { listComments: () => [marker] },
       pulls: {
         listFiles: () => prFiles,
-        get: async () => ({
-          data: { head: { sha: HEAD }, changed_files: 2 },
-        }),
       },
       repos: {
         compareCommitsWithBasehead: async ({ basehead }) => {
@@ -6105,17 +6110,19 @@ test("an incremental review leaves the data files the base branch declares out o
     const github = {
       hook: { after: () => {}, error: () => {}, wrap: () => {} },
       paginate: async (fn) => fn(),
+      graphql: async (_query, { cursor }) =>
+        pullRequestPage(
+          {
+            head: fixture.head,
+            changedFiles: DATA_CHANGED.length,
+            comments: [marker],
+          },
+          cursor,
+        ),
       rest: {
-        issues: { listComments: () => [marker] },
         pulls: {
           listFiles: () =>
             DATA_CHANGED.map((filename) => ({ filename, status: "modified" })),
-          get: async () => ({
-            data: {
-              head: { sha: fixture.head },
-              changed_files: DATA_CHANGED.length,
-            },
-          }),
         },
         repos: {
           compareCommitsWithBasehead: async ({ basehead }) => {

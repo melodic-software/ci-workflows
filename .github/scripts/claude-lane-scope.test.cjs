@@ -14,6 +14,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
+const { CAPTURE, pullRequestPage } = require("./scope-graphql-fake.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -148,6 +149,8 @@ async function runScope(
     fail = false,
     comments = [],
     liveHead = HEAD,
+    graphqlAnswer,
+    graphqlFail = false,
     git = () => {
       throw new Error("git was not expected");
     },
@@ -173,7 +176,22 @@ async function runScope(
     [`main...${HEAD}`]: { merge_base_commit: { sha: MB_OLD } },
     ...compares,
   };
+  const graphqlCursors = [];
   const github = {
+    // pr-review-cli's scope step reads the head and comments here.
+    graphql: async (query, { owner, repo, number, cursor }) => {
+      assert.deepEqual([owner, repo, number], ["o", "r", 7]);
+      assert.match(query, /comments\(first: 100, after: \$cursor\)/u);
+      graphqlCursors.push(cursor);
+      if (graphqlFail) throw new Error("graphql failed");
+      return (
+        graphqlAnswer ??
+        pullRequestPage(
+          { head: liveHead, changedFiles: prFiles.length, comments },
+          cursor,
+        )
+      );
+    },
     rest: {
       issues: {
         listComments: async ({ issue_number }) => {
@@ -227,6 +245,7 @@ async function runScope(
     secrets,
     diff,
     listedComments,
+    graphqlCursors,
     gitCalls,
     gitOptions,
   };
@@ -1086,6 +1105,106 @@ test("the restack check's git commands see mode and type changes in a blob-less 
     assert.equal(outputs.review, "false");
     assert.equal(outputs.skip, "no-change");
     assert.equal(outputs["last-summary"], "Earlier summary.");
+  });
+
+  test("pr-review-cli: the captured GraphQL answer's own marker at its head skips", async () => {
+    const pull = CAPTURE.body.data.repository.pullRequest;
+    const { outputs, listedComments, graphqlCursors } = await runScope(
+      cliLane,
+      {
+        env: {
+          ...cliEnv(),
+          HEAD_SHA: pull.headRefOid,
+          GITHUB_WORKFLOW_REF:
+            "melodic-software/claude-code-plugins/.github/workflows/pr-review-hosted.yml@refs/pull/19249/merge",
+        },
+        prFiles: [file("src/a.js")],
+        graphqlAnswer: CAPTURE.body.data,
+        compares: {
+          [`main...${pull.headRefOid}`]: { merge_base_commit: { sha: MB_OLD } },
+        },
+      },
+    );
+    assert.equal(outputs.review, "false");
+    assert.equal(outputs.skip, "no-change");
+    assert.equal(outputs["marker-id"], "7182838683");
+    assert.equal(JSON.parse(outputs["pr-files"]).changed, 4);
+    assert.equal(listedComments, 0);
+    assert.deepEqual(graphqlCursors, [null]);
+  });
+
+  test("pr-review-cli: every page of comments is read, and the newest marker wins", async () => {
+    const filler = Array.from({ length: 230 }, (_, i) => ({
+      id: 100 + i,
+      user: { login: "kyle-sexton" },
+      body: "A comment.",
+    }));
+    const { outputs, graphqlCursors } = await scopeCli(
+      [
+        cliMarker(HEAD, OWN, 41),
+        ...filler.slice(0, 150),
+        cliMarker(LAST, OWN, 43),
+        ...filler.slice(150),
+      ],
+      changed,
+    );
+    assert.deepEqual(graphqlCursors, [null, "100", "200"]);
+    assert.equal(outputs["marker-id"], "43");
+    assert.equal(outputs.scope, "incremental");
+    assert.equal(outputs.since, LAST);
+  });
+
+  test("pr-review-cli: a marker from a user named github-actions or from another bot records no review", async () => {
+    const forged = (login) => ({ ...cliMarker(HEAD, OWN), user: { login } });
+    for (const login of ["github-actions", "other[bot]"]) {
+      const { outputs } = await scopeCli([forged(login)]);
+      assert.equal(outputs.scope, "whole", login);
+      assert.equal(outputs["marker-id"], undefined, login);
+    }
+  });
+
+  test("pr-review-cli: a moved head skips nothing and passes no file list", async () => {
+    const { outputs, messages } = await runScope(cliLane, {
+      env: cliEnv(),
+      prFiles: [file("src/a.js")],
+      comments: [cliMarker(HEAD, OWN)],
+      liveHead: MB_NEW,
+    });
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs["pr-files"], undefined);
+    assert.ok(
+      messages.includes(
+        `The pull request's head moved to ${MB_NEW}; this run skips nothing.`,
+      ),
+    );
+  });
+
+  test("pr-review-cli: a failed file list still reads the marker, so the review updates the one comment", async () => {
+    const { outputs, messages } = await runScope(cliLane, {
+      env: cliEnv(),
+      prFiles: [],
+      fail: true,
+      comments: [cliMarker(LAST, OWN)],
+    });
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs.scope, "whole");
+    assert.equal(outputs["marker-id"], "41");
+    assert.ok(
+      messages.some((message) => /^warning: Scoping failed/u.test(message)),
+    );
+  });
+
+  test("pr-review-cli: a failed GraphQL read reviews the whole pull request", async () => {
+    const { outputs, graphqlCursors } = await runScope(cliLane, {
+      env: cliEnv(),
+      prFiles: [file("src/a.js")],
+      comments: [cliMarker(HEAD, OWN)],
+      graphqlFail: true,
+    });
+    assert.equal(outputs.review, "true");
+    assert.equal(outputs.scope, "whole");
+    assert.equal(outputs["marker-id"], undefined);
+    assert.equal(graphqlCursors.length, 1);
   });
 
   for (const lane of [codeLane, securityLane]) {

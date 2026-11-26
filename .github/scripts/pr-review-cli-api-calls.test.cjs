@@ -5,8 +5,9 @@
 // API runs as shipped against one counting fake: the scope, full-diff and
 // gate steps from the workflow, then publish-review and apply-review-hold
 // with the env the workflow passes them, the job outputs evaluated from the
-// workflow's own expressions. The pull request's file list and pulls.get are
-// each read once per run, but for publish's check that the head has not moved.
+// workflow's own expressions. The pull request's file list is read once per
+// run; its head and comments once in the scope step's GraphQL query, and the
+// head once more by pulls.get for publish's check that it has not moved.
 // The review reaches the status job as the key job's handoff file: its write
 // and check steps run as shipped, and both jobs share one runner.temp here,
 // so the file the key job wrote is the file the download would place. The
@@ -21,6 +22,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { evaluate } = require("./actions-expression.cjs");
+const { CAPTURE, pullRequestPage } = require("./scope-graphql-fake.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
@@ -116,15 +118,38 @@ function fakeApi({ prFiles, comments = [], compares = {} }) {
         ),
     },
   );
+  // The scope step's query, a page per request, on the graphql resource.
+  let graphqlUsed = 0;
+  const graphql = async (_query, variables) => {
+    calls.push("graphql");
+    requests.push({ name: "graphql", params: variables });
+    graphqlUsed += 1;
+    const response = {
+      status: 200,
+      url: "https://api.github.com/graphql",
+      headers: {
+        ...CAPTURE.headers,
+        "x-ratelimit-remaining": String(5000 - graphqlUsed),
+        "x-ratelimit-used": String(graphqlUsed),
+      },
+    };
+    for (const fn of hooks.after) await fn(response, variables);
+    return pullRequestPage(
+      { head: HEAD, changedFiles: prFiles.length, comments },
+      variables.cursor,
+    );
+  };
   return {
     calls,
     requests,
     used: () => used,
+    graphqlUsed: () => graphqlUsed,
     // A new step's client: github-script builds one per step.
     newClient: () => {
       hooks = { after: [], error: [] };
     },
     github: {
+      graphql,
       rest,
       hook: {
         after: (_name, fn) => hooks.after.push(fn),
@@ -390,6 +415,7 @@ async function spend({
   );
   keySteps["handoff-file"] = { outputs: handoffOutputs };
   const keyRequests = api.calls.length + gh.length;
+  const keyGraphql = api.graphqlUsed();
   const keyBudget = logBudget(key, contexts, dir);
   const keyOutputs = Object.fromEntries(
     Object.entries(key.outputs)
@@ -460,6 +486,8 @@ async function spend({
     counts,
     total,
     keyRequests,
+    keyGraphql,
+    graphql: api.graphqlUsed(),
     keyBudget,
     statusBudget,
     hold: holdOutputs.hold,
@@ -567,10 +595,13 @@ test("each run shape spends the requests pinned here, reading the file list once
     const { counts, total, hold } = await spend(shape);
     totals[name] = total;
     assert.equal(counts["pulls.listFiles"], 1, `${name}: files`);
-    assert.ok((counts["pulls.get"] ?? 0) <= 2, `${name}: pulls.get`);
+    // The scope step reads the head and its marker comment in one GraphQL
+    // page; only publish reads pulls.get, and only the hold lists comments.
+    assert.equal(counts.graphql, 1, `${name}: graphql`);
+    assert.ok((counts["pulls.get"] ?? 0) <= 1, `${name}: pulls.get`);
     assert.equal(
       counts["issues.listComments"] ?? 0,
-      hold === "true" ? 2 : 1,
+      hold === "true" ? 1 : 0,
       `${name}: comments`,
     );
     for (const gone of [
@@ -582,26 +613,30 @@ test("each run shape spends the requests pinned here, reading the file list once
       assert.equal(counts[gone], undefined, `${name}: ${gone}`);
   }
   // A posted review adds one read of its comments' ids for the lane's
-  // comment record.
+  // comment record. Each total holds the one GraphQL request.
   assert.deepEqual(totals, {
-    "a whole review with an inline comment": 9,
-    "a whole review with no inline comment": 6,
-    "an incremental review with an inline comment": 11,
-    "a no-change skip after a base-branch merge": 8,
-    "a whole review that changes a hold-paths file and holds nothing": 9,
-    "a whole review that returns a critical-security hold": 12,
+    "a whole review with an inline comment": 8,
+    "a whole review with no inline comment": 5,
+    "an incremental review with an inline comment": 10,
+    "a no-change skip after a base-branch merge": 7,
+    "a whole review that changes a hold-paths file and holds nothing": 8,
+    "a whole review that returns a critical-security hold": 11,
   });
 });
 
 // The api-budget notice reads the headers of the requests above and adds
 // none: one reading per job-token request, and the key and status jobs each
-// end with one core line whose cost is the rise in used since the job's
-// first reading, na when the job made one request, after an api-calls line
-// counting the requests the fake answered for that job and its api-routes
-// line.
+// end with one line per resource, core last, whose cost is the rise in used
+// since the job's first reading, na when the job made one request, after an
+// api-calls line counting the requests the fake answered for that job and
+// its api-routes line. The key job's one GraphQL page shows the graphql
+// pool's headroom.
 test("each job logs one reading per request it made and its api-budget line, adding no request", async () => {
   for (const [name, shape] of Object.entries(SHAPES)) {
-    const { total, keyRequests, keyBudget, statusBudget } = await spend(shape);
+    const { total, keyRequests, keyGraphql, graphql, keyBudget, statusBudget } =
+      await spend(shape);
+    assert.equal(keyGraphql, 1, `${name}: key graphql`);
+    assert.equal(graphql, keyGraphql, `${name}: status graphql`);
     assert.equal(
       keyBudget.readings.length,
       keyRequests,
@@ -612,33 +647,52 @@ test("each job logs one reading per request it made and its api-budget line, add
       total - keyRequests,
       `${name}: status readings`,
     );
-    for (const [job, budget, first, last] of [
-      ["review-key", keyBudget, 1, keyRequests],
-      ["publish-review", statusBudget, keyRequests + 1, total],
-    ]) {
-      // The fake's responses carry no URL, so every route is other.
-      assert.deepEqual(
-        budget.notices,
-        [
-          `::notice title=api-calls::github-token=${last - first + 1} not-modified=0 graphql=0`,
-          `::notice title=api-routes::github-token other=${last - first + 1} rest=0`,
-          `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ` +
-            `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${last === first ? "na" : last - first}`,
-        ],
-        `${name}: ${job}`,
-      );
-    }
+    const pool = CAPTURE.headers;
+    const budget = (job, line) =>
+      `::notice title=api-budget::token=github-token workflow=.github/workflows/review.yml job=${job} run=1 attempt=1 ${line}`;
+    // The fake's REST responses carry no URL, so their route is other.
+    const keyCore = keyRequests - keyGraphql;
+    assert.deepEqual(
+      keyBudget.notices,
+      [
+        `::notice title=api-calls::github-token=${keyRequests} not-modified=0 graphql=1`,
+        `::notice title=api-routes::github-token other=${keyCore} graphql=1 rest=0`,
+        budget(
+          "review-key",
+          `limit=${pool["x-ratelimit-limit"]} remaining=${pool["x-ratelimit-limit"] - 1} used=1 reset=${pool["x-ratelimit-reset"]} resource=graphql cost=na`,
+        ),
+        budget(
+          "review-key",
+          `limit=1000 remaining=${1000 - keyCore} used=${keyCore} reset=${RESET} resource=core cost=${keyCore - 1}`,
+        ),
+      ],
+      `${name}: review-key`,
+    );
+    const statusCalls = total - keyRequests;
+    const last = total - graphql;
+    assert.deepEqual(
+      statusBudget.notices,
+      [
+        `::notice title=api-calls::github-token=${statusCalls} not-modified=0 graphql=0`,
+        `::notice title=api-routes::github-token other=${statusCalls} rest=0`,
+        budget(
+          "publish-review",
+          `limit=1000 remaining=${1000 - last} used=${last} reset=${RESET} resource=core cost=${statusCalls === 1 ? "na" : statusCalls - 1}`,
+        ),
+      ],
+      `${name}: publish-review`,
+    );
   }
 });
 
-test("a whole review reads pulls.get in scope and once more in publish, and nowhere else", async () => {
+test("a whole review reads its head and comments in one scope query, pulls.get once in publish, and nowhere else", async () => {
   const { counts } = await spend(
     SHAPES["a whole review with an inline comment"],
   );
   assert.deepEqual(counts, {
-    "issues.listComments": 1,
     "pulls.listFiles": 1,
-    "pulls.get": 2,
+    graphql: 1,
+    "pulls.get": 1,
     "repos.compareCommitsWithBasehead": 1,
     "pulls.listReviewComments": 1,
     "pulls.createReview": 1,

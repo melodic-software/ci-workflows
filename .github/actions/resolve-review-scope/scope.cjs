@@ -251,29 +251,52 @@ async function run({ github, context, core }) {
     core.setOutput("bytes", String(Buffer.byteLength(kept.map(([, section]) => section).join("\n"), "utf8")));
   };
 
+  // One GraphQL query, a page per 100 comments, reads the live head, the
+  // changed-file count and every comment of the pull request. The file
+  // list stays REST: GraphQL has no patch or previous name.
+  const PULL_QUERY = `query ($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        headRefOid
+        changedFiles
+        comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { databaseId author { __typename login } body }
+        }
+      }
+    }
+  }`;
+  const readPull = async () => {
+    const comments = [];
+    let cursor = null;
+    let pull;
+    do {
+      pull = (await github.graphql(PULL_QUERY, { owner, repo, number: Number(env.PR_NUMBER), cursor })).repository.pullRequest;
+      comments.push(...pull.comments.nodes);
+      cursor = pull.comments.pageInfo.endCursor;
+    } while (pull.comments.pageInfo.hasNextPage);
+    return { head: pull.headRefOid, changedFiles: pull.changedFiles, recorded: readMarker(comments) };
+  };
+
   // The newest marker comment this reusable wrote for this lane and this
   // caller: the head it reviewed, on its second line the base branch, merge
   // base and caller, then a status line and the review summary, which a skip
   // carries forward. Another caller's marker, or one from pr-review.yml,
-  // which names no caller, records no review of this one.
+  // which names no caller, records no review of this one. GraphQL names the
+  // github-actions[bot] account the Bot `github-actions`.
   const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}|none) caller=(\S+) -->$/u;
-  const readMarker = async () => {
-    const comments = await github.paginate(github.rest.issues.listComments, {
-      owner,
-      repo,
-      issue_number: Number(env.PR_NUMBER),
-      per_page: 100,
-    });
+  const readMarker = (comments) => {
     const marker = comments
       .filter(
         (comment) =>
-          comment.user?.login === "github-actions[bot]" &&
+          comment.author?.__typename === "Bot" &&
+          comment.author.login === "github-actions" &&
           comment.body?.startsWith(MARKER) &&
           BASE_LINE.exec(comment.body.split("\n")[1] ?? "")?.[3] === CALLER,
       )
       .at(-1);
     if (!marker) return { sha: "", ref: "", mergeBase: "" };
-    core.setOutput("marker-id", String(marker.id));
+    core.setOutput("marker-id", String(marker.databaseId));
     const lines = marker.body.split("\n");
     const base = BASE_LINE.exec(lines[1]);
     core.setOutput("last-summary", lines.slice(3).join("\n").trim());
@@ -305,9 +328,8 @@ async function run({ github, context, core }) {
   };
 
   const incremental = env.INCREMENTAL === "true";
+  let pulled = false;
   try {
-    // Read first, so a later failure still updates the one comment.
-    const recorded = await readMarker();
     const prFiles = await github.paginate(github.rest.pulls.listFiles, {
       owner,
       repo,
@@ -315,12 +337,13 @@ async function run({ github, context, core }) {
       per_page: 100,
     });
     // The file list is the live pull request's; a skip trusts it only
-    // while the live head is still the head this run was started for.
-    const pull = (await github.rest.pulls.get({ owner, repo, pull_number: Number(env.PR_NUMBER) })).data;
-    const live = pull.head.sha;
+    // while the live head, read after it, is still the head this run was
+    // started for.
+    pulled = true;
+    const { head: live, changedFiles, recorded } = await readPull();
     const current = live === head;
     if (!current) core.info(`The pull request's head moved to ${live}; this run skips nothing.`);
-    else writePrFiles(prFiles, pull.changed_files);
+    else writePrFiles(prFiles, changedFiles);
     let scope = prFiles;
     let last = "";
     let now = "";
@@ -391,6 +414,8 @@ async function run({ github, context, core }) {
     }
   } catch (error) {
     core.warning(`Scoping failed, reviewing the whole pull request: ${error.message}`);
+    // The marker still names the one comment the review updates.
+    if (!pulled) await readPull().catch((read) => core.info(`Could not read the lane's marker comment: ${read.message}`));
     core.setOutput("review", "true");
     core.setOutput("scope", "whole");
   }
