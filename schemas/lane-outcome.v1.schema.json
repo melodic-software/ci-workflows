@@ -17,6 +17,7 @@
       "enum": [
         "auth",
         "credit-stop",
+        "credential-stop",
         "rate-limit",
         "overloaded",
         "max-turns",

@@ -169,6 +169,7 @@ emitter's copy; a test holds the two equal.
 |---|---|
 | `auth` | the API refused the credential (401, 402 or 403): unusable until a human acts |
 | `credit-stop` | an API key's organization is out of credit or at a spend limit; never written as `rate-limit` |
+| `credential-stop` | run-claude-cli's credential scan withheld a clean leg's log or structured output |
 | `rate-limit` | a subscription usage limit (429) |
 | `overloaded` | an API 5xx, `api_error`, `timeout_error` or `overloaded_error` |
 | `max-turns` | the run used its turn cap |
