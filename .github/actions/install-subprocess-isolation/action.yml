@@ -6,7 +6,8 @@ description: >-
   every apt-get and dpkg call and backoff inside one budget), lifts the AppArmor user-namespace
   restriction on GitHub-hosted runners, and fails closed without either tool.
   With remove-sudo, it then makes the docker socket root-only and drops the
-  runner user's sudoers entry. No Actions cache: actions/cache unpacks with
+  sudo rules granted to the runner user, its uid or its groups, in
+  /etc/sudoers and /etc/sudoers.d. No Actions cache: actions/cache unpacks with
   tar -P while sudo still works, so whoever writes an entry could write any
   runner-owned file. Give the calling step a timeout-minutes at least 10 s
   above the budget, and its job room for both.
