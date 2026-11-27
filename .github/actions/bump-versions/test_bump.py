@@ -72,6 +72,146 @@ class VersionClassTest(unittest.TestCase):
         self.assertEqual(bump.cooldown_days(POLICY, override, "1.0.0", "2.0.0"), 0)
 
 
+class DotnetChannelTest(unittest.TestCase):
+    INDEX: ClassVar[dict[str, Any]] = {
+        "releases-index": [
+            {
+                "channel-version": "13.0",
+                "support-phase": "preview",
+                "release-type": "sts",
+                "latest-sdk": "13.0.100-preview.1",
+                "latest-release-date": "2026-10-01",
+                "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/13.0/releases.json",
+            },
+            {
+                "channel-version": "12.0",
+                "support-phase": "active",
+                "release-type": "lts",
+                "latest-sdk": "12.0.100",
+                "latest-release-date": "2026-10-20",
+                "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/12.0/releases.json",
+            },
+            {
+                "channel-version": "11.0",
+                "support-phase": "active",
+                "release-type": "sts",
+                "latest-sdk": "11.0.100",
+                "latest-release-date": "2025-11-10",
+                "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/11.0/releases.json",
+            },
+            {
+                "channel-version": "9.0",
+                "support-phase": "eol",
+                "release-type": "sts",
+                "latest-sdk": "9.0.300",
+                "latest-release-date": "2025-10-01",
+                "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/9.0/releases.json",
+            },
+            {
+                "channel-version": "12.1",
+                "support-phase": "active",
+                "release-type": "sts",
+                "latest-sdk": "12.1.100",
+                "latest-release-date": "2026-10-20",
+                "releases.json": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/12.1/releases.json",
+            },
+        ]
+    }
+
+    CHANNEL_12_DOC: ClassVar[dict[str, Any]] = {
+        "releases": [
+            {
+                "release-version": "12.0.1",
+                "release-date": "2026-11-01",
+                "sdk": {
+                    "version": "12.0.101",
+                    "files": [{"hash": "c" * 128}],
+                },
+            },
+            {
+                "release-version": "12.0.0",
+                "release-date": "2026-10-20",
+                "sdk": {
+                    "version": "12.0.100",
+                    "files": [{"hash": "a" * 128}, {"hash": "b" * 128}],
+                },
+            },
+            {
+                "release-version": "12.0.0-rc.2",
+                "release-date": "2026-10-01",
+                "sdk": {
+                    "version": "12.0.100-rc.2",
+                    "files": [{"hash": "d" * 128}],
+                },
+            },
+        ]
+    }
+
+    def test_parses_only_supported_stable_major_channels(self) -> None:
+        rels = bump.dotnet_channel_releases(self.INDEX)
+        self.assertEqual([r.version for r in rels], ["12", "11"])
+        self.assertEqual(rels[0].tag, "12.0")
+        self.assertEqual(rels[0].date, bump.UNDATED)
+        self.assertEqual(
+            bump.release_url({"type": "dotnet-channel"}, rels[0]),
+            "https://github.com/dotnet/core/blob/main/release-notes/12.0/README.md",
+        )
+
+    def test_dates_channel_by_ga_release_not_latest_patch(self) -> None:
+        rels = bump.dotnet_channel_releases(self.INDEX)
+        with mock.patch.object(
+            bump, "http_json", return_value=self.CHANNEL_12_DOC
+        ) as fetched:
+            dated = bump.date_tags({"type": "dotnet-channel"}, rels, "11")
+        # Only channel 12 (> 11) is fetched; channel 11 stays untouched.
+        fetched.assert_called_once_with(
+            "https://builds.dotnet.microsoft.com/dotnet/release-metadata/12.0/releases.json"
+        )
+        self.assertEqual(dated[0].date, dt.datetime(2026, 10, 20, tzinfo=dt.UTC))
+        # Even though patch 12.0.1 shipped 1 day before NOW, 12.0's GA (Oct 20) is past 7-day cooldown.
+        sel = bump.select(dated, "11", POLICY, THIRD, NOW)
+        self.assertEqual(sel.cooldown, 7)
+        self.assertIsNotNone(sel.chosen)
+        self.assertEqual(sel.chosen.version, "12")  # type: ignore[union-attr]
+
+        too_fresh = dt.datetime(2026, 10, 25, 12, tzinfo=dt.UTC)
+        held = bump.select(dated, "11", POLICY, THIRD, too_fresh)
+        self.assertEqual(held.latest.version, "12")  # type: ignore[union-attr]
+        self.assertIsNone(held.chosen)
+
+    def test_ga_date_rejects_channel_without_stable_releases(self) -> None:
+        with self.assertRaisesRegex(bump.BumpError, "no dated stable releases"):
+            bump.dotnet_channel_ga_date(
+                {"releases": [{"release-version": "12.0.0-rc.1", "release-date": "2026-10-01"}]},
+                "12.0",
+            )
+
+    def test_verifier_checks_releases_json_sha512_digests(self) -> None:
+        rel = bump.dotnet_channel_releases(self.INDEX)[0]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(bump, "http_json", return_value=self.CHANNEL_12_DOC),
+        ):
+            v = bump.Verifier(
+                {"source": {"type": "dotnet-channel"}}, rel, Path(tmp), POLICY
+            )
+            v.registry()
+        self.assertIn("12.0 (lts): SDK 12.0.100", v.verification())
+        self.assertIn("2 SHA-512 file digests", v.verification())
+
+    def test_verifier_rejects_missing_sdk_digests(self) -> None:
+        rel = bump.dotnet_channel_releases(self.INDEX)[0]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(bump, "http_json", return_value={"releases": []}),
+            self.assertRaisesRegex(bump.BumpError, "no SHA-512 digests"),
+        ):
+            v = bump.Verifier(
+                {"source": {"type": "dotnet-channel"}}, rel, Path(tmp), POLICY
+            )
+            v.registry()
+
+
 class SelectTest(unittest.TestCase):
     def test_latest_past_cooldown_is_taken(self) -> None:
         sel = bump.select(
