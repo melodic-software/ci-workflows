@@ -1924,6 +1924,15 @@ jobs_raw 4300 "$contract_only_jobs_with_alias"
 run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true ALIAS_JOBS='old-gate'
 expect_log "Carried forward: ci-lanes is success on ${sha}"
 
+# A job display name holds spaces, so alias-jobs splits on lines only.
+echo 'case: yield ignores a contract-only sibling whose listed extra job name holds a space'
+reset_yield_fixtures
+status_list "[$(full_run_success 100)]"
+workflow_runs "[$(run_entry 4300 in_progress 2026-09-05T12:00:31Z),$(run_entry 4242 in_progress 2026-09-05T12:00:30Z)]"
+jobs_raw 4300 '[{"name":"lint","conclusion":"skipped"},{"name":"test","conclusion":"skipped"},{"name":"ci-status","conclusion":null},{"name":"Prove Formatting","conclusion":"success"}]'
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true ALIAS_JOBS=$'old-gate\n  Prove Formatting\n'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+
 # A success a full run wrote before the gate job was renamed names its gate
 # job by the old name, which alias-jobs now carries. Without looking under that
 # name too, every open pull request's carried success is discarded until a push.

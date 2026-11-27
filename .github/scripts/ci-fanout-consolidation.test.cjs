@@ -477,6 +477,19 @@ test("the report-ci-status composite's contract-only copies match the aggregatio
   );
 });
 
+test("the report-ci-status composite passes alias-jobs to the aggregation", () => {
+  // A caller job that runs on contract-only events beside the gate must reach
+  // the run-shape reads, or two contract-only runs hold for each other.
+  assert.match(
+    ciStatusComposite,
+    /^ {2}alias-jobs:\n(?: {4}.*\n)*? {4}default: ''$/mu,
+  );
+  assert.match(
+    compositeStep("aggregate-results"),
+    /^ {8}alias-jobs: \$\{\{ inputs\.alias-jobs \}\}$/mu,
+  );
+});
+
 test("the report-ci-status composite drops the hold only on a failed contract-only run", () => {
   const hold = foldedValue(
     compositeStep("aggregate-results"),
