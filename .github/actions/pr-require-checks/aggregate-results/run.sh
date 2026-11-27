@@ -1384,12 +1384,15 @@ writer_attempt_wrote() {
 # Re-runs at most once an attempt-1 full run on this SHA whose lanes all passed
 # (or were skipped/neutral) while its gate job concluded `cancelled` before
 # running `own_gate_step` (for example an action-download timeout in `Set up
-# job`) and no postdating `ci-lanes` verdict was recorded. Sets
-# `retried_cancelled_run_id` and returns 0 when a re-run is triggered, else 1.
+# job`) and no postdating `ci-lanes` verdict was recorded. Verifies live that
+# the pull request is still open on `SHA` first, because re-running a stale
+# head's full run enters the PR's shared concurrency group and cancels the
+# current head's full run. Sets `retried_cancelled_run_id` and returns 0 when a
+# re-run is triggered, else 1.
 retried_cancelled_runs=" "
 retried_cancelled_run_id=""
 rerun_cancelled_full_gate() {
-  local candidates="" id gate_check
+  local candidates="" id gate_check pr_number="" pr_state="" pr_head_sha=""
   retried_cancelled_run_id=""
   if [[ "$rerun_contract_only_siblings" != true || -z "$own_gate_job" || -z "$own_gate_step" ]]; then
     return 1
@@ -1450,6 +1453,24 @@ rerun_cancelled_full_gate() {
       <"$gh_stdout")" || gate_check=false
     if [[ "$gate_check" != true ]]; then
       continue
+    fi
+    if [[ -n "${GITHUB_EVENT_PATH:-}" && -f "$GITHUB_EVENT_PATH" ]]; then
+      pr_number="$(jq -r '.pull_request.number // empty' <"$GITHUB_EVENT_PATH" 2>/dev/null)" || pr_number=""
+    fi
+    if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+      echo "Not re-running cancelled full run ${id} on ${SHA}: cannot verify live pull-request head without a pull_request event payload."
+      return 1
+    fi
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; failing closed prevents cancelling a newer head's run.
+    if ! gh_api GET "repos/${REPOSITORY}/pulls/${pr_number}"; then
+      warn_actions_failed "repos/${REPOSITORY}/pulls/${pr_number}" 'pull-requests: read' "Not re-running cancelled full run ${id}."
+      return 1
+    fi
+    pr_state="$(jq -r '.state // ""' <"$gh_stdout" 2>/dev/null)" || pr_state=""
+    pr_head_sha="$(jq -r '.head.sha // ""' <"$gh_stdout" 2>/dev/null)" || pr_head_sha=""
+    if [[ "$pr_state" != open || "$pr_head_sha" != "$SHA" ]]; then
+      echo "Not re-running cancelled full run ${id} on ${SHA}: pull request #${pr_number} is ${pr_state:-unknown} on ${pr_head_sha:-unknown}."
+      return 1
     fi
     # shellcheck disable=SC2310 # gh_api handles its own errexit; refusal warns and fails closed.
     if ! gh_api POST "repos/${REPOSITORY}/actions/runs/${id}/rerun-failed-jobs"; then
