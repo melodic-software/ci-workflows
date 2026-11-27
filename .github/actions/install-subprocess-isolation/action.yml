@@ -18,7 +18,11 @@ inputs:
     required: false
     default: "540"
   remove-sudo:
-    description: "`true` to remove sudo and docker access after the install."
+    description: >-
+      `true` to remove sudo and docker access after the install. This edits the
+      host's /etc/sudoers and deletes whole sudoers.d files, so shared group
+      rules such as %sudo go for every account: use it only on a runner that is
+      discarded after the job.
     required: false
     default: "false"
 
