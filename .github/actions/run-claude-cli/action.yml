@@ -170,10 +170,15 @@ inputs:
     description: >-
       `true` adds `permissions.blockReadsOutsideWorkingDirectories` to the
       `--settings` it passes: Claude Code then refuses Read, Grep, Glob and
-      LSP calls, and read-only Bash commands such as `cat`, on paths outside
-      the leg's working directories, in every permission mode
-      (https://code.claude.com/docs/en/settings-reference). `false` (the
-      default) leaves the settings unchanged. Any other value fails the step.
+      LSP calls on paths outside the leg's working directories in every
+      permission mode, and with the sandbox on denies sandboxed commands
+      the home directory and the user-file roots (/home, /root, /mnt and
+      the like) apart from the working directories; other paths, such as
+      /etc or /tmp, stay readable to Bash
+      (https://code.claude.com/docs/en/settings-reference). It needs Claude
+      Code 2.1.257 or later: an older cli-version fails the step. `false`
+      (the default) leaves the settings unchanged. Any other value fails
+      the step.
     required: false
     default: "false"
   live-log:

@@ -1888,7 +1888,7 @@ test("the sandbox settings pass by default; sandbox false omits them; other valu
   }
 });
 
-test("block-outside-reads off leaves the settings byte-identical; on adds the read block beside the sandbox", async () => {
+test("block-outside-reads off leaves the settings byte-identical; on adds the read block beside the sandbox and needs CLI 2.1.257", async () => {
   const settings = (args) =>
     args.flatMap((arg, i) => (arg === "--settings" ? [args[i + 1]] : []));
   for (const value of [undefined, "", "false", " false "]) {
@@ -1916,6 +1916,19 @@ test("block-outside-reads off leaves the settings byte-identical; on adds the re
       value,
     );
   }
+  for (const version of ["2.1.257", "2.2.0", "3.0.0"]) {
+    assert.equal(readConfig(configEnv({ LANE_BLOCK_OUTSIDE_READS: "true", LANE_CLI_VERSION: version })).blockOutsideReads, true, version);
+  }
+  for (const version of ["2.1.256", "2.0.999", "1.9.300"]) {
+    assert.throws(
+      () => readConfig(configEnv({ LANE_BLOCK_OUTSIDE_READS: "true", LANE_CLI_VERSION: version })),
+      (error) =>
+        error instanceof LaneError &&
+        error.message === `block-outside-reads needs Claude Code 2.1.257 or later; cli-version is ${JSON.stringify(version)}`,
+      version,
+    );
+  }
+  assert.equal(readConfig(configEnv({ LANE_CLI_VERSION: "2.1.100" })).blockOutsideReads, false, "an older CLI is fine while the block is off");
   const cli = readAction("run-claude-cli");
   assert.equal(cli.inputs["block-outside-reads"].default, "false");
   assert.match(cli.inputs["block-outside-reads"].description, /https:\/\/code\.claude\.com\/docs\/en\/settings-reference/u);

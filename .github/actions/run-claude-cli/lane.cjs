@@ -331,6 +331,23 @@ function otelReceiverOn(env) {
   return optedIn(env, "LANE_OTEL_RECEIVER", "otel-receiver");
 }
 
+// The block-outside-reads input. Claude Code reads the key from 2.1.257 on
+// (https://code.claude.com/docs/en/settings-reference), so an older
+// cli-version fails the step rather than run with the block silently absent.
+const READ_BLOCK_MIN_CLI = [2, 1, 257];
+function blockOutsideReadsOn(env) {
+  if (!optedIn(env, "LANE_BLOCK_OUTSIDE_READS", "block-outside-reads")) return false;
+  const version = (env.LANE_CLI_VERSION ?? "").trim();
+  const parts = version.split(".").map(Number);
+  const i = READ_BLOCK_MIN_CLI.findIndex((min, at) => parts[at] !== min);
+  if (parts.length !== 3 || parts.some(Number.isNaN) || (i !== -1 && parts[i] < READ_BLOCK_MIN_CLI[i])) {
+    throw new LaneError(
+      `block-outside-reads needs Claude Code ${READ_BLOCK_MIN_CLI.join(".")} or later; cli-version is ${JSON.stringify(version)}`,
+    );
+  }
+  return true;
+}
+
 function required(env, name, pattern, label) {
   const value = (env[name] ?? "").trim();
   if (!pattern.test(value)) {
@@ -456,7 +473,7 @@ function readConfig(env) {
     disallowMcp: switchedOn(env, "LANE_DISALLOW_MCP", "disallow-mcp"),
     liveLog: switchedOn(env, "LANE_LIVE_LOG", "live-log"),
     otelReceiver: otelReceiverOn(env),
-    blockOutsideReads: optedIn(env, "LANE_BLOCK_OUTSIDE_READS", "block-outside-reads"),
+    blockOutsideReads: blockOutsideReadsOn(env),
     watchdogMaxWaitMs: required(
       env,
       "LANE_WATCHDOG_MAX_WAIT_MS",
