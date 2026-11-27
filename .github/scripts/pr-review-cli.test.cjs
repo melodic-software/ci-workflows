@@ -628,7 +628,7 @@ test("the model jobs cannot write and give the model no shell, GitHub token or s
       "pull-requests": "read",
     });
     assert.equal(job["cache-mode"], "none");
-    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job["runs-on"], `\${{ inputs.runner }}`);
     const launcher = step(job, "claude");
     assert.equal(launcher.uses, "$/.github/actions/run-claude-cli");
     assert.equal(launcher.with["permission-mode"], "dontAsk");
@@ -1228,19 +1228,38 @@ test("the key job runs unless the start call names the subscription leg, a faile
   ]);
   const gate = workflow.jobs["check-key-credit"];
   assert.deepEqual(gate.permissions, { actions: "read" });
-  assert.equal(gate.steps[0].uses, "$/.github/actions/select-model-credential");
-  assert.equal(gate.steps[0].with.leg, "start");
+  const gateStep = step(gate, "gate");
+  assert.equal(gateStep.uses, "$/.github/actions/select-model-credential");
+  assert.equal(gateStep.with.leg, "start");
   // The caller's window and reset time reach the gate as inputs, never inline.
   assert.equal(
-    gate.steps[0].with["window-hours"],
+    gateStep.with["window-hours"],
     `\${{ inputs.key-credit-window-hours }}`,
   );
-  assert.equal(
-    gate.steps[0].with["reset-at"],
-    `\${{ inputs.key-credit-reset-at }}`,
-  );
+  assert.equal(gateStep.with["reset-at"], `\${{ inputs.key-credit-reset-at }}`);
   assert.equal(gate.outputs["next-leg"], `\${{ steps.gate.outputs.next-leg }}`);
   assert.doesNotMatch(JSON.stringify(gate), /secrets\./u);
+});
+
+test("every job routes through the governed runner input and installs pinned Node on self-hosted runners before invoking node", () => {
+  const runnerInput = workflow.on.workflow_call.inputs.runner;
+  assert.equal(runnerInput.type, "string");
+  assert.equal(runnerInput.default, "ubuntu-24.04");
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.equal(job["runs-on"], `\${{ inputs.runner }}`, name);
+  }
+  for (const name of [
+    "check-kill-switch",
+    "check-key-credit",
+    "review-key",
+    "review-subscription",
+    "review-fallback",
+    "publish-review",
+  ]) {
+    const first = workflow.jobs[name].steps[0];
+    assert.equal(first.uses, "$/.github/actions/setup-pinned-node", name);
+    assert.equal(first.if, "runner.environment == 'self-hosted'", name);
+  }
 });
 
 const KEY_OFF = [
@@ -1515,6 +1534,7 @@ test("the gate job uploads the probing marker it names, right after the read, ke
   assert.deepEqual(
     gate.steps.map((s) => s.name),
     [
+      "Set up Node",
       "Read the key's credit history",
       "Write the key's probing marker",
       "Scan the key's probing marker for credentials",

@@ -11,8 +11,11 @@ description: >
 
 inputs:
   node-version-file:
-    description: The file holding the exact X.Y.Z version.
-    required: true
+    description: >-
+      The file holding the exact X.Y.Z version. Defaults to this repository's
+      own .node-version so checkout-free reusable workflow jobs share one pin.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -21,4 +24,6 @@ runs:
       shell: bash
       env:
         VERSION_FILE: ${{ inputs.node-version-file }}
-      run: bash "$GITHUB_ACTION_PATH/install-node.sh" "$VERSION_FILE"
+      run: |
+        file="${VERSION_FILE:-$GITHUB_ACTION_PATH/../../.node-version}"
+        bash "$GITHUB_ACTION_PATH/install-node.sh" "$file"
