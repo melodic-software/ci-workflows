@@ -1381,6 +1381,99 @@ writer_attempt_wrote() {
       <"$scratch/runs.json")" == true ]]
 }
 
+# Re-runs at most once an attempt-1 full run on this SHA whose lanes all passed
+# (or were skipped/neutral) while its gate job concluded `cancelled` before
+# running `own_gate_step` (for example an action-download timeout in `Set up
+# job`) and no postdating `ci-lanes` verdict was recorded. Sets
+# `retried_cancelled_run_id` and returns 0 when a re-run is triggered, else 1.
+retried_cancelled_runs=" "
+retried_cancelled_run_id=""
+rerun_cancelled_full_gate() {
+  local candidates="" id gate_check
+  retried_cancelled_run_id=""
+  if [[ "$rerun_contract_only_siblings" != true || -z "$own_gate_job" || -z "$own_gate_step" ]]; then
+    return 1
+  fi
+  # A valid postdating verdict already decides this SHA.
+  if [[ "$carried_state" == success ]]; then
+    # shellcheck disable=SC2310 # held_success_carries reports through its status.
+    if [[ -z "$yield_held_ids" ]] || held_success_carries; then
+      return 1
+    fi
+  elif [[ "$carried_state" =~ ^(failure|error)$ ]]; then
+    # shellcheck disable=SC2310 # carried_postdates reports through its status.
+    if [[ -z "$yield_held_ids" ]] || carried_postdates "$yield_held_ids"; then
+      return 1
+    fi
+  fi
+
+  if [[ -n "$yield_held_ids" ]]; then
+    candidates="$(jq -r --arg ids " ${yield_held_ids} " \
+      '[ .workflow_runs[]? | select(.status == "completed" and .conclusion == "cancelled" and (.run_attempt // 1) == 1)
+         | select(. as $r | $ids | contains(" \($r.id) ")) ]
+       | sort_by(.run_started_at // .created_at // "") | reverse | map(.id) | join(" ")' \
+      <"$scratch/runs.json")" || candidates=""
+  else
+    # A full run whose gate died before our first listing is not in
+    # `yield_held_ids`; consider only the newest completed sibling if it is a
+    # cancelled attempt-1 run so an older superseded cancellation is never re-run.
+    candidates="$(jq -r --argjson self "$GITHUB_RUN_ID" \
+      '[ .workflow_runs[]? | select(.status == "completed" and (.id // $self) != $self) ]
+       | sort_by(.run_started_at // .created_at // "") | reverse | .[0]
+       | if . != null and .conclusion == "cancelled" and (.run_attempt // 1) == 1 then (.id | tostring) else "" end' \
+      <"$scratch/runs.json")" || candidates=""
+  fi
+
+  for id in $candidates; do
+    if [[ "$retried_cancelled_runs" == *" ${id} "* ]]; then
+      continue
+    fi
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; an unreadable run is skipped.
+    if ! gh_api GET "repos/${REPOSITORY}/actions/runs/${id}/jobs?filter=latest&per_page=100"; then
+      warn_actions_failed "repos/${REPOSITORY}/actions/runs/${id}/jobs" 'actions: read' "Not re-running cancelled run ${id}."
+      continue
+    fi
+    gate_check="$(jq -r --arg gate "$own_gate_job" --arg step "$own_gate_step" --argjson aliases "$alias_jobs_json" \
+      '(.total_count // 0) as $total | [ .jobs[]? ] as $jobs
+       | (if any($jobs[]; .name == $gate) then {gate: $gate, ignore: $aliases}
+          else {gate: (first($jobs[] | .name | select(. as $n | $aliases | index($n))) // $gate), ignore: []} end) as $shape
+       | [ $jobs[] | select(.name == $shape.gate) ] as $gates
+       | [ $jobs[] | select(.name != $shape.gate and (.name as $n | $shape.ignore | index($n) | not)) ] as $others
+       | ($jobs | length) >= $total
+         and ($gates | length) == 1
+         and $gates[0].status == "completed"
+         and $gates[0].conclusion == "cancelled"
+         and (all($gates[0].steps[]?; .name != $step))
+         and ($others | length) > 0
+         and (any($others[]; .conclusion != "skipped"))
+         and (all($others[]; .status == "completed" and ((.conclusion // "") | IN("success", "skipped", "neutral"))))' \
+      <"$gh_stdout")" || gate_check=false
+    if [[ "$gate_check" != true ]]; then
+      continue
+    fi
+    # shellcheck disable=SC2310 # gh_api handles its own errexit; refusal warns and fails closed.
+    if ! gh_api POST "repos/${REPOSITORY}/actions/runs/${id}/rerun-failed-jobs"; then
+      if [[ "$GH_FAILURE" == permission ]]; then
+        echo "::warning::re-running cancelled full run ${id} returned HTTP ${GH_HTTP_STATUS}; rerun-contract-only-siblings needs 'actions: write' on the ci-status job."
+      elif [[ "$GH_FAILURE" == rate-limit ]]; then
+        echo "::warning::re-running cancelled full run ${id} is rate limited (HTTP ${GH_HTTP_STATUS}); not re-running it."
+      elif [[ -n "$GH_FAILURE" ]]; then
+        echo "::warning::re-running cancelled full run ${id} returned HTTP ${GH_HTTP_STATUS}: $(escape_annotation "$GH_MESSAGE")."
+      else
+        echo "::warning::could not re-run cancelled full run ${id} (HTTP ${GH_HTTP_STATUS:-unknown})."
+      fi
+      cat "$gh_stderr" >&2
+      retried_cancelled_runs="${retried_cancelled_runs}${id} "
+      continue
+    fi
+    retried_cancelled_runs="${retried_cancelled_runs}${id} "
+    retried_cancelled_run_id="$id"
+    echo "Re-running cancelled gate job of full run ${id} (attempt 1) on ${SHA}: all other jobs passed and its gate concluded cancelled before '${own_gate_step:-the gate step}' ran."
+    return 0
+  done
+  return 1
+}
+
 # A contract-only run's own gate job and step do not depend on any listing, so
 # a run that lists before it reads the status (the yield and the wait) looks
 # them up first: a lookup that retries after a listing would leave that listing
@@ -1426,6 +1519,13 @@ if [[ "$contract_only" == true && "$yield_to_full_run" == true ]]; then
       superseding="${superseding}${superseding:+ }${id}"
     done
     if [[ -z "$superseding" ]]; then
+      # shellcheck disable=SC2310 # rerun_cancelled_full_gate reports through its status.
+      if rerun_cancelled_full_gate; then
+        if [[ $(($(date +%s) - yield_started)) -lt "$YIELD_WAIT_SECONDS" ]]; then
+          yield_hold "$retried_cancelled_run_id"
+          continue
+        fi
+      fi
       break
     fi
     # shellcheck disable=SC2310 # writer_attempt_wrote reports through its status; false fails superseded.
