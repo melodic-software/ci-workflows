@@ -476,7 +476,7 @@ verify_carried_writer() {
 own_gate_job=""
 # Jobs that only mirror the gate under an older check name (`alias-jobs`), as
 # a JSON array of names. The run-shape reads ignore them.
-alias_jobs_json="$(printf '%s' "${ALIAS_JOBS:-}" | tr -s ' \t\r\n' '\n' | jq -R . | jq -sc 'map(select(length > 0))')"
+alias_jobs_json="$(printf '%s' "${ALIAS_JOBS:-}" | jq -Rsc 'split("\n") | map(gsub("^[ \t\r]+|[ \t\r]+$"; "")) | map(select(length > 0))')"
 own_gate_job_id=""
 own_gate_step=""
 own_gate_endpoint=""

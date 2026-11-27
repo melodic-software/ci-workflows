@@ -68,7 +68,7 @@ inputs:
     default: ''
   alias-jobs:
     description: >-
-      Passed to `aggregate-results`: display names of jobs the run-shape
+      Passed to `aggregate-results`: newline-separated display names of jobs the run-shape
       reads ignore beside the gate. Name every job besides the gate that runs
       on contract-only events, or a contract-only sibling reads as a full run
       and two of them hold for each other until the yield ceiling.

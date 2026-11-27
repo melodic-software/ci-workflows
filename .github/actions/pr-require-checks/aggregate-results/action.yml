@@ -267,7 +267,8 @@ inputs:
     default: ''
   alias-jobs:
     description: >-
-      Newline- or space-separated display names of jobs that only mirror the
+      Newline-separated display names (one per line, so a name may hold
+      spaces) of jobs that only mirror the
       gate's conclusion under an older check name while a required-check
       rename rolls out (a job that needs the gate and exits with its result).
       Such a job runs on contract-only events too, so the run-shape reads
