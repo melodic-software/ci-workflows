@@ -29,6 +29,14 @@ on:
         description: Comma-separated exact target allowlist; empty selects all manifest targets.
         type: string
         default: ''
+      refs:
+        description: >-
+          Optional comma- or newline-separated issue references (for example
+          `#18899` or `melodic-software/claude-code-plugins#18899`) to emit as
+          `Refs: <ref>` lines at the top of the sync PR body when a sync carries
+          an authorized change. Empty emits `No related issue: ...`.
+        type: string
+        default: ''
       environment:
         description: >-
           Caller-repository environment that holds the App secrets under the
@@ -586,18 +594,38 @@ jobs:
         env:
           MANIFEST: ${{ inputs.manifest }}
           PR_BODY: ${{ github.workspace }}/.standards-sync-pr-body.md
+          REFS: ${{ inputs.refs }}
           STANDARDS_REF: ${{ inputs.standards-ref }}
           STANDARDS_SHA: ${{ needs.build-sync-matrix.outputs.sha }}
           TARGET: ${{ matrix.repo }}
         run: |
           set -euo pipefail
+          ref_pattern='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+$'
+          linkage_lines=()
+          if [[ -n "${REFS//[[:space:],]/}" ]]; then
+            while IFS= read -r raw_ref; do
+              raw_ref="${raw_ref#"${raw_ref%%[![:space:]]*}"}"
+              raw_ref="${raw_ref%"${raw_ref##*[![:space:]]}"}"
+              [[ -n "$raw_ref" ]] || continue
+              if [[ "$raw_ref" =~ ^[0-9]+$ ]]; then
+                raw_ref="#${raw_ref}"
+              fi
+              if [[ ! "$raw_ref" =~ $ref_pattern ]]; then
+                echo "::error::Invalid refs entry '${raw_ref}'; expected #N or owner/repo#N." >&2
+                exit 1
+              fi
+              linkage_lines+=("Refs: ${raw_ref}")
+            done < <(printf '%s\n' "$REFS" | tr ',' '\n')
+          else
+            linkage_lines+=('No related issue: recurring automated distribution, not tied to a tracked change.')
+          fi
           {
-            printf '## Summary\n\n'
+            printf '%s\n' "${linkage_lines[@]}"
+            printf '\n## Summary\n\n'
             printf 'Automated exact-file synchronization from '
             printf "[\`melodic-software/standards@%s\`](https://github.com/melodic-software/standards/commit/%s)" \
               "$STANDARDS_SHA" "$STANDARDS_SHA"
             printf " (requested ref \`%s\`).\n\n" "$STANDARDS_REF"
-            printf 'No linked issue — recurring automated distribution, not tied to a tracked change.\n\n'
             printf '## Fix\n\n'
             printf "Managed component mappings applied to \`%s\`:\n\n" "$TARGET"
             bash .standards-src/distribution/sync-manifest.sh mappings \
