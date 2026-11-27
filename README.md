@@ -65,6 +65,13 @@ checkout of this repo. (Public is required because a public consumer such as
   separate workflow run from the later successful one, was observed to leave a
   failed same-named check that kept the merge blocked, and re-running did not
   clear it. Pushing a new commit (an empty signed commit is enough) did.
+- **`CI Status` cannot be forged by a second job.** A pull request carrying a
+  real failing `ci-status` and a forged passing one (on `pull_request` and
+  `merge_group`) stayed out of the merge queue: every check run with the
+  required name must pass (verified in
+  [pr-pipeline-sandbox#42](https://github.com/melodic-software/pr-pipeline-sandbox/pull/42),
+  closed unmerged). Editing the real emitter itself is defended by standards
+  sync verification and owned callers.
 - **Code outside this repository loads the lane logic only through
   [`run-claude-cli/contract.cjs`](.github/actions/run-claude-cli/contract.cjs).**
   It re-exports the launcher, classifier and credential-chain functions such

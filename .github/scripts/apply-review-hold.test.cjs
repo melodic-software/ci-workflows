@@ -762,12 +762,9 @@ test("a warn-only hit in the reason posts it with a warning", async () => {
 
 // A cost decision binds to the pull request and covers the net diff it was
 // made at: the head of this lane's newest cost hold marker before it. It
-// carries a line link to its owner-decisions row and the owner's words.
-const ROW =
-  "https://github.com/melodic-software/architecture/blob/main/docs/owner-decisions.md#L42";
+// carries the owner's words quoted after `verbatim:`.
 const QUOTE = 'verbatim: "approve the larger runner"';
-const recorded = (text) =>
-  `**Decision recorded.** Cost: ${text}\n\nRow: ${ROW}\n${QUOTE}`;
+const recorded = (text) => `**Decision recorded.** Cost: ${text}\n\n${QUOTE}`;
 const decision = ({
   id = 1,
   userId = OWNER_ID,
@@ -953,7 +950,7 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
       {
         comments: [
           decision({
-            body: `**Decision recorded.** Option 2.\n\n${ROW}\n${QUOTE}`,
+            body: `**Decision recorded.** Option 2.\n\n${QUOTE}`,
           }),
         ],
       },
@@ -1007,36 +1004,17 @@ test("an edited, quoted, older or non-cost decision still holds", async () => {
   }
 });
 
-test("a cost decision counts only with its owner-decisions row and the owner's words", async () => {
+test("a cost decision counts only with the owner's words quoted verbatim", async () => {
   const head = "**Decision recorded.** Cost: approve the larger runner.";
-  const pinned = `https://github.com/melodic-software/architecture/blob/${"a".repeat(40)}/docs/owner-decisions.md?plain=1#L7`;
   const counted = await apply(costEnv(), {
-    comments: [decision({ body: `${head}\n${pinned}\nverbatim:"yes"` })],
+    comments: [decision({ body: `${head}\nverbatim:"yes"` })],
   });
-  assert.equal(counted.core.outputs.hold, "false", "both present");
-  const row = /lacks a link to its row in the owner-decisions record/u;
+  assert.equal(counted.core.outputs.hold, "false", "quote present");
   const quote = /lacks the owner's words quoted verbatim/u;
   for (const [name, body, why] of [
-    ["row missing", `${head}\n${QUOTE}`, row],
-    ["quote missing", `${head}\n${ROW}`, quote],
-    ["row in an HTML comment", `${head}\n<!-- ${ROW} -->\n${QUOTE}`, row],
-    ["quote in an HTML comment", `${head}\n${ROW}\n<!-- ${QUOTE} -->`, quote],
-    ["an empty quote", `${head}\n${ROW}\nverbatim: ""`, quote],
-    [
-      "a row of another record",
-      `${head}\n${ROW.replace("owner-decisions", "decisions")}\n${QUOTE}`,
-      row,
-    ],
-    [
-      "a row with no line",
-      `${head}\n${ROW.replace("#L42", "")}\n${QUOTE}`,
-      row,
-    ],
-    [
-      "both missing",
-      head,
-      /lacks a link to its row in the owner-decisions record \(.*\) and the owner's words quoted verbatim/u,
-    ],
+    ["quote missing", head, quote],
+    ["quote in an HTML comment", `${head}\n<!-- ${QUOTE} -->`, quote],
+    ["an empty quote", `${head}\nverbatim: ""`, quote],
   ]) {
     const { core, github } = await apply(costEnv(), {
       comments: [decision({ body })],
@@ -1051,19 +1029,22 @@ test("a cost decision counts only with its owner-decisions row and the owner's w
   }
 });
 
-test("the newest cost decision lacking a row is not replaced by an older complete one", async () => {
+test("the newest cost decision lacking a quote is not replaced by an older complete one", async () => {
   const { core } = await apply(costEnv(), {
     comments: [
       decision({ id: 1, createdAt: "2026-10-23T12:00:00Z" }),
       decision({
         id: 2,
         createdAt: "2026-10-23T12:30:00Z",
-        body: `**Decision recorded.** Cost: yes.\n${QUOTE}`,
+        body: "**Decision recorded.** Cost: yes.",
       }),
     ],
   });
   assert.equal(core.outputs.hold, "true");
-  assert.match(core.infos.join("\n"), /lacks a link to its row/u);
+  assert.match(
+    core.infos.join("\n"),
+    /lacks the owner's words quoted verbatim/u,
+  );
 });
 
 test("a carried cost decision leaves only critical-security to hold", async () => {
