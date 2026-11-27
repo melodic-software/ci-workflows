@@ -3472,6 +3472,163 @@ run_case 1 'skipped skipped' pass true true 'STEP_NAME=Aggregate'
 expect_log "${own_cause_prefix}job 'ci-status' has no in-progress step named 'Aggregate' after 9 reads."
 expect_total_sleep_at_most 120
 
+# Cancelled full-run gate job recovery: when an attempt-1 full run's lanes all
+# passed and its gate job died `cancelled` before running our step (e.g. an
+# action-download timeout in `Set up job`), a contract-only run with
+# `rerun-contract-only-siblings` verifies the pull request is still open on this
+# SHA and re-runs that run's failed jobs once instead of stranding the PR.
+cancelled_gate_jobs='[{"name":"lint","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"skipped"},{"name":"ci-status","status":"completed","conclusion":"cancelled","steps":[{"name":"Set up job","status":"completed","conclusion":"cancelled"}]}]'
+cancelled_lane_jobs='[{"name":"lint","status":"completed","conclusion":"cancelled"},{"name":"ci-status","status":"completed","conclusion":"cancelled","steps":[{"name":"Set up job","status":"completed","conclusion":"cancelled"}]}]'
+failed_lane_jobs='[{"name":"lint","status":"completed","conclusion":"failure"},{"name":"ci-status","status":"completed","conclusion":"cancelled","steps":[{"name":"Set up job","status":"completed","conclusion":"cancelled"}]}]'
+cancelled_mid_step_jobs='[{"name":"lint","status":"completed","conclusion":"success"},{"name":"ci-status","status":"completed","conclusion":"cancelled","steps":[{"name":"Set up job","status":"completed","conclusion":"success"},{"name":"Aggregate lane results","status":"completed","conclusion":"cancelled"}]}]'
+cancelled_full_attempt1='{"id":4000,"status":"completed","conclusion":"cancelled","run_attempt":1,"run_started_at":"2026-09-05T12:00:00Z"}'
+cancelled_full_attempt2='{"id":4000,"status":"completed","conclusion":"cancelled","run_attempt":2,"run_started_at":"2026-09-05T12:02:00Z"}'
+rerun_full_in_progress='{"id":4000,"status":"in_progress","conclusion":null,"run_attempt":2,"run_started_at":"2026-09-05T12:02:00Z"}'
+rerun_full_done='{"id":4000,"status":"completed","conclusion":"success","run_attempt":2,"run_started_at":"2026-09-05T12:02:00Z"}'
+pr_event_file="$temporary_directory/pr-event.json"
+printf '{"pull_request":{"number":99}}\n' >"$pr_event_file"
+pr_fixture_key='GET_repos_melodic-software_ci-workflows_pulls_99'
+set_pr_fixture() {
+  printf '{"state":"%s","head":{"sha":"%s"}}\n' "$1" "$2" >"$fixtures/${pr_fixture_key}.json"
+}
+set_pr_fixture open "$sha"
+
+echo 'case: a held full run whose gate was cancelled before the step is re-run once and its retry carries forward'
+reset_yield_fixtures
+status_list_on_call 1 '[]'
+status_list_on_call 2 '[]'
+status_list_on_call 3 '[]'
+status_list "[$(writer_status 200 success 2026-09-05T12:03:00Z 4000)]"
+workflow_runs_on_call 1 "[${held_run}]"
+workflow_runs_on_call 2 "[${cancelled_full_attempt1}]"
+workflow_runs_on_call 3 "[${cancelled_full_attempt1}]"
+workflow_runs_on_call 4 "[${rerun_full_in_progress}]"
+workflow_runs "[${rerun_full_done}]"
+printf '{"total_count":3,"jobs":%s}' "$cancelled_gate_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.1.json"
+printf '{"total_count":3,"jobs":%s}' "$cancelled_gate_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.2.json"
+writer_jobs 4000 success
+run_of_workflow 4000 777
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_gh_call "GET repos/${repository}/pulls/99"
+expect_gh_call "POST repos/${repository}/actions/runs/4000/rerun-failed-jobs"
+expect_calls POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs 1
+expect_log 'Re-running cancelled gate job of full run 4000 (attempt 1)'
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures"/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.*.json
+
+echo 'case: an already-cancelled attempt-1 full run is re-run once even when it ended before the first listing'
+reset_yield_fixtures
+status_list_on_call 1 '[]'
+status_list "[$(writer_status 200 success 2026-09-05T12:03:00Z 4000)]"
+workflow_runs_on_call 1 "[${cancelled_full_attempt1}]"
+workflow_runs "[${rerun_full_done}]"
+printf '{"total_count":3,"jobs":%s}' "$cancelled_gate_jobs" >"$fixtures/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.1.json"
+writer_jobs 4000 success
+run_of_workflow 4000 777
+run_case 0 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_calls POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs 1
+expect_log "Carried forward: ci-lanes is success on ${sha}"
+rm -f -- "$fixtures"/GET_repos_melodic-software_ci-workflows_actions_runs_4000_jobs.*.json
+
+echo 'case: a full run whose retry attempt 2 also concludes cancelled is never re-run a second time'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs_on_call 1 "[${cancelled_full_attempt1}]"
+workflow_runs "[${cancelled_full_attempt2}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_calls POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs 1
+expect_no_log 'Carried forward'
+
+echo 'case: an already-completed attempt-2 cancelled full run is not re-run'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt2}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_no_gh_call 'rerun-failed-jobs'
+
+echo 'case: a cancelled full run on an outdated PR head is never re-run'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+set_pr_fixture open cafebabecafebabecafebabecafebabecafebabe
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_no_gh_call 'rerun-failed-jobs'
+expect_log "Not re-running cancelled full run 4000 on ${sha}: pull request #99 is open on cafebabecafebabecafebabecafebabecafebabe."
+
+echo 'case: a cancelled full run on a closed PR is never re-run'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+set_pr_fixture closed "$sha"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_no_gh_call 'rerun-failed-jobs'
+expect_log "Not re-running cancelled full run 4000 on ${sha}: pull request #99 is closed on ${sha}."
+
+echo 'case: a missing pull_request event payload skips the cancelled-gate re-run and fails closed'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+set_pr_fixture open "$sha"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true GITHUB_EVENT_PATH=
+expect_no_gh_call 'rerun-failed-jobs'
+expect_log "Not re-running cancelled full run 4000 on ${sha}: cannot verify live pull-request head"
+
+echo 'case: an unreadable pull request endpoint skips the cancelled-gate re-run and fails closed'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/${pr_fixture_key}.err"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_no_gh_call 'rerun-failed-jobs'
+expect_log 'pull-requests: read'
+rm -f -- "$fixtures/${pr_fixture_key}.err"
+
+echo 'case: a cancelled full run with a cancelled or failed lane is never re-run'
+for non_green_jobs in "$cancelled_lane_jobs" "$failed_lane_jobs" "$cancelled_mid_step_jobs"; do
+  reset_yield_fixtures
+  status_list '[]'
+  workflow_runs "[${cancelled_full_attempt1}]"
+  jobs_raw 4000 "$non_green_jobs"
+  run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+  expect_no_gh_call 'rerun-failed-jobs'
+done
+
+echo 'case: rerun-contract-only-siblings=false never re-runs a cancelled full run'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=false "GITHUB_EVENT_PATH=$pr_event_file"
+expect_no_gh_call 'rerun-failed-jobs'
+
+echo 'case: a 403 when re-running a cancelled full run warns and fails closed'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+printf '%s\n' 'gh: Resource not accessible by integration (HTTP 403)' >"$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs.err"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=720 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_log "::warning::re-running cancelled full run 4000 returned HTTP 403; rerun-contract-only-siblings needs 'actions: write'"
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs.err"
+
+echo 'case: with yield-wait-seconds=0 a cancelled attempt-1 full run is re-run once and fails closed without sleeping'
+reset_yield_fixtures
+status_list '[]'
+workflow_runs "[${cancelled_full_attempt1}]"
+jobs_raw 4000 "$cancelled_gate_jobs"
+run_case 1 'skipped skipped' pass true true YIELD_TO_FULL_RUN=true YIELD_WAIT_SECONDS=0 RERUN_CONTRACT_ONLY_SIBLINGS=true "GITHUB_EVENT_PATH=$pr_event_file"
+expect_calls POST_repos_melodic-software_ci-workflows_actions_runs_4000_rerun-failed-jobs 1
+expect_no_sleep
+expect_no_log 'Carried forward'
+rm -f -- "$fixtures/${pr_fixture_key}.json"
+
 reset_yield_fixtures
 
 echo 'case: action.yml still wires every input this harness exercises'

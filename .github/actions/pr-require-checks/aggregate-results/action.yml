@@ -136,7 +136,12 @@ inputs:
       wait: that sibling polls and reads the success itself, as does one
       holding under `yield-wait-seconds`. A carry-forward
       red then says the full run will re-run it instead of
-      telling the reader to. The calling job needs `actions: write`; a
+      telling the reader to. Under `yield-to-full-run`, when an attempt-1 full
+      run's lanes all pass and its gate job concludes `cancelled` before this
+      step runs (for example an action download timeout) with no `status-context`
+      verdict recorded, a contract-only run verifies the pull request is still
+      open on `sha` (`pull-requests: read`) and re-runs that run's failed jobs
+      once so the PR is not stranded. The calling job needs `actions: write`; a
       refusal warns and never changes this run's verdict. Off by default.
     default: 'false'
   rerun-wait-seconds:
