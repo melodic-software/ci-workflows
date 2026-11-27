@@ -275,7 +275,9 @@ inputs:
       reads as contract-only, and a failed contract-only run with a failed
       alias is still re-run by `rerun-contract-only-siblings`. A carried
       `success` written by a run from before the rename, whose gate job had
-      the alias's name, still finds its gate step under that name.
+      the alias's name, still finds its gate step under that name. Name here
+      too any other job that runs on contract-only events, such as a check
+      the gate reads: the run-shape reads ignore it the same way.
     default: ''
   rate-limit-wait-seconds:
     description: >-

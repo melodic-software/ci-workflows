@@ -66,6 +66,13 @@ inputs:
       every caller: the jobs API has listed a running job's steps as `[]` for
       minutes, and without the name such a run fails closed.
     default: ''
+  alias-jobs:
+    description: >-
+      Passed to `aggregate-results`: display names of jobs the run-shape
+      reads ignore beside the gate. Name every job besides the gate that runs
+      on contract-only events, or a contract-only sibling reads as a full run
+      and two of them hold for each other until the yield ceiling.
+    default: ''
   token:
     description: >-
       Token for every API call. The calling job needs `pull-requests: write`
@@ -144,6 +151,7 @@ runs:
           ${{ steps.contract.outcome != 'success' &&
           steps.contract-read.outputs.at || '' }}
         step-name: ${{ inputs.step-name }}
+        alias-jobs: ${{ inputs.alias-jobs }}
         # The contract-only predicate is identical to aggregate-results'
         # `contract-only` default.
         yield-wait-seconds: >-
