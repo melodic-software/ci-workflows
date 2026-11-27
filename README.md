@@ -179,7 +179,8 @@ consumer to audit it.
   `version-bump/<tool or group>` and arms auto-merge; `command: summary` writes the
   per-tool measurement and fails on any failed tool. `results.json` under `out` is the
   measurement artifact for the caller to upload with its own retention. Verification
-  beyond the release's own checksums: GPG, npm and PSGallery registry integrity, GitHub
+  beyond the release's own checksums: GPG, npm, NuGet, PSGallery, Go module proxy,
+  Microsoft .NET `releases-index.json` (`dotnet-channel`) and CPython registry integrity, GitHub
   attestations against a pinned signer workflow and source commit (optionally an OCI
   image, with the release's JSON manifest as the source of the new values), and an MSI's
   Authenticode publisher under a pinned root (`osslsigncode: 'true'`). `afterBump`

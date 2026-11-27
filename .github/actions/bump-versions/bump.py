@@ -63,6 +63,9 @@ PSGALLERY = "https://www.powershellgallery.com/api/v2"
 GOPROXY = "https://proxy.golang.org"
 GOSUMDB = "https://sum.golang.org"
 NUGET_REGISTRATION = "https://api.nuget.org/v3/registration5-semver1"
+DOTNET_RELEASES_INDEX = (
+    "https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json"
+)
 # Sources dated by a commit, whose date its author sets: a bump's auto-merge also waits the
 # cooldown from the bot's own GitHub-dated commit (arm_auto_merge).
 AUTHOR_DATED = {"github-tag", "goproxy"}
@@ -413,6 +416,35 @@ def uv_cpython_builds(metadata: dict[str, Any]) -> dict[str, int]:
     return builds
 
 
+def dotnet_channel_releases(doc: dict[str, Any]) -> list[Release]:
+    """Supported stable .NET channels from Microsoft's releases-index.json, emitted by major."""
+    out: list[Release] = []
+    for entry in doc.get("releases-index", []):
+        if entry.get("support-phase") not in {"active", "maintenance"}:
+            continue
+        channel = str(entry.get("channel-version") or "")
+        match = re.fullmatch(r"(\d+)\.0", channel)
+        latest_sdk = str(entry.get("latest-sdk") or "")
+        release_date = str(entry.get("latest-release-date") or "")
+        releases_json = str(entry.get("releases.json") or "")
+        if (
+            not match
+            or parse_version(latest_sdk) is None
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_date)
+            or not releases_json.startswith("https://")
+        ):
+            continue
+        date = dt.datetime.fromisoformat(f"{release_date}T00:00:00+00:00")
+        meta = {
+            "channel": channel,
+            "latest_sdk": latest_sdk,
+            "release_type": str(entry.get("release-type") or ""),
+            "releases_json": releases_json,
+        }
+        out.append(Release(match.group(1), channel, date, meta))
+    return out
+
+
 def run_raw(
     args: list[str], *, env: dict[str, str] | None = None, input_text: str | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -581,6 +613,8 @@ def list_releases(
         return out
     if kind == "python-org":
         return cpython_releases(policy, now)
+    if kind == "dotnet-channel":
+        return dotnet_channel_releases(http_json(DOTNET_RELEASES_INDEX))
     raise BumpError(f"unknown source type {kind}")
 
 
@@ -685,6 +719,8 @@ def release_url(source: dict[str, Any], release: Release) -> str:
         return f"https://pkg.go.dev/{source['package']}@{release.tag}"
     if kind == "nuget":
         return f"https://www.nuget.org/packages/{source['package']}/{v}"
+    if kind == "dotnet-channel":
+        return f"https://github.com/dotnet/core/blob/main/release-notes/{release.meta['channel']}/README.md"
     return f"https://www.python.org/downloads/release/{release.meta['slug']}/"
 
 
@@ -935,6 +971,8 @@ class Verifier:
                 f"python.org stable release; uv {rel.meta['uv']}'s download metadata"
                 + f" carries a sha256 for {rel.meta['builds']} CPython {rel.version} builds"
             )
+        elif kind == "dotnet-channel":
+            self.notes.append(self.dotnet_channel_note(rel))
 
     @staticmethod
     def pypi_note(package: str, rel: Release) -> str:
@@ -1057,6 +1095,37 @@ class Verifier:
                 f"{package} {rel.version} .nupkg does not match its packageHash"
             )
         return f"NuGet: the .nupkg matches its catalog {algo} packageHash"
+
+    @staticmethod
+    def dotnet_channel_note(rel: Release) -> str:
+        meta = rel.meta
+        doc = http_json(meta["releases_json"])
+        target = meta["latest_sdk"]
+        hashed = 0
+        for item in doc.get("releases", []):
+            sdks = [item["sdk"]] if isinstance(item.get("sdk"), dict) else []
+            sdks += [s for s in item.get("sdks", []) if isinstance(s, dict)]
+            for sdk in sdks:
+                if sdk.get("version") != target:
+                    continue
+                hashed = sum(
+                    1
+                    for f in sdk.get("files", [])
+                    if re.fullmatch(r"[0-9a-fA-F]{128}", str(f.get("hash") or ""))
+                )
+                if hashed:
+                    break
+            if hashed:
+                break
+        if not hashed:
+            raise BumpError(
+                f"dotnet channel {meta['channel']} releases.json has no SHA-512 digests for SDK {target}"
+            )
+        kind = f" ({meta['release_type']})" if meta.get("release_type") else ""
+        return (
+            f"builds.dotnet.microsoft.com {meta['channel']}{kind}: SDK {target} "
+            f"listed in releases.json with {hashed} SHA-512 file digests"
+        )
 
     def verification(self) -> str:
         if "note" in self.verify:
