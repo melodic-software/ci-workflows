@@ -25,5 +25,5 @@ runs:
       env:
         VERSION_FILE: ${{ inputs.node-version-file }}
       run: |
-        file="${VERSION_FILE:-$GITHUB_ACTION_PATH/../../.node-version}"
+        file="${VERSION_FILE:-$GITHUB_ACTION_PATH/../../../.node-version}"
         bash "$GITHUB_ACTION_PATH/install-node.sh" "$file"

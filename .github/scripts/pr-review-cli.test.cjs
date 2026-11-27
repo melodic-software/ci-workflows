@@ -1260,6 +1260,25 @@ test("every job routes through the governed runner input and installs pinned Nod
     assert.equal(first.uses, "$/.github/actions/setup-pinned-node", name);
     assert.equal(first.if, "runner.environment == 'self-hosted'", name);
   }
+  const setupActionDir = path.join(
+    __dirname,
+    "..",
+    "actions",
+    "setup-pinned-node",
+  );
+  const setupAction = fs.readFileSync(
+    path.join(setupActionDir, "action.yml"),
+    "utf8",
+  );
+  const fallbackMatch = setupAction.match(
+    /VERSION_FILE:-\$GITHUB_ACTION_PATH\/([^\s}"]+)/u,
+  );
+  assert.ok(fallbackMatch, "setup-pinned-node default path must be declared");
+  const resolvedPin = path.resolve(setupActionDir, fallbackMatch[1]);
+  assert.match(
+    fs.readFileSync(resolvedPin, "utf8").trim(),
+    /^[0-9]+\.[0-9]+\.[0-9]+$/u,
+  );
 });
 
 const KEY_OFF = [
