@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs the bubblewrap and socat that CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs
 # on Linux and fails closed without them; with REMOVE_SUDO=true it then makes
-# the docker socket root-only and drops the runner user's sudoers entry.
+# the docker socket root-only and drops every sudo rule granted to the runner
+# user, its uid or one of its groups.
 #
 # Env: BUDGET_SECONDS (every apt-get and dpkg call and backoff shares it, so
 # the install ends within it plus a 2 s kill grace), REMOVE_SUDO,
@@ -65,7 +66,16 @@ sock=/var/run/docker.sock
 if [[ -e $sock ]]; then
   sudo chmod 600 "$sock"
 fi
-sudo rm -f /etc/sudoers.d/runner
+# The actions-runner image grants sudo through /etc/sudoers to group sudo and
+# reads no /etc/sudoers.d; GitHub-hosted runners grant it in
+# /etc/sudoers.d/runner. One root shell drops both, since dropping either first
+# can end the sudo the other needs. The hosted drop-in then goes by name too,
+# in case its rule takes a form the match misses.
+principals=(ALL "$(id -un)" "#$(id -u)")
+for group in $(id -Gn); do principals+=("%$group"); done
+for gid in $(id -G); do principals+=("%#$gid"); done
+sudo bash "${BASH_SOURCE[0]%/*}/drop-sudo-grants.sh" /etc "${principals[@]}"
+sudo -n rm -f /etc/sudoers.d/runner 2>/dev/null
 if sudo -n true 2>/dev/null; then
   echo "::error::sudo still works for the runner user"
   exit 1
