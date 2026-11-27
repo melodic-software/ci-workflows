@@ -226,6 +226,7 @@ runs:
         LANE_DISALLOW_MCP: ${{ inputs.disallow-mcp }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
+        LANE_BLOCK_OUTSIDE_READS: ""
         LANE_LIVE_LOG: ${{ inputs.live-log }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}
         LANE_ADD_DIRS: ${{ inputs.add-dirs }}

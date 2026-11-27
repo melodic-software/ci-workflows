@@ -166,6 +166,21 @@ inputs:
       step.
     required: false
     default: "true"
+  block-outside-reads:
+    description: >-
+      `true` adds `permissions.blockReadsOutsideWorkingDirectories` to the
+      `--settings` it passes: Claude Code then refuses Read, Grep, Glob and
+      LSP calls on paths outside the leg's working directories in every
+      permission mode, and with the sandbox on denies sandboxed commands
+      the home directory and the user-file roots (/home, /root, /mnt and
+      the like) apart from the working directories; other paths, such as
+      /etc or /tmp, stay readable to Bash
+      (https://code.claude.com/docs/en/settings-reference). It needs Claude
+      Code 2.1.257 or later: an older cli-version fails the step. `false`
+      (the default) leaves the settings unchanged. Any other value fails
+      the step.
+    required: false
+    default: "false"
   live-log:
     description: >-
       `true` (the default) prints the agent's text and each tool call to the
@@ -398,6 +413,7 @@ runs:
         LANE_DISALLOW_MCP: ${{ inputs.disallow-mcp }}
         LANE_TOOLS: ${{ inputs.tools }}
         LANE_SANDBOX: ${{ inputs.sandbox }}
+        LANE_BLOCK_OUTSIDE_READS: ${{ inputs.block-outside-reads }}
         LANE_LIVE_LOG: ${{ inputs.live-log }}
         LANE_OTEL_RECEIVER: ${{ inputs.otel-receiver }}
         LANE_PLUGIN_DIRS: ${{ inputs.plugin-dirs }}

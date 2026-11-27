@@ -896,6 +896,20 @@ consumer to audit it.
   `sandbox: false`, which passes no settings and skips the socat check, so
   that Bash runs unsandboxed as the runner user.
 
+  **Outside reads.** `block-outside-reads` (`false` by default) adds
+  `"permissions":{"blockReadsOutsideWorkingDirectories":true}` to those
+  settings (or passes only that block when `sandbox` is `false`), so Claude
+  Code refuses Read, Grep, Glob and LSP calls on paths outside the leg's
+  working directories in every permission mode, and, with the sandbox on,
+  denies sandboxed commands the home directory and the user-file roots
+  (`/home`, `/root`, `/mnt` and the like) apart from the working
+  directories; Bash can still read other paths such as `/etc` and `/tmp`
+  ([settings reference](https://code.claude.com/docs/en/settings-reference)).
+  It needs Claude Code 2.1.257 or later, so with an older `cli-version` it
+  fails the step. With `permission-mode: dontAsk`, `--restricted` and
+  `dontAsk` refuse these file-tool reads already; the block keeps them
+  refused in any mode.
+
   **Live view.** `live-log` (`true` by default) prints the agent's text and
   each tool call to the step log as the CLI emits them, inside the step's
   `::stop-commands::` block, so no printed line runs as a workflow command.
