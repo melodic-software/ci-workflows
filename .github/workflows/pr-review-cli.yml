@@ -30,6 +30,7 @@ name: PR Review CLI
 #         with:
 #           lane: code            # or security
 #           publish: comments     # or summary
+#           runner: ubuntu-24.04  # optional; private fleet repos pass melodic-review-ubuntu-24.04-x64
 #           lane-transcript-public-key: ${{ vars.LANE_TRANSCRIPT_PUBLIC_KEY }}
 #           kill-switch: true     # optional, default false (below)
 #           review-level: deep    # optional (below)
@@ -298,6 +299,12 @@ on:
           (https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
         type: string
         default: ""
+      runner:
+        description: >-
+          Runner label for every job. Defaults to GitHub-hosted ubuntu-24.04;
+          private fleet-enrolled repositories pass melodic-review-ubuntu-24.04-x64.
+        type: string
+        default: ubuntu-24.04
       lane:
         description: "`code` runs /review:code-review, `security` /review:security-review."
         type: string
@@ -694,14 +701,20 @@ jobs:
   check-kill-switch:
     name: Check Kill Switch
     if: inputs.kill-switch
-    runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 13
     permissions:
       contents: read
     cache-mode: none
     outputs:
       proceed: ${{ steps.kill.outputs.proceed == 'true' && !(inputs.lane == 'security' && vars.CLAUDE_SECURITY_REVIEW_DISABLED == 'true' || inputs.lane != 'security' && vars.CLAUDE_REVIEW_DISABLED == 'true') && 'true' || 'false' }}
     steps:
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+
       - name: Check the kill switch
         id: kill
         continue-on-error: true
@@ -749,7 +762,7 @@ jobs:
   resolve-pull-request:
     name: Resolve Pull Request
     if: inputs.pr-number && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 8
     permissions:
       pull-requests: read
@@ -805,8 +818,8 @@ jobs:
   check-key-credit:
     name: Check Key Credit
     needs: [check-kill-switch, resolve-pull-request]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 17
     if: >-
       !cancelled()
       && !(vars.CLAUDE_API_KEYS_DISABLED == 'true' || vars.REVIEWS_KEY_EXHAUSTED == 'true')
@@ -851,6 +864,12 @@ jobs:
       next-reason: ${{ steps.gate.outputs.next-reason }}
       marker: ${{ steps.gate.outputs.marker }}
     steps:
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+
       - name: Read the key's credit history
         id: gate
         continue-on-error: true
@@ -918,8 +937,8 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       deployment: false
-    runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 358 || 318 }}
     if: >-
       needs.check-key-credit.result != 'skipped'
       && needs.check-key-credit.outputs.next-leg != 'subscription'
@@ -994,6 +1013,17 @@ jobs:
       pr-files: ${{ steps.scope.outputs.pr-files }}
       standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
+      # Fleet workers omit Node from PATH (ci-runner docs/worker-image.md).
+      # Install the repo-pinned Node before managed settings and run-claude-cli
+      # invoke node/npm, with zero GitHub API calls.
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+        env:
+          PUBLISH: ${{ inputs.publish }}
+
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
@@ -2095,8 +2125,8 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       deployment: false
-    runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 358 || 318 }}
     if: >-
       (needs.review-key.outputs.next-leg == 'subscription' || needs.check-key-credit.outputs.next-leg == 'subscription' || needs.check-key-credit.result == 'skipped')
       && !cancelled()
@@ -2171,6 +2201,17 @@ jobs:
       standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
       # BEGIN GENERATED: pr-review-cli review-subscription
+      # Fleet workers omit Node from PATH (ci-runner docs/worker-image.md).
+      # Install the repo-pinned Node before managed settings and run-claude-cli
+      # invoke node/npm, with zero GitHub API calls.
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+        env:
+          PUBLISH: ${{ inputs.publish }}
+
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
@@ -3242,8 +3283,8 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       deployment: false
-    runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.lane == 'security' && 353 || 313 }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.lane == 'security' && 358 || 318 }}
     if: >-
       needs.review-subscription.outputs.next-leg == 'fallback'
       && !cancelled()
@@ -3318,6 +3359,17 @@ jobs:
       standards-sha: ${{ steps.standards.outputs.sha }}
     steps:
       # BEGIN GENERATED: pr-review-cli review-fallback
+      # Fleet workers omit Node from PATH (ci-runner docs/worker-image.md).
+      # Install the repo-pinned Node before managed settings and run-claude-cli
+      # invoke node/npm, with zero GitHub API calls.
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+        env:
+          PUBLISH: ${{ inputs.publish }}
+
       # Managed settings need sudo, so they come first; isolation then removes
       # sudo and docker before the checkout. run-claude-cli fails closed
       # without either.
@@ -4383,8 +4435,8 @@ jobs:
     name: Publish Review
     needs: [resolve-pull-request, review-key, review-subscription, review-fallback]
     if: always() && (needs.review-key.result != 'skipped' || needs.review-subscription.result != 'skipped')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 28
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 33
     permissions:
       actions: read # the hold step reads this workflow's earlier runs and their jobs for a cost decision's decided head
       checks: read # and those status jobs' cost notices (check-run annotations)
@@ -4394,6 +4446,14 @@ jobs:
       hold: ${{ steps.hold.outputs.hold || 'false' }}
       hold-criteria: ${{ steps.hold.outputs.criteria }}
     steps:
+      - name: Set up Node
+        if: runner.environment == 'self-hosted'
+        continue-on-error: ${{ env.PUBLISH != 'comments' }}
+        timeout-minutes: 5
+        uses: $/.github/actions/setup-pinned-node
+        env:
+          PUBLISH: ${{ inputs.publish }}
+
       # lib/publish-gate.mjs from claude-code-plugins at its default
       # branch's tip, resolved here, into a fresh directory; it must import
       # only node: builtins. It comes through an anonymous git clone, as the

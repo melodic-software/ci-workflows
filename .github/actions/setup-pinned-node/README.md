@@ -33,7 +33,7 @@ Three choices keep it working on every runner its callers use, hosted and fleet:
 
 | Input | Meaning |
 |---|---|
-| `node-version-file` | The file holding the exact `X.Y.Z` version |
+| `node-version-file` | Optional path to the file holding the exact `X.Y.Z` version; defaults to this repository's own `.node-version` |
 
 The step fails on a version that is not `X.Y.Z`, a runner other than Linux X64, a signature that
 does not verify against the keyring, a checksum mismatch, or a `SHASUMS256.txt` without the
