@@ -315,15 +315,20 @@ function sandboxEnabled(env) {
   return switchedOn(env, "LANE_SANDBOX", "sandbox");
 }
 
-// The otel-receiver input: only `true` turns it on.
-function otelReceiverOn(env) {
-  const value = (env.LANE_OTEL_RECEIVER ?? "").trim();
+// An opt-in input: only `true` turns it on, and any value other than true,
+// false or empty fails the step.
+function optedIn(env, name, label) {
+  const value = (env[name] ?? "").trim();
   if (!["", "true", "false"].includes(value)) {
     throw new LaneError(
-      `otel-receiver ${JSON.stringify(value)} is not true, false or empty`,
+      `${label} ${JSON.stringify(value)} is not true, false or empty`,
     );
   }
   return value === "true";
+}
+
+function otelReceiverOn(env) {
+  return optedIn(env, "LANE_OTEL_RECEIVER", "otel-receiver");
 }
 
 function required(env, name, pattern, label) {
@@ -451,6 +456,7 @@ function readConfig(env) {
     disallowMcp: switchedOn(env, "LANE_DISALLOW_MCP", "disallow-mcp"),
     liveLog: switchedOn(env, "LANE_LIVE_LOG", "live-log"),
     otelReceiver: otelReceiverOn(env),
+    blockOutsideReads: optedIn(env, "LANE_BLOCK_OUTSIDE_READS", "block-outside-reads"),
     watchdogMaxWaitMs: required(
       env,
       "LANE_WATCHDOG_MAX_WAIT_MS",
@@ -572,6 +578,18 @@ function legEnv(baseEnv, leg, config, otelEndpoint = null) {
   return env;
 }
 
+// The --settings pair: SANDBOX_SETTINGS unchanged unless block-outside-reads
+// is on, which adds permissions.blockReadsOutsideWorkingDirectories
+// (https://code.claude.com/docs/en/settings-reference).
+function settingsArgs(config) {
+  if (!config.blockOutsideReads) return config.sandbox ? ["--settings", SANDBOX_SETTINGS] : [];
+  const settings = {
+    ...(config.sandbox ? JSON.parse(SANDBOX_SETTINGS) : {}),
+    permissions: { blockReadsOutsideWorkingDirectories: true },
+  };
+  return ["--settings", JSON.stringify(settings)];
+}
+
 function cliArgs(config) {
   const args = [
     "-p",
@@ -592,7 +610,7 @@ function cliArgs(config) {
     "--no-session-persistence",
     // Under --restricted the CLI loads only managed settings and --settings,
     // and no input passes other flag settings, so there is nothing to merge.
-    ...(config.sandbox ? ["--settings", SANDBOX_SETTINGS] : []),
+    ...settingsArgs(config),
   ];
   // Under --restricted a plugin's own files are readable only inside a
   // working directory, so each plugin directory is added as one too.
