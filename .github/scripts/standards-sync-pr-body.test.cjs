@@ -38,7 +38,7 @@ function extractRunScript(name) {
 
 const buildBodyScript = extractRunScript("Build reviewed sync PR body");
 
-function runBuildBody({ refs = "" } = {}) {
+function runBuildBody({ refs = "", targetCount = "1" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-pr-body-"));
   const standardsDir = path.join(dir, ".standards-src", "distribution");
   fs.mkdirSync(standardsDir, { recursive: true });
@@ -60,6 +60,7 @@ function runBuildBody({ refs = "" } = {}) {
         STANDARDS_REF: "main",
         STANDARDS_SHA: "a".repeat(40),
         TARGET: "melodic-software/claude-code-plugins",
+        TARGET_COUNT: String(targetCount),
       },
     });
     return fs.readFileSync(prBody, "utf8");
@@ -73,9 +74,17 @@ test("workflow_call declares an optional refs string input wired to the PR body 
     workflowText,
     /^ {6}refs:\n(?: {8}.*\n)+? {8}type: string\n {8}default: ''$/mu,
   );
+  assert.match(
+    workflowText,
+    /^ {6}target-count: \$\{\{ steps\.build\.outputs\.target-count \}\}$/mu,
+  );
   const start = stepIndex("Build reviewed sync PR body");
-  const stepBlock = workflowLines.slice(start, start + 12).join("\n");
+  const stepBlock = workflowLines.slice(start, start + 14).join("\n");
   assert.match(stepBlock, /REFS: \$\{\{ inputs\.refs \}\}/u);
+  assert.match(
+    stepBlock,
+    /TARGET_COUNT: \$\{\{ needs\.build-sync-matrix\.outputs\.target-count \}\}/u,
+  );
 });
 
 test("default sync PR body opens with a contract No related issue line before Summary", () => {
@@ -118,6 +127,26 @@ test("refs input emits Refs: linkage lines on the top lines instead of No relate
     assert.equal(lines[expected.length + 1], "## Summary");
     assert.doesNotMatch(body, /No related issue:/u);
   }
+});
+
+test("multi-target sync rejects bare refs and accepts qualified owner/repo#N refs", () => {
+  for (const bare of ["#18899", "18899"]) {
+    assert.throws(
+      () => runBuildBody({ refs: bare, targetCount: 2 }),
+      (error) =>
+        error.status === 1 &&
+        /Bare issue ref .* ambiguous across 2 sync targets/u.test(error.stderr),
+      `expected ambiguity failure for ${bare}`,
+    );
+  }
+  const body = runBuildBody({
+    refs: "melodic-software/claude-code-plugins#18899",
+    targetCount: 3,
+  });
+  assert.equal(
+    body.split("\n")[0],
+    "Refs: melodic-software/claude-code-plugins#18899",
+  );
 });
 
 test("invalid refs input fails closed instead of writing a malformed linkage line", () => {

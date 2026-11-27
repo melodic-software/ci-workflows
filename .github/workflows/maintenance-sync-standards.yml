@@ -32,9 +32,11 @@ on:
       refs:
         description: >-
           Optional comma- or newline-separated issue references (for example
-          `#18899` or `melodic-software/claude-code-plugins#18899`) to emit as
-          `Refs: <ref>` lines at the top of the sync PR body when a sync carries
-          an authorized change. Empty emits `No related issue: ...`.
+          `melodic-software/claude-code-plugins#18899`, or `#18899` when
+          `targets` selects a single repository) to emit as `Refs: <ref>` lines
+          at the top of the sync PR body when a sync carries an authorized
+          change. Multi-target syncs require `owner/repo#N`. Empty emits
+          `No related issue: ...`.
         type: string
         default: ''
       environment:
@@ -77,6 +79,7 @@ jobs:
       expected-repositories: ${{ steps.build.outputs.expected-repositories }}
       matrix: ${{ steps.build.outputs.matrix }}
       sha: ${{ steps.resolve.outputs.sha }}
+      target-count: ${{ steps.build.outputs.target-count }}
     steps:
       - name: Check out standards
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,8 +142,12 @@ jobs:
               | if length == (unique | length) then sort else error("manifest contains duplicate targets") end
             ' <<< "$full_matrix"
           )"
-          echo "expected-repositories=$expected_repositories" >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          target_count="$(jq '.include | length' <<< "$matrix")"
+          {
+            echo "expected-repositories=$expected_repositories"
+            echo "matrix=$matrix"
+            echo "target-count=$target_count"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Log distribution plan
         env:
@@ -598,9 +605,11 @@ jobs:
           STANDARDS_REF: ${{ inputs.standards-ref }}
           STANDARDS_SHA: ${{ needs.build-sync-matrix.outputs.sha }}
           TARGET: ${{ matrix.repo }}
+          TARGET_COUNT: ${{ needs.build-sync-matrix.outputs.target-count }}
         run: |
           set -euo pipefail
-          ref_pattern='^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+$'
+          qualified_ref_pattern='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$'
+          bare_ref_pattern='^#[0-9]+$'
           linkage_lines=()
           if [[ -n "${REFS//[[:space:],]/}" ]]; then
             while IFS= read -r raw_ref; do
@@ -610,11 +619,18 @@ jobs:
               if [[ "$raw_ref" =~ ^[0-9]+$ ]]; then
                 raw_ref="#${raw_ref}"
               fi
-              if [[ ! "$raw_ref" =~ $ref_pattern ]]; then
-                echo "::error::Invalid refs entry '${raw_ref}'; expected #N or owner/repo#N." >&2
+              if [[ "$raw_ref" =~ $qualified_ref_pattern ]]; then
+                linkage_lines+=("Refs: ${raw_ref}")
+              elif [[ "$raw_ref" =~ $bare_ref_pattern ]]; then
+                if [[ "${TARGET_COUNT:-0}" != '1' ]]; then
+                  echo "::error::Bare issue ref '${raw_ref}' is ambiguous across ${TARGET_COUNT:-unknown} sync targets; use owner/repo#N or narrow targets to one repository." >&2
+                  exit 1
+                fi
+                linkage_lines+=("Refs: ${raw_ref}")
+              else
+                echo "::error::Invalid refs entry '${raw_ref}'; expected owner/repo#N (or #N for a single target)." >&2
                 exit 1
               fi
-              linkage_lines+=("Refs: ${raw_ref}")
             done < <(printf '%s\n' "$REFS" | tr ',' '\n')
           else
             linkage_lines+=('No related issue: recurring automated distribution, not tied to a tracked change.')
