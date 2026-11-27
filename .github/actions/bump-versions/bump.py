@@ -417,7 +417,11 @@ def uv_cpython_builds(metadata: dict[str, Any]) -> dict[str, int]:
 
 
 def dotnet_channel_releases(doc: dict[str, Any]) -> list[Release]:
-    """Supported stable .NET channels from Microsoft's releases-index.json, emitted by major."""
+    """Supported stable .NET channels from Microsoft's releases-index.json, emitted by major.
+
+    Undated until date_tags reads each newer channel's GA release date from releases.json,
+    because latest-release-date in releases-index.json advances on every monthly servicing patch.
+    """
     out: list[Release] = []
     for entry in doc.get("releases-index", []):
         if entry.get("support-phase") not in {"active", "maintenance"}:
@@ -434,15 +438,30 @@ def dotnet_channel_releases(doc: dict[str, Any]) -> list[Release]:
             or not releases_json.startswith("https://")
         ):
             continue
-        date = dt.datetime.fromisoformat(f"{release_date}T00:00:00+00:00")
         meta = {
             "channel": channel,
             "latest_sdk": latest_sdk,
+            "latest_release_date": release_date,
             "release_type": str(entry.get("release-type") or ""),
             "releases_json": releases_json,
         }
-        out.append(Release(match.group(1), channel, date, meta))
+        out.append(Release(match.group(1), channel, UNDATED, meta))
     return out
+
+
+def dotnet_channel_ga_date(doc: dict[str, Any], channel: str) -> dt.datetime:
+    """Earliest stable (non-preview) release-date in a channel's releases.json."""
+    dates = [
+        dt.datetime.fromisoformat(f"{item['release-date']}T00:00:00+00:00")
+        for item in doc.get("releases", [])
+        if parse_version(str(item.get("release-version") or "")) is not None
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(item.get("release-date") or ""))
+    ]
+    if not dates:
+        raise BumpError(
+            f"dotnet channel {channel} releases.json lists no dated stable releases"
+        )
+    return min(dates)
 
 
 def run_raw(
@@ -667,23 +686,29 @@ def cpython_releases(policy: dict[str, Any], now: dt.datetime) -> list[Release]:
 def date_tags(
     source: dict[str, Any], releases: list[Release], current: str
 ) -> list[Release]:
-    """github-tag and goproxy list no date; read it for versions above the pin only (the
-    tagged commit's date, or the module proxy's `.info` Time)."""
-    if source["type"] not in AUTHOR_DATED:
+    """Read per-release dates for sources whose index omits the release's own date, only for
+    versions above the pin (github-tag commit date, goproxy `.info` Time, dotnet-channel GA date)."""
+    kind = source["type"]
+    if kind not in (*AUTHOR_DATED, "dotnet-channel"):
         return releases
     cur = parse_version(current) or ()
     dated: list[Release] = []
     for r in releases:
         if (parse_version(r.version) or ()) > cur:
-            if source["type"] == "goproxy":
+            meta = r.meta
+            if kind == "goproxy":
                 info = http_json(
                     f"{GOPROXY}/{goproxy_path(source['package'])}/@v/{r.tag}.info"
                 )
                 date = parse_date(info["Time"])
+            elif kind == "dotnet-channel":
+                doc = http_json(meta["releases_json"])
+                date = dotnet_channel_ga_date(doc, meta["channel"])
+                meta = {**meta, "releases_doc": doc}
             else:
                 commit = gh_json(f"repos/{source['repo']}/commits/{r.tag}")
                 date = parse_date(commit["commit"]["committer"]["date"])
-            r = Release(r.version, r.tag, date, r.meta)
+            r = Release(r.version, r.tag, date, meta)
         dated.append(r)
     return dated
 
@@ -1099,7 +1124,7 @@ class Verifier:
     @staticmethod
     def dotnet_channel_note(rel: Release) -> str:
         meta = rel.meta
-        doc = http_json(meta["releases_json"])
+        doc = meta.get("releases_doc") or http_json(meta["releases_json"])
         target = meta["latest_sdk"]
         hashed = 0
         for item in doc.get("releases", []):

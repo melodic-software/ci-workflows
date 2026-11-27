@@ -118,43 +118,79 @@ class DotnetChannelTest(unittest.TestCase):
         ]
     }
 
+    CHANNEL_12_DOC: ClassVar[dict[str, Any]] = {
+        "releases": [
+            {
+                "release-version": "12.0.1",
+                "release-date": "2026-11-01",
+                "sdk": {
+                    "version": "12.0.101",
+                    "files": [{"hash": "c" * 128}],
+                },
+            },
+            {
+                "release-version": "12.0.0",
+                "release-date": "2026-10-20",
+                "sdk": {
+                    "version": "12.0.100",
+                    "files": [{"hash": "a" * 128}, {"hash": "b" * 128}],
+                },
+            },
+            {
+                "release-version": "12.0.0-rc.2",
+                "release-date": "2026-10-01",
+                "sdk": {
+                    "version": "12.0.100-rc.2",
+                    "files": [{"hash": "d" * 128}],
+                },
+            },
+        ]
+    }
+
     def test_parses_only_supported_stable_major_channels(self) -> None:
         rels = bump.dotnet_channel_releases(self.INDEX)
         self.assertEqual([r.version for r in rels], ["12", "11"])
         self.assertEqual(rels[0].tag, "12.0")
-        self.assertEqual(rels[0].date, dt.datetime(2026, 10, 20, tzinfo=dt.UTC))
+        self.assertEqual(rels[0].date, bump.UNDATED)
         self.assertEqual(
             bump.release_url({"type": "dotnet-channel"}, rels[0]),
             "https://github.com/dotnet/core/blob/main/release-notes/12.0/README.md",
         )
 
-    def test_select_waits_major_cooldown_for_new_channel(self) -> None:
+    def test_dates_channel_by_ga_release_not_latest_patch(self) -> None:
         rels = bump.dotnet_channel_releases(self.INDEX)
-        sel = bump.select(rels, "11", POLICY, THIRD, NOW)
+        with mock.patch.object(
+            bump, "http_json", return_value=self.CHANNEL_12_DOC
+        ) as fetched:
+            dated = bump.date_tags({"type": "dotnet-channel"}, rels, "11")
+        # Only channel 12 (> 11) is fetched; channel 11 stays untouched.
+        fetched.assert_called_once_with(
+            "https://builds.dotnet.microsoft.com/dotnet/release-metadata/12.0/releases.json"
+        )
+        self.assertEqual(dated[0].date, dt.datetime(2026, 10, 20, tzinfo=dt.UTC))
+        # Even though patch 12.0.1 shipped 1 day before NOW, 12.0's GA (Oct 20) is past 7-day cooldown.
+        sel = bump.select(dated, "11", POLICY, THIRD, NOW)
         self.assertEqual(sel.cooldown, 7)
         self.assertIsNotNone(sel.chosen)
         self.assertEqual(sel.chosen.version, "12")  # type: ignore[union-attr]
 
         too_fresh = dt.datetime(2026, 10, 25, 12, tzinfo=dt.UTC)
-        held = bump.select(rels, "11", POLICY, THIRD, too_fresh)
+        held = bump.select(dated, "11", POLICY, THIRD, too_fresh)
         self.assertEqual(held.latest.version, "12")  # type: ignore[union-attr]
         self.assertIsNone(held.chosen)
 
+    def test_ga_date_rejects_channel_without_stable_releases(self) -> None:
+        with self.assertRaisesRegex(bump.BumpError, "no dated stable releases"):
+            bump.dotnet_channel_ga_date(
+                {"releases": [{"release-version": "12.0.0-rc.1", "release-date": "2026-10-01"}]},
+                "12.0",
+            )
+
     def test_verifier_checks_releases_json_sha512_digests(self) -> None:
         rel = bump.dotnet_channel_releases(self.INDEX)[0]
-        channel_doc = {
-            "releases": [
-                {
-                    "sdk": {
-                        "version": "12.0.100",
-                        "files": [{"hash": "a" * 128}, {"hash": "b" * 128}],
-                    }
-                }
-            ]
-        }
         with (
             tempfile.TemporaryDirectory() as tmp,
-            mock.patch.object(bump, "http_json", return_value=channel_doc),
+            mock.patch.object(bump, "http_json", return_value=self.CHANNEL_12_DOC),
         ):
             v = bump.Verifier(
                 {"source": {"type": "dotnet-channel"}}, rel, Path(tmp), POLICY
