@@ -262,10 +262,18 @@ name: PR Review CLI
 #     model text: HTML comments are stripped and the publish gate withholds
 #     a credential-shaped one.
 #
-# REVIEW CADENCE: as pr-review.yml's header states, with this lane's marker:
-# whole pull request on open, reopen and ready; after a push, the files
-# changed since the last completed review; no review when nothing in scope
-# changed or every file in scope matches docs-only-paths.
+# REVIEW CADENCE: drafts are skipped. `opened`, `reopened` and
+# `ready_for_review` review the whole pull request. A later push
+# (`synchronize`) reviews only the files changed since this lane's last
+# completed review (`incremental-review`). It reviews the whole pull request
+# instead when no earlier review is recorded, the recorded head is not an
+# ancestor of the new head (force push or rebase), 300 or more files changed
+# since, a base-branch merge changed a file this pull request also changes (or
+# 300 or more files), or the API returns no patch for a changed text file. A
+# push that changes no PR file, or a rebase/restack onto the same base branch
+# with identical file modes, types and blobs, is skipped; a run whose scope
+# files all match `docs-only-paths` is also skipped. A skip is taken only while
+# the pull request's live head is still this run's head.
 #
 # PUBLISH: `comments` posts one COMMENT review of inline comments, keeps the
 # lane's marker comment (head, base and summary) and leaves the
@@ -391,8 +399,13 @@ on:
         default: true
       docs-only-paths:
         description: >-
-          Newline-separated path globs, as pr-review.yml's input of the same
-          name. Empty never skips.
+          Newline-separated path globs (`*` within one path segment, `**`
+          across segments). When every file in scope matches one, no review
+          runs and the check stays green. Empty never skips. Agent instruction
+          files (CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md, SKILL.md,
+          copilot-instructions.md, and anything under .claude/, skills/,
+          agents/, commands/, rules/, hooks/, instructions/, prompts/ or
+          output-styles/) never match, whatever this list says.
         type: string
         default: ""
       allowed-bot-sender-ids:
@@ -405,10 +418,13 @@ on:
       allowed-author-ids:
         description: >-
           Comma-separated numeric GitHub user ids, no spaces, of people whose
-          closing issues the review reads in full, as pr-review.yml's input,
-          and whose recorded cost decision keeps the hold step from adding
-          the cost hold again on a later head whose net diff against the
-          base is the one decided.
+          same-repository closing issues the review reads in full (any other
+          author not listed here or in allowed-bot-sender-ids gets a
+          placeholder; cross-repository issues are written as owner/repo#N
+          alone), and whose recorded cost decision keeps the hold step from
+          adding the cost hold again on a later head whose net diff against
+          the base is the one decided. Empty, or a leading, trailing or
+          doubled comma, trusts no person.
         type: string
         default: ""
       hold-label:
@@ -1071,9 +1087,8 @@ jobs:
         timeout-minutes: 1
         run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
-      # Whole, incremental or no review, as pr-review.yml's step of the same
-      # name decides it, from this lane's marker comment. Any failure here
-      # reviews the whole pull request.
+      # Decides whole-PR, incremental, or no review from this lane's marker
+      # comment. Any failure here reviews the whole pull request.
       - name: Scope the review
         id: scope
         continue-on-error: true
@@ -2260,9 +2275,8 @@ jobs:
         timeout-minutes: 1
         run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
-      # Whole, incremental or no review, as pr-review.yml's step of the same
-      # name decides it, from this lane's marker comment. Any failure here
-      # reviews the whole pull request.
+      # Decides whole-PR, incremental, or no review from this lane's marker
+      # comment. Any failure here reviews the whole pull request.
       - name: Scope the review
         id: scope
         continue-on-error: true
@@ -3419,9 +3433,8 @@ jobs:
         timeout-minutes: 1
         run: rm -rf -- "${GITHUB_WORKSPACE:?}/.claude-lane"
 
-      # Whole, incremental or no review, as pr-review.yml's step of the same
-      # name decides it, from this lane's marker comment. Any failure here
-      # reviews the whole pull request.
+      # Decides whole-PR, incremental, or no review from this lane's marker
+      # comment. Any failure here reviews the whole pull request.
       - name: Scope the review
         id: scope
         continue-on-error: true
