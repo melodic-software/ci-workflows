@@ -41,7 +41,8 @@ concurrency:
 jobs:
   tag:
     name: Tag
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     environment: plugin-release
     permissions:
       contents: read # the release App token creates the tag + GitHub Release

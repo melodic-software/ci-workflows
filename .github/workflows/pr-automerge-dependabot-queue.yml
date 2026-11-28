@@ -34,7 +34,7 @@ jobs:
   automerge-dependabot-prs:
     name: Automerge Dependabot Prs
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     # One listing, then per pull request a commit listing, a check-run read,
     # a merge-queue read and at most three mutations.
     timeout-minutes: 10
