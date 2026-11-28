@@ -641,7 +641,7 @@ test("pr-require-checks.yml consolidates the hygiene composites into the checks 
   // a repo-local script), so it must still run somewhere in this workflow.
   assert.match(
     ciWorkflow,
-    /^ {8}run: bash \.github\/actions\/check-comment-markers\/superset-test\.sh$/mu,
+    /^ {8,12}run: bash \.github\/actions\/check-comment-markers\/superset-test\.sh$/mu,
   );
 });
 

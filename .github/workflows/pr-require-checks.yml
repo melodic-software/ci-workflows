@@ -72,7 +72,7 @@ jobs:
   detect-changes:
     name: Detect Changes
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: read
@@ -224,19 +224,20 @@ jobs:
           persist-credentials: false
       - name: Analyze PowerShell
         uses: $/.github/actions/psscriptanalyzer
-      - name: Analyze composite action PowerShell
-        # pwsh embedded in composite metadata is invisible to the lane action
-        # and to actionlint; the lane action installed the pinned analyzer.
-        run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.ps1
-      - name: Prove a broken composite pwsh block fails
-        run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
+      - parallel:
+          - name: Analyze composite action PowerShell
+            # pwsh embedded in composite metadata is invisible to the lane action
+            # and to actionlint; the lane action installed the pinned analyzer.
+            run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.ps1
+          - name: Prove a broken composite pwsh block fails
+            run: pwsh -File .github/scripts/Invoke-CompositeRunPssa.test.ps1
 
   check-markdown-references:
     name: Check Markdown References
     needs: detect-changes
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && !cancelled() && fromJSON(needs.detect-changes.outputs.results || '{}')['reference-integrity'] != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -364,33 +365,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/verify-actionlint-attestation.test.sh
-      - name: Prove embedded scripts are checked by ShellCheck
-        run: |
-          set -euo pipefail
-          expected_version="$(awk '
-            $0 == "  shellcheck-version:" { in_input=1; next }
-            in_input && /^  [^ ]/ { exit }
-            in_input && /^    default: / { sub(/^    default: /, ""); print; exit }
-          ' .github/actions/actionlint/action.yml)"
-          actual_version="$(shellcheck --version | awk '$1 == "version:" { print $2 }')"
-          if [[ -z "$expected_version" || "$actual_version" != "$expected_version" ]]; then
-            echo "::error::Expected ShellCheck $expected_version, got $actual_version."
-            exit 1
-          fi
-          output="$RUNNER_TEMP/actionlint-shellcheck.txt"
-          if actionlint .github/actions/actionlint/fixtures/shellcheck.yml >"$output" 2>&1; then
-            echo '::error::The intentional ShellCheck fixture unexpectedly passed actionlint.'
-            exit 1
-          fi
-          cat "$output"
-          grep -F '[shellcheck]' "$output"
-          grep -F 'SC2086' "$output"
-      - name: Lint composite action shell
-        # actionlint cannot read composite metadata; the lane action already
-        # put the pinned ShellCheck on PATH.
-        run: bash .github/scripts/composite-run-shellcheck.sh
-      - name: Prove a broken composite shell block fails
-        run: bash .github/scripts/composite-run-shellcheck.test.sh
+      - parallel:
+          - name: Prove embedded scripts are checked by ShellCheck
+            run: |
+              set -euo pipefail
+              expected_version="$(awk '
+                $0 == "  shellcheck-version:" { in_input=1; next }
+                in_input && /^  [^ ]/ { exit }
+                in_input && /^    default: / { sub(/^    default: /, ""); print; exit }
+              ' .github/actions/actionlint/action.yml)"
+              actual_version="$(shellcheck --version | awk '$1 == "version:" { print $2 }')"
+              if [[ -z "$expected_version" || "$actual_version" != "$expected_version" ]]; then
+                echo "::error::Expected ShellCheck $expected_version, got $actual_version."
+                exit 1
+              fi
+              output="$RUNNER_TEMP/actionlint-shellcheck.txt"
+              if actionlint .github/actions/actionlint/fixtures/shellcheck.yml >"$output" 2>&1; then
+                echo '::error::The intentional ShellCheck fixture unexpectedly passed actionlint.'
+                exit 1
+              fi
+              cat "$output"
+              grep -F '[shellcheck]' "$output"
+              grep -F 'SC2086' "$output"
+          - name: Lint composite action shell
+            # actionlint cannot read composite metadata; the lane action already
+            # put the pinned ShellCheck on PATH.
+            run: bash .github/scripts/composite-run-shellcheck.sh
+          - name: Prove a broken composite shell block fails
+            run: bash .github/scripts/composite-run-shellcheck.test.sh
 
   jsonschema:
     name: Jsonschema
@@ -424,8 +426,8 @@ jobs:
   check-action-filename:
     name: Check Action Filename
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -480,7 +482,7 @@ jobs:
   check-managed-files:
     name: Check Managed Files
     if: ${{ github.event_name != 'issues' && !(github.event.pull_request.head.repo.full_name == github.repository && (contains(fromJSON('["labeled","unlabeled"]'), github.event.action) || (github.event.action == 'edited' && !github.event.changes.base))) && contains(fromJSON('["pull_request","merge_group"]'), github.event_name) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     permissions:
       contents: read
@@ -509,16 +511,17 @@ jobs:
           persist-credentials: false
       - name: Lint shell scripts
         uses: $/.github/actions/shellcheck
-      - name: Test ShellCheck discovery and scoped exclusions
-        run: bash .github/actions/shellcheck/run.test.sh
-      - name: Test exec-bit shebang mode scan
-        run: bash .github/actions/check-exec-bit/check-exec-bit.test.sh
-      - name: Test lychee-offline config resolution
-        run: bash .github/actions/lychee-offline/run.test.sh
-      - name: Test typos config resolution
-        run: bash .github/actions/typos/run.test.sh
-      - name: Test markdownlint config resolution
-        run: bash .github/actions/markdownlint/run.test.sh
+      - parallel:
+          - name: Test ShellCheck discovery and scoped exclusions
+            run: bash .github/actions/shellcheck/run.test.sh
+          - name: Test exec-bit shebang mode scan
+            run: bash .github/actions/check-exec-bit/check-exec-bit.test.sh
+          - name: Test lychee-offline config resolution
+            run: bash .github/actions/lychee-offline/run.test.sh
+          - name: Test typos config resolution
+            run: bash .github/actions/typos/run.test.sh
+          - name: Test markdownlint config resolution
+            run: bash .github/actions/markdownlint/run.test.sh
 
   shfmt:
     name: Shfmt
@@ -559,58 +562,59 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
       - name: Install test dependencies
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Test selector and generated workflow contracts
-        run: node --test .github/scripts/*.test.cjs
-      - name: Test change-detection matcher
-        run: bash .github/actions/detect-changes/match.test.sh
-      - name: Test Claude lane outcome classifier
-        run: node --test .github/actions/report-lane-outcome/*.test.cjs
-      - name: Test the run-claude-cli launcher
-        run: node --test .github/actions/run-claude-cli/*.test.cjs
-      - name: Test the apply-claude-managed-settings drop-in
-        run: node --test .github/actions/apply-claude-managed-settings/*.test.cjs
-      - name: Test the check-managed-files action
-        run: node --test .github/actions/check-managed-files/*.test.cjs
-      - name: Test the setup-pinned-node installer
-        run: bash .github/actions/setup-pinned-node/install-node.test.sh
-      - name: Test OSV scan policy guard
-        run: bash .github/scripts/osv-scan-guard.test.sh
-      - name: Test Gitleaks scan policy guard
-        run: bash .github/actions/gitleaks/scan.test.sh
-      - name: Verify the comment-hygiene prefilter is a superset of the policy library
-        # The git-grep prefilter must admit every line the policy flags, or the
-        # gate fails open. The checks reusable cannot run a repo-local script.
-        run: bash .github/actions/check-comment-markers/superset-test.sh
-      - name: Test machine-specific path span filtering
-        # Repo-local driver contract. The checks reusable cannot run this
-        # script, same as the comment-hygiene superset test above.
-        run: bash .github/actions/check-machine-paths/check-machine-specific-paths.test.sh
-      - name: Test comment-hygiene scan-tree collection contracts
-        run: bash .github/actions/check-comment-markers/scan-tree.test.sh
-      - name: Test the workflow-naming runner
-        run: bash .github/actions/check-workflow-naming/run.test.sh
-      - name: Test the download-standards resolver and config fallback
-        run: bash .github/actions/download-standards/checkout.test.sh
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund
       - name: Install the version-bump engine's pinned yq
         # The engine's own-policy test reads .github/version-bump/policy.yaml with it.
         run: bash .github/actions/bump-versions/install-tools.sh
-      - name: Test the version-bump engine
-        run: python3 -B -m unittest discover -s .github/actions/bump-versions -p 'test_*.py'
-      - name: Test the Dependabot policy check
-        run: |
-          npm ci --prefix .github/actions/check-dependabot-policy --ignore-scripts --no-audit --no-fund
-          node --test .github/actions/check-dependabot-policy/*.test.mjs
-      - name: Test the pull-request contract runner
-        run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
-      - name: Test the ci-status aggregation and carry-forward runner
-        run: bash .github/actions/pr-require-checks/aggregate-results/run.test.sh
-      - name: Test the ci-status draft policy
-        run: bash .github/actions/pr-require-checks/report-ci-status/run.test.sh
-      - name: Test Pulumi deployment guard
-        run: bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh
-      - name: Test govulncheck SARIF classification
-        run: bash .github/scripts/govulncheck-sarif-guard.test.sh
+      - parallel:
+          - name: Test selector and generated workflow contracts
+            run: node --test .github/scripts/*.test.cjs
+          - name: Test change-detection matcher
+            run: bash .github/actions/detect-changes/match.test.sh
+          - name: Test Claude lane outcome classifier
+            run: node --test .github/actions/report-lane-outcome/*.test.cjs
+          - name: Test the run-claude-cli launcher
+            run: node --test .github/actions/run-claude-cli/*.test.cjs
+          - name: Test the apply-claude-managed-settings drop-in
+            run: node --test .github/actions/apply-claude-managed-settings/*.test.cjs
+          - name: Test the check-managed-files action
+            run: node --test .github/actions/check-managed-files/*.test.cjs
+          - name: Test the setup-pinned-node installer
+            run: bash .github/actions/setup-pinned-node/install-node.test.sh
+          - name: Test OSV scan policy guard
+            run: bash .github/scripts/osv-scan-guard.test.sh
+          - name: Test Gitleaks scan policy guard
+            run: bash .github/actions/gitleaks/scan.test.sh
+          - name: Verify the comment-hygiene prefilter is a superset of the policy library
+            # The git-grep prefilter must admit every line the policy flags, or the
+            # gate fails open. The checks reusable cannot run a repo-local script.
+            run: bash .github/actions/check-comment-markers/superset-test.sh
+          - name: Test machine-specific path span filtering
+            # Repo-local driver contract. The checks reusable cannot run this
+            # script, same as the comment-hygiene superset test above.
+            run: bash .github/actions/check-machine-paths/check-machine-specific-paths.test.sh
+          - name: Test comment-hygiene scan-tree collection contracts
+            run: bash .github/actions/check-comment-markers/scan-tree.test.sh
+          - name: Test the workflow-naming runner
+            run: bash .github/actions/check-workflow-naming/run.test.sh
+          - name: Test the download-standards resolver and config fallback
+            run: bash .github/actions/download-standards/checkout.test.sh
+          - name: Test the version-bump engine
+            run: python3 -B -m unittest discover -s .github/actions/bump-versions -p 'test_*.py'
+          - name: Test the Dependabot policy check
+            run: node --test .github/actions/check-dependabot-policy/*.test.mjs
+          - name: Test the pull-request contract runner
+            run: bash .github/actions/pr-require-checks/check-contract/run.test.sh
+          - name: Test the ci-status aggregation and carry-forward runner
+            run: bash .github/actions/pr-require-checks/aggregate-results/run.test.sh
+          - name: Test the ci-status draft policy
+            run: bash .github/actions/pr-require-checks/report-ci-status/run.test.sh
+          - name: Test Pulumi deployment guard
+            run: bash .github/actions/verify-pulumi-deploy-policy/guard.test.sh
+          - name: Test govulncheck SARIF classification
+            run: bash .github/scripts/govulncheck-sarif-guard.test.sh
       - name: Check reusable workflow_call surfaces against the runner-policy contract
         # Callers outside this repository may pass only what standards'
         # contract lists, so a reusable's surface changes expand/contract.
@@ -747,7 +751,7 @@ jobs:
     # `changes` is aggregated so a failed detection fails ci-status even though
     # every gated lane fails open and runs.
     needs: [detect-changes, pr-run-checks, psscriptanalyzer, check-markdown-references, ruff, pyright, biome, dotnet-build, dotnet-format, shellcheck, shfmt, test-contracts, actionlint, jsonschema, check-action-filename, check-workflow-naming, pr-run-checks-go, pr-audit-workflows, pr-scan-dependencies]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     # Worst case, both kinds paying two rate-limit waits of 60s
     # (`rate-limit-wait-seconds` on each step): a contract-only run adds the
     # 120s own-gate lookup and the 420s `yield-wait-seconds` hold, about 11
