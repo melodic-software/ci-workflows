@@ -625,6 +625,7 @@ test("the model jobs cannot write and give the model no shell, GitHub token or s
     assert.deepEqual(job.permissions, {
       actions: "read",
       contents: "read",
+      issues: "read",
       "pull-requests": "read",
     });
     assert.equal(job["cache-mode"], "none");
