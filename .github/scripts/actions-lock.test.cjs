@@ -4,7 +4,13 @@
 // Verifies that every workflow under `.github/workflows/` is onboarded, every
 // direct external action ref (including refs nested inside `parallel:` blocks
 // and `$/.github/actions/*` composites) is locked with matching SHA, no stale
-// workflow or orphaned dependency entry remains, and actions/cache stays on v6.
+// workflow or orphaned dependency entry remains, no `uses: ./` local ref
+// bypasses the lockfile, and actions/cache stays on v6.
+//
+// Maintenance: because every workflow is onboarded here, Dependabot
+// regenerates matching lockfile entries in the same PR on version bumps
+// without extra configuration; only newly added workflows need `gh actions-lock`
+// (https://docs.github.com/en/actions/how-tos/administer/enforce-workflow-lockfiles#2-keep-lockfiles-current).
 
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -14,6 +20,7 @@ const { test } = require("node:test");
 const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
+const ACTIONS_DIR = path.join(REPO_ROOT, ".github", "actions");
 const WORKFLOWS_DIR = path.join(REPO_ROOT, ".github", "workflows");
 const LOCKFILE_PATH = path.join(WORKFLOWS_DIR, "actions.lock");
 
@@ -76,10 +83,28 @@ function collectExternalActions(steps, visitedComposites = new Set()) {
       }
       continue;
     }
-    if (uses.startsWith("./") || uses.startsWith("docker://")) continue;
+    assert.ok(
+      !uses.startsWith("./"),
+      `local action ref must use '$/...' instead of './...': ${uses}`,
+    );
+    if (uses.startsWith("docker://")) continue;
     refs.add(normalizeActionKey(uses).key);
   }
   return refs;
+}
+
+function listActionFiles(directory = ACTIONS_DIR) {
+  const files = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === "node_modules") continue;
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listActionFiles(full));
+    } else if (entry.isFile() && entry.name === "action.yml") {
+      files.push(path.relative(REPO_ROOT, full));
+    }
+  }
+  return files.sort();
 }
 
 function listWorkflowFiles() {
@@ -199,5 +224,46 @@ test("actions.lock exists, parses cleanly, and covers every workflow without sta
     allDeps,
     [...reachableDeps].sort(),
     "actions.lock contains orphaned dependencies not referenced by any workflow",
+  );
+});
+
+test("every self-repo workflow and composite action reference uses $/ instead of ./", () => {
+  const offenders = [];
+
+  for (const workflowPath of listWorkflowFiles()) {
+    const workflow = parseWorkflow(
+      fs.readFileSync(path.join(REPO_ROOT, workflowPath), "utf8"),
+    );
+    for (const [jobId, job] of Object.entries(workflow.jobs ?? {})) {
+      if (!job || typeof job !== "object") continue;
+      if (typeof job.uses === "string" && job.uses.trim().startsWith("./")) {
+        offenders.push(`${workflowPath} job ${jobId}: ${job.uses.trim()}`);
+      }
+      for (const step of flattenSteps(job.steps)) {
+        if (
+          typeof step.uses === "string" &&
+          step.uses.trim().startsWith("./")
+        ) {
+          offenders.push(`${workflowPath} job ${jobId}: ${step.uses.trim()}`);
+        }
+      }
+    }
+  }
+
+  for (const actionPath of listActionFiles()) {
+    const composite = parseWorkflow(
+      fs.readFileSync(path.join(REPO_ROOT, actionPath), "utf8"),
+    );
+    for (const step of flattenSteps(composite?.runs?.steps)) {
+      if (typeof step.uses === "string" && step.uses.trim().startsWith("./")) {
+        offenders.push(`${actionPath}: ${step.uses.trim()}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `self-repo refs must use '$/...' instead of './...':\n${offenders.join("\n")}`,
   );
 });

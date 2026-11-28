@@ -7,6 +7,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { evaluate } = require("./actions-expression.cjs");
 const { makeTemporaryDirectory } = require("./temporary-directories.cjs");
+const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const repositoryRoot = path.join(__dirname, "..", "..");
 const ciWorkflowPath = path.join(
@@ -638,10 +639,24 @@ test("pr-require-checks.yml consolidates the hygiene composites into the checks 
 
   // The comment-hygiene prefilter superset test is the scan's load-bearing
   // invariant and cannot ride inside the reusable (a shared reusable cannot run
-  // a repo-local script), so it must still run somewhere in this workflow.
-  assert.match(
-    ciWorkflow,
-    /^ {8,12}run: bash \.github\/actions\/check-comment-markers\/superset-test\.sh$/mu,
+  // a repo-local script), so it must still run as a real job step in this
+  // workflow (whether top-level or inside a `parallel:` block).
+  const flattenSteps = (steps) =>
+    (Array.isArray(steps) ? steps : []).flatMap((step) =>
+      Array.isArray(step?.parallel) ? flattenSteps(step.parallel) : [step],
+    );
+  const parsedCiWorkflow = parseWorkflow(ciWorkflow);
+  const allSteps = Object.values(parsedCiWorkflow.jobs ?? {}).flatMap((job) =>
+    flattenSteps(job?.steps),
+  );
+  assert.ok(
+    allSteps.some(
+      (step) =>
+        typeof step?.run === "string" &&
+        step.run.trim() ===
+          "bash .github/actions/check-comment-markers/superset-test.sh",
+    ),
+    "pr-require-checks.yml must run check-comment-markers/superset-test.sh as a job step",
   );
 });
 
