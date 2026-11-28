@@ -108,7 +108,7 @@ test("the check detects exactly the lanes in the real workflows", () => {
       ([job]) => `${name}:${job}`,
     ),
   );
-  // Source: the Claude-running jobs of intake-triage.yml, pr-review-cli.yml, pr-review.yml and pr-review-security.yml.
+  // Source: the Claude-running jobs of intake-triage.yml and pr-review-cli.yml.
   assert.deepEqual(lanes.sort(), [
     "intake-triage.yml:claude",
     "intake-triage.yml:triage-fallback",
@@ -116,8 +116,6 @@ test("the check detects exactly the lanes in the real workflows", () => {
     "pr-review-cli.yml:review-fallback",
     "pr-review-cli.yml:review-key",
     "pr-review-cli.yml:review-subscription",
-    "pr-review-security.yml:claude",
-    "pr-review.yml:claude",
   ]);
 });
 

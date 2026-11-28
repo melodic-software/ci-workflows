@@ -17,9 +17,9 @@ const { parseWorkflow } = require("./workflow-yaml.cjs");
 
 const root = path.join(__dirname, "..");
 const workflow = parseWorkflow(
-  fs.readFileSync(path.join(root, "workflows", "pr-review.yml"), "utf8"),
+  fs.readFileSync(path.join(root, "workflows", "pr-review-cli.yml"), "utf8"),
 );
-const steps = workflow.jobs.claude.steps;
+const steps = workflow.jobs["review-key"].steps;
 const step = (id) => {
   const found = steps.find((s) => s?.id === id);
   assert.ok(found, `${id} step not found`);
@@ -174,7 +174,7 @@ function context(
 const PLACEHOLDER =
   "Title and body omitted: the author is not in allowed-author-ids or allowed-bot-sender-ids.";
 
-test("pr-review.yml: the trust step runs check-author-trust between fetch and render", () => {
+test("pr-review-cli.yml: the trust step runs check-author-trust between fetch and render", () => {
   const ids = steps.map((s) => s?.id);
   const at = (id) => ids.indexOf(id);
   assert.ok(at("pr-context-fetch") < at("pr-context-trust"));

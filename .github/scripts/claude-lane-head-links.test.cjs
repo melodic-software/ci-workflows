@@ -19,14 +19,10 @@ const root = path.join(__dirname, "..");
 const read = (name) =>
   parseWorkflow(fs.readFileSync(path.join(root, "workflows", name), "utf8"));
 const cli = read("pr-review-cli.yml");
-const hosted = read("pr-review.yml");
-const security = read("pr-review-security.yml");
 const JOBS = [
   ["pr-review-cli review-key", cli.jobs["review-key"]],
   ["pr-review-cli review-subscription", cli.jobs["review-subscription"]],
   ["pr-review-cli review-fallback", cli.jobs["review-fallback"]],
-  ["pr-review claude", hosted.jobs.claude],
-  ["pr-review-security claude", security.jobs.claude],
 ];
 
 // Every path a step of the two lanes writes under .claude-lane.

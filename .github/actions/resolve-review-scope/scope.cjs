@@ -281,8 +281,8 @@ async function run({ github, context, core }) {
   // The newest marker comment this reusable wrote for this lane and this
   // caller: the head it reviewed, on its second line the base branch, merge
   // base and caller, then a status line and the review summary, which a skip
-  // carries forward. Another caller's marker, or one from pr-review.yml,
-  // which names no caller, records no review of this one. GraphQL names the
+  // carries forward. Another caller's marker, or a legacy marker without a
+  // caller field, records no review of this one. GraphQL names the
   // github-actions[bot] account the Bot `github-actions`.
   const BASE_LINE = /^<!-- claude-lane-reviewed-base ref=(\S+) merge-base=([0-9a-f]{40}|none) caller=(\S+) -->$/u;
   const readMarker = (comments) => {

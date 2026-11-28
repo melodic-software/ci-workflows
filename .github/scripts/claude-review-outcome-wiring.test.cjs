@@ -11,9 +11,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { evaluate } = require("./actions-expression.cjs");
-const { parseWorkflow } = require("./workflow-yaml.cjs");
-
 const repositoryRoot = path.join(__dirname, "..", "..");
 
 const COMPOSITE_PATH = ".github/actions/report-lane-outcome/action.yml";
@@ -36,10 +33,10 @@ const LANES = fs
 test("lane discovery finds the outcome composite's consumers", () => {
   assert.ok(
     LANES.length >= 2,
-    `expected at least the review and security lanes, found: ${LANES.join(", ")}`,
+    `expected at least the intake and review lanes, found: ${LANES.join(", ")}`,
   );
   assert.ok(
-    LANES.includes("pr-review.yml") && LANES.includes("pr-review-security.yml"),
+    LANES.includes("intake-triage.yml") && LANES.includes("pr-review-cli.yml"),
     `known consumers missing from discovery: ${LANES.join(", ")}`,
   );
 });
@@ -84,106 +81,5 @@ for (const lane of LANES) {
         `${lane} reads steps.review-outcome.outputs.${name}, which ${COMPOSITE_PATH} does not declare`,
       );
     }
-  });
-}
-
-// The review lanes name their credential: the caller supplies the secret
-// name per slot, and the report names the slot that ran from that input,
-// never from a slot name written into the step.
-// Every discovered lane with the in-job review fallback (the fallback secret
-// and its fallback-credential-name input) is a review lane; its lane id is
-// its file name. pr-review-cli.yml shares the secret name but runs its
-// fallback in a separate job.
-const REVIEW_LANES = LANES.filter((lane) => {
-  const call = parseWorkflow(laneSource(lane)).on.workflow_call;
-  return (
-    call.secrets?.FALLBACK_CLAUDE_CODE_OAUTH_TOKEN !== undefined &&
-    call.inputs?.["fallback-credential-name"] !== undefined
-  );
-});
-
-test("review-lane discovery finds both review lanes", () => {
-  assert.deepEqual(REVIEW_LANES, ["pr-review-security.yml", "pr-review.yml"]);
-});
-
-for (const lane of REVIEW_LANES) {
-  const laneId = lane.replace(/\.yml$/u, "");
-  const workflow = parseWorkflow(laneSource(lane));
-  const inputs = workflow.on.workflow_call.inputs;
-  const steps = workflow.jobs.claude.steps;
-  const byId = (id) => steps.find((step) => step.id === id);
-
-  test(`${lane}: the caller names the primary and fallback secrets; the primary defaults to the one callers map`, () => {
-    assert.equal(inputs["credential-name"].type, "string");
-    assert.equal(inputs["credential-name"].default, "CLAUDE_CODE_OAUTH_TOKEN");
-    assert.equal(inputs["fallback-credential-name"].type, "string");
-    assert.equal(inputs["fallback-credential-name"].default, "");
-  });
-
-  test(`${lane}: the outcome report names the secret of the attempt that counts, and its lane id`, () => {
-    const outcome = byId("review-outcome");
-    assert.equal(outcome.with["lane-id"], laneId);
-    const credential = (account, names) =>
-      evaluate(outcome.with.credential, {
-        steps: { attempt: { outputs: { account } } },
-        inputs: names,
-      }) || "";
-    const names = {
-      "credential-name": "CLAUDE_CODE_OAUTH_TOKEN",
-      "fallback-credential-name": "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
-    };
-    assert.equal(credential("primary", names), "CLAUDE_CODE_OAUTH_TOKEN");
-    assert.equal(
-      credential("fallback", names),
-      "REVIEW_FALLBACK_CLAUDE_CODE_OAUTH_TOKEN",
-    );
-    // A fallback with no name is never reported as the primary's secret.
-    assert.equal(
-      credential("fallback", { ...names, "fallback-credential-name": "" }),
-      "",
-    );
-    assert.equal(
-      credential("primary", { ...names, "credential-name": "" }),
-      "",
-    );
-    assert.doesNotMatch(
-      outcome.with.credential,
-      /FALLBACK_CLAUDE_CODE_OAUTH_TOKEN/u,
-    );
-  });
-
-  test(`${lane}: when the fallback ran, the first attempt writes its own usage-limit record as a handoff`, () => {
-    const first = byId("first-attempt-outcome");
-    assert.equal(first.uses, "$/.github/actions/report-lane-outcome");
-    const runs = (rateLimit, run) =>
-      Boolean(
-        evaluate(first.if, {
-          steps: {
-            "first-outcome": { outputs: { "rate-limit": rateLimit } },
-            fallback: { outputs: { run } },
-          },
-        }),
-      );
-    assert.equal(runs("true", "true"), true);
-    // No fallback attempt: the outcome report covers the first attempt.
-    assert.equal(runs("true", ""), false);
-    assert.equal(runs("false", ""), false);
-    assert.equal(first.with.outcome, `\${{ steps.claude-review.outcome }}`);
-    assert.equal(
-      first.with["execution-file"],
-      `\${{ steps.claude-review.outputs.execution_file }}`,
-    );
-    assert.equal(first.with["lane-id"], laneId);
-    assert.equal(first.with.credential, `\${{ inputs.credential-name }}`);
-    assert.equal(first.with.handoff, "true");
-    assert.equal(first.with["known-failure-class"], "rate-limit");
-    assert.equal(first.with.lane, byId("review-outcome").with.lane);
-    // After the fallback is prepared, so its run output is set, and before
-    // the fallback attempt, which overwrites the first attempt's execution
-    // file at claude-code-action's one RUNNER_TEMP path.
-    assert.ok(steps.indexOf(byId("fallback")) < steps.indexOf(first));
-    assert.ok(
-      steps.indexOf(first) < steps.indexOf(byId("claude-review-fallback")),
-    );
   });
 }

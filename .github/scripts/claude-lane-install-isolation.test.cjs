@@ -33,19 +33,10 @@ const steps = (file) =>
 const isolationSteps = (file) =>
   steps(file).filter((step) => step.uses === COMPOSITE);
 
-test("both review lanes run the same subprocess isolation step", () => {
-  const [review] = isolationSteps("pr-review.yml");
-  const [security] = isolationSteps("pr-review-security.yml");
-  assert.deepEqual(review, security);
-  assert.equal(review.name, "Install subprocess isolation");
-});
-
 // Each lane job that runs Claude under the scrub installs through the composite,
-// and the lanes that remove sudo in the same step still do.
+// and removes sudo in the same step.
 // Per lane workflow: its isolation steps and their remove-sudo input.
 const LANES = {
-  "pr-review.yml": [1, undefined],
-  "pr-review-security.yml": [1, undefined],
   "intake-triage.yml": [3, "true"],
   "pr-review-cli.yml": [3, "true"],
 };

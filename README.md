@@ -1052,7 +1052,7 @@ consumer to audit it.
 - `.github/actions/generate-review-chunks` — `pr-review-cli.yml`'s diff-split
   step, with no model; internal to that workflow, which passes it everything
   through env (its `action.yml` describes what it does).
-- `.github/actions/build-review-criteria` — the criteria step of `pr-review-cli.yml` and `pr-review.yml`,
+- `.github/actions/build-review-criteria` — the criteria step of `pr-review-cli.yml`,
   with no model: for a head whose `docs/conventions/source-control.yaml`
   names `melodic-software/standards`, runs claude-code-plugins'
   `org-standards.sh review` over the standards checkout `download-standards`
@@ -1657,17 +1657,6 @@ GitHub continues the normal weekly patching of each hosted image generation.
   the [official installation and SLSA
   guidance][osv-installation]. Native OSV requires a governed `runner`; the
   optional inputs on native `zizmor` preserve compatibility.
-- `.github/workflows/pr-review.yml` — automated PR code review with
-  `anthropics/claude-code-action`, running the org review plugin's
-  `/review:code-review` command. Consume it per the [Claude lanes — shared
-  consumption contract](#claude-lanes--shared-consumption-contract) below.
-- `.github/workflows/pr-review-security.yml` — a dedicated LLM
-  **security-review** pass, sibling of `pr-review.yml` with the same
-  secrets interface and safe-handling model, running `/review:security-review`.
-  It reviews the PR's changed files for the vulnerabilities static analysis
-  misses and reports findings as a PR review. Findings are advisory: they never
-  fail the job. It skips a pull request whose files in scope are all
-  documentation (`docs-only-paths`).
 - `.github/workflows/pr-review-cli.yml` — one Claude review lane, `lane:
   code` (`/review:code-review`) or `lane: security`
   (`/review:security-review`), on `.github/actions/run-claude-cli` with the
@@ -1678,8 +1667,9 @@ GitHub continues the normal weekly patching of each hosted image generation.
   and the optional `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN` secret in `review-fallback` after the
   subscription job hands off, each choice made by
   `.github/actions/select-model-credential`. The model jobs are read-only
-  (`contents: read`, `pull-requests: read`, `cache-mode: none`, no
-  `id-token`), and the model gets Read, Grep, Glob, Skill and Agent under
+  (`actions: read`, `contents: read`, `issues: read`, `pull-requests: read`,
+  `cache-mode: none`, no `id-token`), and the model gets Read, Grep, Glob,
+  Skill and Agent under
   `--permission-mode dontAsk`, the review plugin from claude-code-plugins'
   default-branch tip, and the diff and pull request context as files whose
   `FULL DIFF:`, `REVIEW SCOPE: incremental` and `PR CONTEXT:` prompt lines
@@ -1755,8 +1745,7 @@ GitHub continues the normal weekly patching of each hosted image generation.
   `hold-paths` glob never holds: the prompt asks the review to give a
   matching changed file extra security scrutiny. The checks stay
   advisory: a caller that wants a hold enforced reads the label in its own
-  required check. `pr-review.yml` and `pr-review-security.yml` are
-  unchanged.
+  required check.
 - `.github/workflows/intake-triage.yml` — the intake-triage lane. On
   `issues: [opened]`, a script step fetches the issue, its trusted comments and the
   newest 200 open issues into the checkout; a read-only Claude run
@@ -1826,79 +1815,18 @@ GitHub continues the normal weekly patching of each hosted image generation.
 The lane-outcome record in `report-lane-outcome`'s annotations is a public
 contract: [docs/lane-outcome.md](docs/lane-outcome.md).
 
-`pr-review.yml` and `pr-review-security.yml` share one consumption
-shape. Each is a whole-job concern (job `permissions:` plus a `secrets:`
-interface), which is why each is a reusable workflow rather than a composite
-action: the caller owns the triggers, concurrency and the permission grant,
-and the workflow owns the SHA-pinned `anthropics/claude-code-action` and the
-safe handling. Each workflow header states its security model. Canonical
-caller (each workflow header carries its own copy):
+`pr-review-cli.yml` is the single reusable workflow for both PR review lanes
+(`lane: code` and `lane: security`), running on GitHub-hosted `ubuntu-24.04`
+(default) or a governed self-hosted fleet runner passed through `runner:`.
+Each workflow header states its canonical caller and security model.
 
-```yaml
-on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-concurrency:
-  group: <lane>-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-jobs:
-  <lane>:
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    uses: melodic-software/ci-workflows/.github/workflows/<lane>.yml@main
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-```
-
-The caller's job must grant those three permissions (a called workflow can only
-downgrade, not elevate); the `pr-review.yml` caller also grants `issues: read`,
-which its job needs to read closing issues in private repositories. The `CLAUDE_CODE_OAUTH_TOKEN` org secret has
-visibility "all repositories", so every org repo receives it. Pass that one
-named secret explicitly rather than `secrets: inherit`, which forwards every
-parent secret.
-
-**Usage-limit fallback.** Both lanes accept an optional second secret,
-`FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`. When the first attempt stops on a usage
-limit (class `rate-limit`), the job retries the review once on that token, in
-the same job and inside the review step's budget, before the report steps; the
-completion record then ends with the field `account=fallback`. The first
-attempt's usage limit writes its own handoff notice, whose lane-outcome record
-has class `rate-limit` and the primary's credential (`credential-name`), and
-the final report covers
-the fallback attempt and names the run's class. Without the secret the job
-makes one attempt.
-
-**Inputs** (both lanes, all optional):
-
-| Input | Default | Purpose |
-|---|---|---|
-| `runner` | `ubuntu-24.04` | Runner label |
-| `plugins` | `review@melodic-software` | Plugins the action installs |
-| `plugin-marketplaces` | the org marketplace URL | Marketplaces for `plugins` |
-| `plugin-command` | `/review:code-review` or `/review:security-review` | Command the review runs |
-| `model` | `sonnet` | Model alias or ID, appended as `--model` after `claude-args`, so it wins over a `--model` there |
-| `effort` | `high` | `low`, `medium`, `high`, `xhigh` or `max`, appended as `--effort` after `claude-args` |
-| `model-args` | empty | resolve-config's `claude-args` (`[--model <alias>] --max-turns <n> [--effort <level>]`); when set, appended after `claude-args` in place of `model` and `effort`, and any other value fails the job. Claude args only: a profile's `subagent-model` (resolve-config's `settings-json`) is not supported, so routes feeding this input keep `subagent-model: inherit` |
-| `claude-args` | `--max-turns 75 --allowedTools "Bash(gh pr diff:*)"` | Claude CLI args; the `model` and `effort` inputs are appended after them, or `model-args` in their place when set, then the inline-comment grant and a `Skill(<plugin-command>)` grant. With `model-args` set, only the flags it carries are appended, so a `--model` or `--effort` here is used when `model-args` leaves that flag out |
-| `exclude-comments-by-actor` | `dependabot,dependabot[bot]` | Actors whose comments are withheld from the model (prompt-injection hygiene) |
-| `incremental-review` | `true` | On a later push, review only the files changed since the last completed review |
-| `docs-only-paths` | empty (code review); `docs/**/*.md`, `**/README.md`, `**/CHANGELOG.md` (security review) | Globs; when every file in scope matches, no review runs. Agent-instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `copilot-instructions.md`, anything under `.claude/`, `skills/`, `agents/`, `commands/`, `rules/`, `hooks/`, `instructions/` or `prompts/`) never match |
-| `allowed-bot-sender-ids` | empty | Comma-separated numeric GitHub user ids, no spaces, of bot senders to review; only a listed sender's login reaches the action's `allowed_bots` |
-| `allowed-author-ids` | empty | Code review only. Comma-separated numeric GitHub user ids, no spaces, of people whose closing issues the review reads in full. A same-repository closing issue keeps its title and body only when its author's id is here or, for a bot, in `allowed-bot-sender-ids`; any other gets a placeholder, and a cross-repository one is written as `owner/repo#N` alone |
-| `credential-name` | `CLAUDE_CODE_OAUTH_TOKEN` | Name, never the value, of the secret the caller maps to `CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it as the credential when the first attempt reports. The default is right only when the caller maps a secret of that exact name; set this to the mapped secret's name otherwise |
-| `fallback-credential-name` | empty | Name, never the value, of the secret the caller maps to `FALLBACK_CLAUDE_CODE_OAUTH_TOKEN`; the [lane-outcome record](docs/lane-outcome.md) names it when the fallback attempt reports. Empty writes that attempt's tokens with no record and a warning |
-
-**Skips.** The job skips draft PRs, fork PRs (no secrets reach them; review
-fork changes by hand) and every bot actor whose event sender id is not in
-`allowed-bot-sender-ids` (the action rejects bots it was not told to allow).
-Calling either lane from `pull_request_target` or
-`workflow_run` fails the job. (`pr-review-cli.yml` differs: it accepts a
-`workflow_run` or `workflow_dispatch` caller that sets `pr-number`.)
+**Skips.** The workflow skips draft PRs, fork PRs (no secrets reach them; review
+fork changes by hand), Dependabot, and every bot actor whose event sender id is
+not in `allowed-bot-sender-ids`. It accepts `pull_request`, or `workflow_run` /
+`workflow_dispatch` callers that set `pr-number`.
 
 **Cadence.** `opened`, `reopened` and `ready_for_review` review the whole pull
-request; each lane writes its whole diff to `.claude-lane/pr.diff`.
+request; the lane writes its whole diff to `.claude-lane/pr.diff`.
 A later push reviews only the pull request's files that changed since
 the lane's last completed review; the prompt names them and the job writes
 their diff to `.claude-lane/incremental.diff`. A push
@@ -1910,12 +1838,11 @@ API returns no patch for a changed text file (too large to show). A push that
 changes no file of the pull request is not reviewed again, and neither is a
 rebase or restack onto the same base branch that leaves the pull request's
 files, their statuses, and every one of those paths' mode, type and content
-as reviewed. The marker comment's second line records the base branch and
-merge base each review used and, from `pr-review-cli.yml`, its caller workflow.
-That lane reads only a marker naming its own caller, so another caller's or the
-legacy `pr-review.yml`'s record never narrows or skips its review, and
-`pr-review.yml` ignores a marker naming a caller. A skip is taken only while the pull request's
-live head is still the run's head.
+as reviewed. The marker comment's second line records the base branch,
+merge base, and caller workflow each review used.
+The lane reads only a marker naming its own caller, so another caller's or an
+earlier retired-lane marker never narrows or skips its review. A skip is taken
+only while the pull request's live head is still the run's head.
 
 **The lane's comment.** Each lane posts one pull request comment of its own,
 written with the job token (author `github-actions[bot]`), created once and
@@ -1924,45 +1851,14 @@ edited in place after each completed review and each designed skip, whatever
 `<!-- claude-lane-reviewed-head lane=<id> sha=<head> -->` that the scope step
 and other repositories' tooling parse; its visible body names the head it
 covers, the findings count and the review summary (a skip keeps the last
-summary). The action posts no tracking comment: `track_progress` is off, so
-on a pull request event with a prompt it runs in agent mode, which creates no
-tracking comment and gives the model no comment tool but the inline one. The
-job's own check shows a review in progress and done.
+summary).
 
-**Status check, red means no review.** Each lane is one job. The code-review
-job and the security-review job are each named `Claude`, so with the
-canonical callers their checks are `PR Review / Claude` and
-`PR Review Security / Claude`. The job's last step goes red, naming
-the cause, whenever no review happened: a failed attempt (`auth`,
-`rate-limit`, `overloaded`, `max-turns`, `timeout`, `install-failed`,
-`no-execution`, `other`), the action
-skipping itself because the
-PR edits the caller workflow (`skipped-validation`), bubblewrap unable to
-create a namespace so no review ran (`sandbox-unavailable`), a review that did
-not complete (`incomplete`), a review that read only part of its scope
-(`partial`), or a job that ended before the review reported (`no-outcome`). A review that was not needed
-(nothing changed, or docs only) stays green and says why in the job summary.
-
-**Completion.** A green Claude step is not taken as a review. The model
-returns its findings count and its summary as structured output
-(`--json-schema`, appended after the caller's `claude-args`), and the step
-"Verify the review completed" then requires both, with a count no lower than
-the Claude App's (`claude[bot]`) inline comments on the head since the step
-started. Each inline comment ends with the plain-text footer
-`claude-lane: <id>` as its last non-blank line. Counting rule: a comment footed
-for the other lane counts only for that lane; any App inline comment on the
-head in that window with no footer fails the review of every lane whose window
-covers it, since it belongs to neither lane. The footer is plain text
-because the action's comment tool deletes HTML comments before posting.
-Anything less is `incomplete`: red, and the reviewed-head marker is not
-written. On a whole review each lane
-reads a diff it writes from the merge base (`.claude-lane/pr.diff`), because
-the API returns only part of a large pull request's diff; when that diff
-cannot be written, the review is `incomplete`. A review is also `incomplete`
-when its execution file holds a failed Bash result naming `bwrap:` and no
-successful Read of the diff file; with that Read it stays complete and warns.
-An execution file that cannot be read warns and proves nothing, and one that
-shows no successful Read of the diff file and no successful `gh pr diff` warns.
+**Status check, red means no review.** `publish-review` (`<caller job name> /
+Publish Review`) stays advisory and goes red, naming the cause, whenever no
+review happened (`auth`, `rate-limit`, `overloaded`, `max-turns`, `timeout`,
+`install-failed`, `no-execution`, `other`, `incomplete`, `partial`, or
+`no-outcome`). A review that was not needed (nothing changed, or docs only)
+stays green and says why in the job summary.
 
 **Coverage.** In `pr-review-cli.yml` the model also returns `files_read`, how
 many of the changed files in scope it read whole; the job counts the files in

@@ -147,7 +147,12 @@ test("pr-review-cli.yml: every model leg writes the prior findings after the plu
     const job = workflow.jobs[name];
     assert.deepEqual(
       job.permissions,
-      { actions: "read", contents: "read", "pull-requests": "read" },
+      {
+        actions: "read",
+        contents: "read",
+        issues: "read",
+        "pull-requests": "read",
+      },
       name,
     );
     const ids = job.steps.map((s) => s.id);
