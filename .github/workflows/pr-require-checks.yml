@@ -689,6 +689,7 @@ jobs:
       actions: read
       checks: read
       contents: read
+      issues: read
       pull-requests: write
     # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
     uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@main
@@ -710,6 +711,7 @@ jobs:
       actions: read
       checks: read
       contents: read
+      issues: read
       pull-requests: write
     # actionlint:ignore-next-line cache-call-unrestricted -- skipped on issues by this job's if
     uses: melodic-software/ci-workflows/.github/workflows/pr-review-cli.yml@main
